@@ -1037,6 +1037,13 @@ async fn execute_agent_turn(
                 &route.assumptions,
                 &turn_result.tool_repairs,
             );
+            route.calibrations =
+                crate::application::services::runtime_calibration::append_tool_fact_calibration_observations(
+                    &route.calibrations,
+                    &turn_result.tool_facts,
+                    chrono::Utc::now().timestamp(),
+                )
+                .records;
             ports.routes.set_route(conversation_key, route);
 
             if let Some(ref store) = ports.dialogue_state_store {

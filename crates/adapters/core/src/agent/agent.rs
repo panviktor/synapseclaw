@@ -47,9 +47,9 @@ use synapse_domain::application::services::runtime_assumptions::{
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
 use synapse_domain::application::services::runtime_calibration::{
-    append_runtime_calibration_observation, RuntimeCalibrationDecisionKind,
-    RuntimeCalibrationObservation, RuntimeCalibrationOutcome, RuntimeCalibrationRecord,
-    RuntimeCalibrationSuppressionKey,
+    append_runtime_calibration_observation, append_tool_fact_calibration_observations,
+    RuntimeCalibrationDecisionKind, RuntimeCalibrationObservation, RuntimeCalibrationOutcome,
+    RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
 };
 use synapse_domain::application::services::runtime_trace_janitor::{
     run_runtime_trace_janitor, RuntimeTraceJanitorInput,
@@ -1003,6 +1003,16 @@ impl Agent {
                 observed_at_unix,
             });
         }
+        let tool_facts = results
+            .iter()
+            .flat_map(|result| result.tool_facts.iter().cloned())
+            .collect::<Vec<_>>();
+        let ledger = append_tool_fact_calibration_observations(
+            &self.recent_runtime_calibrations,
+            &tool_facts,
+            observed_at_unix,
+        );
+        self.recent_runtime_calibrations = ledger.records;
     }
 
     pub fn user_profile_key(&self) -> Option<&str> {

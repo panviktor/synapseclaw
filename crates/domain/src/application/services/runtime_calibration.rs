@@ -1,5 +1,10 @@
 //! Typed calibration ledger for runtime decisions.
 
+use crate::domain::tool_fact::{
+    DeliveryTargetKind, OutcomeStatus, SearchDomain, ToolFactPayload, TypedToolFact,
+};
+use std::collections::BTreeMap;
+
 pub const RUNTIME_CALIBRATION_TTL_SECS: i64 = 48 * 60 * 60;
 pub const MAX_RUNTIME_CALIBRATION_RECORDS: usize = 12;
 const HIGH_CONFIDENCE_BASIS_POINTS: u16 = 7_500;
@@ -103,6 +108,70 @@ pub fn append_runtime_calibration_observation(
     records.truncate(MAX_RUNTIME_CALIBRATION_RECORDS);
 
     RuntimeCalibrationLedger { records }
+}
+
+pub fn append_tool_fact_calibration_observations(
+    history: &[RuntimeCalibrationRecord],
+    tool_facts: &[TypedToolFact],
+    now_unix: i64,
+) -> RuntimeCalibrationLedger {
+    let mut records = clean_runtime_calibration_records(history, now_unix);
+    for observation in tool_fact_calibration_observations(tool_facts, now_unix) {
+        records = append_runtime_calibration_observation(&records, observation, now_unix).records;
+    }
+    RuntimeCalibrationLedger { records }
+}
+
+pub fn tool_fact_calibration_observations(
+    tool_facts: &[TypedToolFact],
+    observed_at_unix: i64,
+) -> Vec<RuntimeCalibrationObservation> {
+    let outcomes = tool_outcomes_by_id(tool_facts);
+    let mut observations = Vec::new();
+
+    for fact in tool_facts {
+        match &fact.payload {
+            ToolFactPayload::Search(search) => {
+                observations.push(RuntimeCalibrationObservation {
+                    decision_kind: RuntimeCalibrationDecisionKind::RetrievalChoice,
+                    decision_signature: format!(
+                        "tool={},domain={},result_count={}",
+                        fact.tool_id,
+                        search_domain_name(&search.domain),
+                        search
+                            .result_count
+                            .map(|count| count.to_string())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    ),
+                    suppression_key: None,
+                    confidence_basis_points: tool_fact_calibration_confidence(
+                        outcomes.get(&fact.tool_id).cloned(),
+                    ),
+                    outcome: tool_fact_calibration_outcome(outcomes.get(&fact.tool_id).cloned()),
+                    observed_at_unix,
+                });
+            }
+            ToolFactPayload::Delivery(delivery) => {
+                observations.push(RuntimeCalibrationObservation {
+                    decision_kind: RuntimeCalibrationDecisionKind::DeliveryChoice,
+                    decision_signature: format!(
+                        "tool={},target={}",
+                        fact.tool_id,
+                        delivery_target_kind_name(&delivery.target)
+                    ),
+                    suppression_key: None,
+                    confidence_basis_points: tool_fact_calibration_confidence(
+                        outcomes.get(&fact.tool_id).cloned(),
+                    ),
+                    outcome: tool_fact_calibration_outcome(outcomes.get(&fact.tool_id).cloned()),
+                    observed_at_unix,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    observations
 }
 
 pub fn clean_runtime_calibration_records(
@@ -278,6 +347,60 @@ pub fn should_suppress_tool_choice(records: &[RuntimeCalibrationRecord], tool_na
     )
 }
 
+fn tool_outcomes_by_id(tool_facts: &[TypedToolFact]) -> BTreeMap<String, OutcomeStatus> {
+    let mut outcomes = BTreeMap::new();
+    for fact in tool_facts {
+        if let ToolFactPayload::Outcome(outcome) = &fact.payload {
+            outcomes.insert(fact.tool_id.clone(), outcome.status.clone());
+        }
+    }
+    outcomes
+}
+
+fn tool_fact_calibration_outcome(status: Option<OutcomeStatus>) -> RuntimeCalibrationOutcome {
+    match status {
+        Some(OutcomeStatus::Succeeded) | None => RuntimeCalibrationOutcome::Succeeded,
+        Some(
+            OutcomeStatus::ReportedFailure
+            | OutcomeStatus::RuntimeError
+            | OutcomeStatus::Blocked
+            | OutcomeStatus::UnknownTool,
+        ) => RuntimeCalibrationOutcome::Failed,
+    }
+}
+
+fn tool_fact_calibration_confidence(status: Option<OutcomeStatus>) -> u16 {
+    match status {
+        Some(OutcomeStatus::Succeeded) | None => 7_500,
+        Some(
+            OutcomeStatus::ReportedFailure
+            | OutcomeStatus::RuntimeError
+            | OutcomeStatus::Blocked
+            | OutcomeStatus::UnknownTool,
+        ) => 8_000,
+    }
+}
+
+fn search_domain_name(domain: &SearchDomain) -> &'static str {
+    match domain {
+        SearchDomain::Web => "web",
+        SearchDomain::Workspace => "workspace",
+        SearchDomain::Memory => "memory",
+        SearchDomain::Session => "session",
+        SearchDomain::Precedent => "precedent",
+        SearchDomain::Knowledge => "knowledge",
+    }
+}
+
+fn delivery_target_kind_name(target: &DeliveryTargetKind) -> &'static str {
+    match target {
+        DeliveryTargetKind::CurrentConversation => "current_conversation",
+        DeliveryTargetKind::Explicit(_) => "explicit",
+        DeliveryTargetKind::UserProfile(_) => "user_profile",
+        DeliveryTargetKind::ConfiguredDefault(_) => "configured_default",
+    }
+}
+
 fn retained_runtime_calibration_records(
     history: &[RuntimeCalibrationRecord],
     now_unix: i64,
@@ -302,6 +425,10 @@ fn bounded_signature(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::tool_fact::{
+        DeliveryFact, DeliveryTargetKind, OutcomeStatus, SearchDomain, SearchFact, ToolFactPayload,
+        TypedToolFact,
+    };
 
     fn observation(
         decision_kind: RuntimeCalibrationDecisionKind,
@@ -356,6 +483,43 @@ mod tests {
         .unwrap();
 
         assert!(should_suppress_tool_choice(&[record], "message_send"));
+    }
+
+    #[test]
+    fn tool_facts_emit_retrieval_and_delivery_calibration_observations() {
+        let observations = tool_fact_calibration_observations(
+            &[
+                TypedToolFact {
+                    tool_id: "memory_recall".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Memory,
+                        query: Some("atlas".into()),
+                        result_count: Some(2),
+                        primary_locator: Some("memory:atlas".into()),
+                    }),
+                },
+                TypedToolFact::outcome("memory_recall", OutcomeStatus::Succeeded, Some(10)),
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(12),
+                    }),
+                },
+                TypedToolFact::outcome("message_send", OutcomeStatus::ReportedFailure, Some(20)),
+            ],
+            500,
+        );
+
+        assert_eq!(observations.len(), 2);
+        assert!(observations.iter().any(|observation| {
+            observation.decision_kind == RuntimeCalibrationDecisionKind::RetrievalChoice
+                && observation.outcome == RuntimeCalibrationOutcome::Succeeded
+        }));
+        assert!(observations.iter().any(|observation| {
+            observation.decision_kind == RuntimeCalibrationDecisionKind::DeliveryChoice
+                && observation.outcome == RuntimeCalibrationOutcome::Failed
+        }));
     }
 
     #[test]

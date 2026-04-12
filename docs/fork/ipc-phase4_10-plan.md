@@ -2019,9 +2019,9 @@ Expected outcome:
         route when a safe same-lane alternative exists
       - tool narrowing can hide a recently overconfident failing tool when a
         same-role alternative exists
-  - still open:
-    - live retrieval/delivery-specific call sites do not emit dedicated
-      calibration observations yet
+    - typed `Search` and `Delivery` tool facts now emit dedicated
+      retrieval/delivery calibration observations in both live Agent and
+      channel route state
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step
