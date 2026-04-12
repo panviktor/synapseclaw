@@ -1,11 +1,16 @@
 use crate::application::services::retrieval_service::{RunRecipeSearchMatch, SessionSearchMatch};
 use crate::application::services::runtime_assumptions::{self, RuntimeAssumption};
 use crate::application::services::turn_interpretation::{ReferenceCandidate, TurnInterpretation};
+use crate::application::services::{
+    epistemic_state,
+    epistemic_state::{EpistemicEntry, EpistemicSource, EpistemicState},
+};
 use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::memory::MemoryEntry;
 use crate::domain::turn_admission::{
     admission_repair_hint_label, AdmissionRepairHint, CandidateAdmissionReason,
 };
+use crate::domain::turn_defaults::TurnDefaultSource;
 use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 const MAX_DEFAULTS: usize = 6;
@@ -214,44 +219,68 @@ fn collect_current_defaults(interpretation: Option<&TurnInterpretation>) -> Vec<
     if let Some(profile) = interpretation.user_profile.as_ref() {
         for (key, value) in profile.iter().take(6) {
             let value = profile.get_text(key).unwrap_or_else(|| value.to_string());
-            defaults.push(format!("{key}={value}"));
+            defaults.push(format_runtime_default(
+                key,
+                &value,
+                TurnDefaultSource::UserProfile,
+            ));
         }
         if let Some(target) = profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY) {
-            defaults.push(format!(
-                "profile_delivery_target={}",
-                format_delivery_target(&target)
+            defaults.push(format_runtime_default(
+                "profile_delivery_target",
+                &format_delivery_target(&target),
+                TurnDefaultSource::UserProfile,
             ));
         }
     }
     if let Some(target) = interpretation.configured_delivery_target.as_ref() {
-        defaults.push(format!(
-            "configured_delivery_target={}",
-            format_delivery_target(target)
+        defaults.push(format_runtime_default(
+            "configured_delivery_target",
+            &format_delivery_target(target),
+            TurnDefaultSource::ConfiguredChannel,
         ));
     }
     if let Some(conversation) = interpretation.current_conversation.as_ref() {
-        defaults.push(format!(
-            "current_conversation_adapter={},threaded={}",
-            conversation.adapter, conversation.has_thread
+        defaults.push(format_epistemic_runtime_default(
+            "current_conversation",
+            &format!(
+                "adapter={},threaded={}",
+                conversation.adapter, conversation.has_thread
+            ),
+            EpistemicEntry {
+                subject: "current_conversation".into(),
+                state: EpistemicState::Known,
+                source: EpistemicSource::RuntimeDefault,
+                confidence_basis_points: 9_000,
+            },
         ));
     }
     if let Some(state) = interpretation.dialogue_state.as_ref() {
         if let Some(target) = state.recent_delivery_target.as_ref() {
-            defaults.push(format!(
-                "recent_delivery_target={}",
-                format_delivery_target(target)
+            defaults.push(format_runtime_default(
+                "recent_delivery_target",
+                &format_delivery_target(target),
+                TurnDefaultSource::DialogueState,
             ));
         }
         if let Some(resource) = state.recent_resource.as_ref() {
-            defaults.push(format!(
-                "recent_resource={},host={}",
-                resource.locator,
-                resource.host.as_deref().unwrap_or("unknown")
+            defaults.push(format_runtime_default(
+                "recent_resource",
+                &format!(
+                    "{},host={}",
+                    resource.locator,
+                    resource.host.as_deref().unwrap_or("unknown")
+                ),
+                TurnDefaultSource::DialogueState,
             ));
         }
         if let Some(search) = state.recent_search.as_ref() {
             if let Some(query) = search.query.as_deref() {
-                defaults.push(format!("recent_search_query={query}"));
+                defaults.push(format_runtime_default(
+                    "recent_search_query",
+                    query,
+                    TurnDefaultSource::DialogueState,
+                ));
             }
         }
         for candidate in interpretation.reference_candidates.iter().take(2) {
@@ -260,6 +289,22 @@ fn collect_current_defaults(interpretation: Option<&TurnInterpretation>) -> Vec<
     }
 
     defaults
+}
+
+fn format_runtime_default(label: &str, value: &str, source: TurnDefaultSource) -> String {
+    format_epistemic_runtime_default(
+        label,
+        value,
+        epistemic_state::epistemic_entry_for_turn_default(label, source),
+    )
+}
+
+fn format_epistemic_runtime_default(label: &str, value: &str, epistemic: EpistemicEntry) -> String {
+    format!(
+        "{label}={} [{}]",
+        value,
+        epistemic_state::format_epistemic_entry(&epistemic)
+    )
 }
 
 fn collect_context_anchors(
@@ -428,9 +473,8 @@ mod tests {
             packet.recommended_action.as_deref(),
             Some("start_fresh_handoff")
         );
-        assert!(packet
-            .current_defaults
-            .contains(&"workspace_anchor=Borealis".into()));
+        assert!(packet.current_defaults.iter().any(|default| default
+            .starts_with("workspace_anchor=Borealis [state=known source=runtime_default")));
         assert!(packet
             .anchors
             .iter()

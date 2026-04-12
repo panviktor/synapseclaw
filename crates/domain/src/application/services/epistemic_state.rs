@@ -6,6 +6,7 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumption, RuntimeAssumptionFreshness,
 };
 use crate::domain::memory::{MemoryCategory, MemoryEntry};
+use crate::domain::turn_defaults::TurnDefaultSource;
 
 const KNOWN_RETRIEVAL_SCORE_DELTA: f64 = 0.04;
 const INFERRED_RETRIEVAL_SCORE_DELTA: f64 = 0.0;
@@ -29,6 +30,7 @@ pub enum EpistemicState {
 #[serde(rename_all = "snake_case")]
 pub enum EpistemicSource {
     RuntimeAssumption,
+    RuntimeDefault,
     ModelProfile,
     Memory,
 }
@@ -56,6 +58,7 @@ pub fn epistemic_state_name(state: EpistemicState) -> &'static str {
 pub fn epistemic_source_name(source: EpistemicSource) -> &'static str {
     match source {
         EpistemicSource::RuntimeAssumption => "runtime_assumption",
+        EpistemicSource::RuntimeDefault => "runtime_default",
         EpistemicSource::ModelProfile => "model_profile",
         EpistemicSource::Memory => "memory",
     }
@@ -119,6 +122,24 @@ pub fn epistemic_entry_for_model_profile(
         confidence_basis_points: epistemic_confidence_basis_points(
             profile.context_window_confidence(),
         ),
+    }
+}
+
+pub fn epistemic_entry_for_turn_default(
+    subject: impl Into<String>,
+    source: TurnDefaultSource,
+) -> EpistemicEntry {
+    let (state, confidence_basis_points) = match source {
+        TurnDefaultSource::ConfiguredChannel => (EpistemicState::Known, 9_500),
+        TurnDefaultSource::UserProfile => (EpistemicState::Known, 8_000),
+        TurnDefaultSource::DialogueState => (EpistemicState::Inferred, 7_000),
+    };
+
+    EpistemicEntry {
+        subject: subject.into(),
+        state,
+        source: EpistemicSource::RuntimeDefault,
+        confidence_basis_points,
     }
 }
 
@@ -203,6 +224,30 @@ mod tests {
 
         assert_eq!(entry.state, EpistemicState::Stale);
         assert_eq!(entry.source, EpistemicSource::ModelProfile);
+    }
+
+    #[test]
+    fn turn_defaults_map_to_runtime_default_epistemic_state() {
+        let configured = epistemic_entry_for_turn_default(
+            "configured_delivery_target",
+            TurnDefaultSource::ConfiguredChannel,
+        );
+        let profile = epistemic_entry_for_turn_default(
+            "profile_delivery_target",
+            TurnDefaultSource::UserProfile,
+        );
+        let dialogue = epistemic_entry_for_turn_default(
+            "recent_delivery_target",
+            TurnDefaultSource::DialogueState,
+        );
+
+        assert_eq!(configured.state, EpistemicState::Known);
+        assert_eq!(configured.source, EpistemicSource::RuntimeDefault);
+        assert_eq!(configured.confidence_basis_points, 9_500);
+        assert_eq!(profile.state, EpistemicState::Known);
+        assert_eq!(profile.confidence_basis_points, 8_000);
+        assert_eq!(dialogue.state, EpistemicState::Inferred);
+        assert_eq!(dialogue.confidence_basis_points, 7_000);
     }
 
     #[test]

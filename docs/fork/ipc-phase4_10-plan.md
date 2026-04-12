@@ -1943,14 +1943,18 @@ Expected outcome:
     - retrieval reranking and resolution-plan evidence consume epistemic
       memory state, so weak/needs-verification memory is penalized before it
       can outrank stronger anchors
+    - session handoff `current_defaults` now includes runtime-default
+      epistemic metadata (`state/source/confidence`) for profile/configured/
+      dialogue-derived defaults, so route switches do not carry those facts as
+      undifferentiated strings
     - domain tests cover stale model-profile facts and low-confidence memory
       requiring verification, plus epistemic rerank and resolution-score
       adjustment
   - still open:
     - self-repair does not yet consume epistemic state directly beyond the
       runtime assumption ledger freshness/confidence fields
-    - delivery/runtime defaults and external recency-sensitive facts are not
-      fully projected through the same epistemic surface yet
+    - external recency-sensitive facts are not fully projected through the same
+      epistemic surface yet
 - expected outcome:
   - fewer overconfident wrong decisions
   - better contradiction handling
