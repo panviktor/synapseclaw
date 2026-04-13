@@ -16,6 +16,8 @@ import {
   PanelRightOpen,
   Orbit,
   Sparkles,
+  Paperclip,
+  X,
 } from 'lucide-react';
 import type {
   WsMessage,
@@ -26,6 +28,7 @@ import type {
   ContextBudgetResponse,
   MemoryProjectionsResponse,
   PostTurnReportEvent,
+  InboundMediaAttachment,
 } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
@@ -38,6 +41,7 @@ import {
   getMemoryStats,
   getContextBudget,
   getMemoryProjections,
+  uploadChatMedia,
   type AgentEntry,
 } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
@@ -62,12 +66,65 @@ interface ChatMessage {
   event_type?: string;
 }
 
+interface PendingAttachment {
+  id: string;
+  attachment: InboundMediaAttachment;
+  size: number;
+}
+
 function toCache(msg: ChatMessage) {
   return { id: msg.id, role: msg.role, content: msg.content, timestamp: msg.timestamp.getTime(), event_type: msg.event_type };
 }
 
 function fromCache(msg: { id: string; role: 'user' | 'agent'; content: string; timestamp: number; event_type?: string }): ChatMessage {
   return { id: msg.id, role: msg.role, content: msg.content, timestamp: new Date(msg.timestamp), event_type: msg.event_type };
+}
+
+function mediaAttachmentLabel(attachment: InboundMediaAttachment): string {
+  const label = attachment.label?.trim();
+  if (label) return label;
+  const rawName = attachment.uri.split(/[\\/]/).pop()?.split('?')[0]?.trim();
+  if (!rawName) return 'attachment';
+  try {
+    return decodeURIComponent(rawName);
+  } catch {
+    return rawName;
+  }
+}
+
+function mediaAttachmentKindLabel(kind: InboundMediaAttachment['kind']): string {
+  switch (kind) {
+    case 'image':
+      return 'image';
+    case 'audio':
+      return 'audio';
+    case 'video':
+      return 'video';
+    default:
+      return 'file';
+  }
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit] ?? 'B'}`;
+}
+
+function formatChatInputForDisplay(text: string, attachments: InboundMediaAttachment[]): string {
+  if (attachments.length === 0) return text;
+  const attachmentLines = attachments.map(
+    (attachment) => `[${mediaAttachmentKindLabel(attachment.kind)}] ${mediaAttachmentLabel(attachment)}`,
+  );
+  return [text || 'Attached file(s)', attachmentLines.join('\n')]
+    .filter((part) => part.trim().length > 0)
+    .join('\n\n');
 }
 
 export default function AgentChat() {
@@ -96,6 +153,8 @@ export default function AgentChat() {
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState(false);
   const [localSessionCount, setLocalSessionCount] = useState(0);
   const [localHasActiveRun, setLocalHasActiveRun] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const { events: learningEvents } = useSSE({
     filterTypes: ['post_turn_report'],
     maxEvents: 50,
@@ -104,12 +163,15 @@ export default function AgentChat() {
   const wsRef = useRef<WebSocketClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
   const pendingContentRef = useRef('');
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
+  const activeAgentRef = useRef(activeAgent);
+  activeAgentRef.current = activeAgent;
 
   useEffect(() => {
     if (!activeSession) {
@@ -150,6 +212,10 @@ export default function AgentChat() {
       localStorage.setItem('synapseclaw_active_agent', agentFromUrl);
     }
   }, [agentFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setPendingAttachments([]);
+  }, [activeAgent]);
 
   useEffect(() => {
     if (activeSession) {
@@ -448,6 +514,7 @@ export default function AgentChat() {
       }
       setMessages([]);
       setSessions([]);
+      setPendingAttachments([]);
       setSearchParams({}, { replace: true });
     },
     [setSearchParams],
@@ -475,7 +542,8 @@ export default function AgentChat() {
 
   const handleSend = async () => {
     const trimmed = input.trim();
-    if (!trimmed || !wsRef.current?.connected) return;
+    const mediaAttachments = pendingAttachments.map((item) => item.attachment);
+    if ((!trimmed && mediaAttachments.length === 0) || !wsRef.current?.connected || uploadingMedia) return;
 
     let sendSession = activeSession;
     if (!sendSession) {
@@ -491,10 +559,11 @@ export default function AgentChat() {
       }
     }
 
+    const displayContent = formatChatInputForDisplay(trimmed, mediaAttachments);
     const chatMsg: ChatMessage = {
       id: generateUUID(),
       role: 'user',
-      content: trimmed,
+      content: displayContent,
       timestamp: new Date(),
       event_type: 'user',
     };
@@ -506,7 +575,7 @@ export default function AgentChat() {
 
     wsRef.current.rpc<{ run_id: string; response?: string; aborted?: boolean }>(
       'chat.send',
-      { session: sendSession, message: trimmed },
+      { session: sendSession, message: trimmed, media_attachments: mediaAttachments },
       300000,
     ).then((res) => {
       if (res.aborted) {
@@ -549,6 +618,7 @@ export default function AgentChat() {
     });
 
     setInput('');
+    setPendingAttachments([]);
     if (activeSession) clearSessionDraft(activeSession);
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
@@ -579,6 +649,38 @@ export default function AgentChat() {
     e.target.style.height = 'auto';
     e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
   };
+
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
+
+    const uploadAgent = activeAgent;
+    setUploadingMedia(true);
+    setError(null);
+    try {
+      const uploaded = await Promise.all(
+        files.map(async (file) => ({
+          id: generateUUID(),
+          attachment: await uploadChatMedia(file, activeAgent),
+          size: file.size,
+        })),
+      );
+      if (activeAgentRef.current !== uploadAgent) return;
+      setPendingAttachments((prev) => [...prev, ...uploaded]);
+    } catch (err) {
+      if (activeAgentRef.current !== uploadAgent) return;
+      setError(`Upload failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    } finally {
+      if (activeAgentRef.current === uploadAgent) {
+        setUploadingMedia(false);
+      }
+    }
+  }, [activeAgent]);
+
+  const handleRemoveAttachment = useCallback((id: string) => {
+    setPendingAttachments((prev) => prev.filter((item) => item.id !== id));
+  }, []);
 
   const handleCopy = useCallback((msgId: string, content: string) => {
     navigator.clipboard.writeText(content).then(() => {
@@ -993,18 +1095,57 @@ export default function AgentChat() {
                     )}
                   </div>
                   <div className="flex-1">
+                    {pendingAttachments.length > 0 && (
+                      <div className="mb-2 flex flex-wrap gap-2">
+                        {pendingAttachments.map((item) => (
+                          <span
+                            key={item.id}
+                            className="inline-flex max-w-[260px] items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs text-[var(--text-secondary)]"
+                          >
+                            <span className="truncate">
+                              {mediaAttachmentLabel(item.attachment)} · {mediaAttachmentKindLabel(item.attachment.kind)}
+                              {item.size > 0 ? ` · ${formatBytes(item.size)}` : ''}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAttachment(item.id)}
+                              className="rounded-full p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                              aria-label={`Remove ${mediaAttachmentLabel(item.attachment)}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <textarea
                       ref={inputRef}
                       rows={1}
                       value={input}
                       onChange={handleTextareaChange}
                       onKeyDown={handleKeyDown}
-                      placeholder={connected ? 'Type a message...' : 'Connecting...'}
+                      placeholder={connected ? 'Type a message or attach files...' : 'Connecting...'}
                       disabled={!connected}
                       className="input-warm w-full resize-none overflow-y-auto px-4 py-3 text-sm disabled:opacity-40"
                       style={{ minHeight: '44px', maxHeight: '200px' }}
                     />
                   </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFileSelect}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!connected || uploadingMedia}
+                    className="flex-shrink-0 rounded-xl border border-[var(--border-default)] bg-[var(--bg-secondary)] p-3 text-[var(--text-muted)] transition-colors hover:border-[var(--accent-primary)]/30 hover:text-[var(--text-primary)] disabled:pointer-events-none disabled:opacity-40"
+                    title={uploadingMedia ? 'Uploading...' : 'Attach files'}
+                  >
+                    <Paperclip className={`h-5 w-5 ${uploadingMedia ? 'animate-pulse' : ''}`} />
+                  </button>
                   {typing ? (
                     <button
                       onClick={handleAbort}
@@ -1016,7 +1157,7 @@ export default function AgentChat() {
                   ) : (
                     <button
                       onClick={handleSend}
-                      disabled={!connected || !input.trim()}
+                      disabled={!connected || uploadingMedia || (!input.trim() && pendingAttachments.length === 0)}
                       className="btn-primary flex-shrink-0 rounded-xl p-3"
                     >
                       <Send className="h-5 w-5" />

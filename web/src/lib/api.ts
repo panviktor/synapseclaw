@@ -14,6 +14,7 @@ import type {
   MemoryStatsResponse,
   ContextBudgetResponse,
   MemoryProjectionsResponse,
+  InboundMediaAttachment,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 
@@ -171,6 +172,18 @@ export function putSummaryModel(model: string | null, agentId?: string | null): 
     method: 'PUT',
     body: JSON.stringify({ model }),
   });
+}
+
+export function uploadChatMedia(file: File, agentId?: string | null): Promise<InboundMediaAttachment> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  const path = agentId
+    ? `/api/agents/${encodeURIComponent(agentId)}/chat/media`
+    : '/api/chat/media';
+  return apiFetch<{ attachment: InboundMediaAttachment }>(path, {
+    method: 'POST',
+    body,
+  }).then((data) => data.attachment);
 }
 
 // ---------------------------------------------------------------------------

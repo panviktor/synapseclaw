@@ -5,7 +5,7 @@
 use super::AppState;
 use axum::{
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Multipart, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
 };
@@ -3381,6 +3381,112 @@ pub async fn handle_api_agent_chat_messages_proxy(
             format!("Agent returned {}", resp.status()),
         )
             .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// POST /api/agents/:agent_id/chat/media — proxy chat media upload to agent.
+pub async fn handle_api_agent_chat_media_upload_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let mut form = reqwest::multipart::Form::new();
+    while let Some(field) = match multipart.next_field().await {
+        Ok(field) => field,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid media upload multipart body: {error}"),
+            )
+                .into_response()
+        }
+    } {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name.is_empty() {
+            continue;
+        }
+
+        let file_name = field.file_name().map(str::to_string);
+        let content_type = field.content_type().map(str::to_string);
+        if field_name == "file" || file_name.is_some() {
+            let bytes = match field.bytes().await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid media upload file field: {error}"),
+                    )
+                        .into_response()
+                }
+            };
+            let mut part = reqwest::multipart::Part::bytes(bytes.to_vec());
+            if let Some(file_name) = file_name {
+                part = part.file_name(file_name);
+            }
+            if let Some(content_type) = content_type {
+                part = match part.mime_str(&content_type) {
+                    Ok(part) => part,
+                    Err(error) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            format!("Invalid media upload content type: {error}"),
+                        )
+                            .into_response()
+                    }
+                };
+            }
+            form = form.part(field_name, part);
+        } else {
+            let text = match field.text().await {
+                Ok(text) => text,
+                Err(error) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Invalid media upload text field: {error}"),
+                    )
+                    .into_response()
+                }
+            };
+            form = form.text(field_name, text);
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_default();
+    let url = format!("{}/api/chat/media", agent.gateway_url.trim_end_matches('/'));
+    match client
+        .post(&url)
+        .bearer_auth(&agent.proxy_token)
+        .multipart(form)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("failed to read agent response: {error}"));
+            let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            (status, body).into_response()
+        }
         Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
     }
 }

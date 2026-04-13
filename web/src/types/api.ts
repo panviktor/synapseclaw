@@ -326,6 +326,15 @@ export interface WsMessage {
   tool_name?: string;
 }
 
+export type InboundMediaKind = 'image' | 'audio' | 'video' | 'file';
+
+export interface InboundMediaAttachment {
+  kind: InboundMediaKind;
+  uri: string;
+  mime_type?: string | null;
+  label?: string | null;
+}
+
 export interface ChatSessionInfo {
   key: string;
   kind?: 'web' | 'channel' | 'ipc';
