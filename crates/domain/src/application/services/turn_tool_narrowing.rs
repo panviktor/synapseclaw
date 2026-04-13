@@ -57,21 +57,12 @@ pub fn narrow_tool_specs_for_turn(
             .filter(|spec| {
                 matches!(
                     spec.runtime_role,
-                    Some(
-                        ToolRuntimeRole::ProfileMutation
-                            | ToolRuntimeRole::MemoryMutation
-                            | ToolRuntimeRole::RuntimeStateInspection
-                            | ToolRuntimeRole::ExternalLookup
-                    )
+                    Some(ToolRuntimeRole::RuntimeStateInspection)
                 )
             })
             .cloned()
             .collect::<Vec<_>>();
-        return if filtered.is_empty() {
-            Vec::new()
-        } else {
-            filtered
-        };
+        return filtered;
     }
 
     if guidance.direct_resolution_ready
@@ -101,7 +92,8 @@ pub fn narrow_tool_specs_for_turn(
             .filter(|spec| {
                 matches!(
                     spec.runtime_role,
-                    Some(ToolRuntimeRole::ProfileMutation) | Some(ToolRuntimeRole::ExternalLookup)
+                    Some(ToolRuntimeRole::RuntimeStateInspection)
+                        | Some(ToolRuntimeRole::ExternalLookup)
                 )
             })
             .cloned()
@@ -350,8 +342,9 @@ mod tests {
             spec("user_profile", Some(ToolRuntimeRole::ProfileMutation)),
             spec("session_search", Some(ToolRuntimeRole::HistoricalLookup)),
             spec("file_read", Some(ToolRuntimeRole::WorkspaceDiscovery)),
-            spec("memory_recall", Some(ToolRuntimeRole::MemoryMutation)),
+            spec("memory_recall", Some(ToolRuntimeRole::HistoricalLookup)),
             spec("web_search_tool", Some(ToolRuntimeRole::ExternalLookup)),
+            spec("state_get", Some(ToolRuntimeRole::RuntimeStateInspection)),
         ];
         let guidance = ExecutionGuidance {
             direct_resolution_ready: true,
@@ -365,7 +358,7 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["user_profile", "web_search_tool"]);
+        assert_eq!(names, vec!["web_search_tool", "state_get"]);
     }
 
     #[test]
@@ -390,13 +383,14 @@ mod tests {
     }
 
     #[test]
-    fn answer_from_resolved_state_keeps_only_safe_runtime_tools() {
+    fn answer_from_resolved_state_keeps_only_runtime_inspection_tools() {
         let specs = vec![
             spec("core_memory_update", Some(ToolRuntimeRole::MemoryMutation)),
             spec("user_profile", Some(ToolRuntimeRole::ProfileMutation)),
             spec("memory_recall", Some(ToolRuntimeRole::HistoricalLookup)),
             spec("web_search_tool", Some(ToolRuntimeRole::ExternalLookup)),
             spec("file_read", Some(ToolRuntimeRole::WorkspaceDiscovery)),
+            spec("state_get", Some(ToolRuntimeRole::RuntimeStateInspection)),
         ];
         let guidance = ExecutionGuidance {
             direct_resolution_ready: true,
@@ -410,10 +404,27 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec!["core_memory_update", "user_profile", "web_search_tool",]
-        );
+        assert_eq!(names, vec!["state_get"]);
+    }
+
+    #[test]
+    fn answer_from_resolved_state_exposes_no_tools_when_only_mutating_tools_exist() {
+        let specs = vec![
+            spec("memory_store", Some(ToolRuntimeRole::MemoryMutation)),
+            spec("memory_forget", Some(ToolRuntimeRole::MemoryMutation)),
+            spec("core_memory_update", Some(ToolRuntimeRole::MemoryMutation)),
+            spec("user_profile", Some(ToolRuntimeRole::ProfileMutation)),
+        ];
+        let guidance = ExecutionGuidance {
+            direct_resolution_ready: true,
+            prefer_answer_from_resolved_state: true,
+            recent_failure_hints: Vec::new(),
+            ..ExecutionGuidance::default()
+        };
+
+        let filtered = narrow_tool_specs_for_turn(specs, Some(&guidance), "");
+
+        assert!(filtered.is_empty());
     }
 
     #[test]

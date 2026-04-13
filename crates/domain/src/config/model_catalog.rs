@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_preset_has_auxiliary_lanes() {
+    fn openrouter_preset_has_auxiliary_and_media_lanes() {
         let lanes = preset_extra_lanes("openrouter").expect("preset should exist");
         assert!(lanes
             .iter()
@@ -707,10 +707,22 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::ImageGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::AudioGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::MusicGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
     }
 
     #[test]
-    fn openrouter_catalog_exposes_gemma_standard_profiles_pricing_and_aliases() {
+    fn openrouter_catalog_exposes_standard_media_and_minimax_profiles_pricing_and_aliases() {
         let curated = provider_curated_models("openrouter").expect("provider should exist");
         assert!(curated
             .iter()
@@ -719,6 +731,16 @@ mod tests {
             .iter()
             .any(|(model, _)| model == "google/gemma-4-26b-a4b-it"));
         assert!(curated.iter().any(|(model, _)| model == "x-ai/grok-4.20"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "minimax/minimax-m2.7"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "sourceful/riverflow-v2-fast"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "google/lyria-3-clip-preview"));
+        assert!(curated.iter().any(|(model, _)| model == "google/veo-3.1"));
 
         let pricing = default_pricing_table();
         let price = pricing
@@ -734,6 +756,11 @@ mod tests {
         let price = pricing.get("x-ai/grok-4.20").expect("pricing should exist");
         assert_eq!(price.input, 2.0);
         assert_eq!(price.output, 6.0);
+        let price = pricing
+            .get("minimax/minimax-m2.7")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.30);
+        assert_eq!(price.output, 1.20);
 
         let profile =
             model_profile("openrouter", "google/gemma-4-31b-it").expect("profile should exist");
@@ -772,19 +799,121 @@ mod tests {
             Some(CatalogModelProfileSource::BundledCatalog)
         );
 
+        let profile =
+            model_profile("openrouter", "minimax/minimax-m2.7").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(204_800));
+        assert_eq!(profile.max_output_tokens, Some(131_072));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert!(!profile.features.contains(&ModelFeature::VideoGeneration));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let profile = model_profile("openrouter", "google/gemini-3.1-flash-image-preview")
+            .expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::ImageGeneration));
+        assert!(profile
+            .features
+            .contains(&ModelFeature::MultimodalUnderstanding));
+
+        let profile = model_profile("openrouter", "sourceful/riverflow-v2-fast")
+            .expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(8_192));
+        assert!(profile.features.contains(&ModelFeature::ImageGeneration));
+
+        let profile =
+            model_profile("openrouter", "openai/gpt-audio-mini").expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::AudioGeneration));
+
+        let profile = model_profile("openrouter", "google/lyria-3-clip-preview")
+            .expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::MusicGeneration));
+
+        let profile = model_profile("openrouter", "google/veo-3.1").expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::VideoGeneration));
+
         let aliases = route_aliases();
         assert!(aliases.iter().any(|route| route.hint == "gemma31b"));
         assert!(aliases.iter().any(|route| route.hint == "gemma26b"));
         assert!(aliases.iter().any(|route| route.hint == "grok420"));
+        assert!(aliases.iter().any(|route| route.hint == "minimax"));
+        assert!(aliases.iter().any(|route| route.hint == "media-video"));
+        assert!(aliases
+            .iter()
+            .any(|route| route.hint == "media-image-small"));
         let alias = route_alias("gemma31b").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "google/gemma-4-31b-it");
         let alias = route_alias("grok-4.20").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "x-ai/grok-4.20");
+        let alias = route_alias("minimax").expect("alias should exist");
+        assert_eq!(alias.provider, "openrouter");
+        assert_eq!(alias.model, "minimax/minimax-m2.7");
+        let alias = route_alias("media-video").expect("alias should exist");
+        assert_eq!(alias.capability, Some(CapabilityLane::VideoGeneration));
+        assert_eq!(alias.provider, "openrouter");
         let alias = route_alias("qwen36").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "qwen/qwen3.6-plus");
+    }
+
+    #[test]
+    fn direct_deepseek_profiles_keep_context_budget_from_falling_back_to_unknown_window() {
+        let pricing = default_pricing_table();
+        let price = pricing.get("deepseek-chat").expect("pricing should exist");
+        assert_eq!(price.input, 0.28);
+        assert_eq!(price.output, 0.42);
+        let price = pricing
+            .get("deepseek-reasoner")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.28);
+        assert_eq!(price.output, 0.42);
+
+        let profile = model_profile("deepseek", "deepseek-chat").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(8_192));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let profile = model_profile("deepseek", "deepseek-reasoner").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(65_536));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+    }
+
+    #[test]
+    fn openai_codex_profiles_keep_primary_route_out_of_unknown_tiny_window() {
+        let profile = model_profile("openai-codex", "gpt-5.4").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(400_000));
+        assert_eq!(profile.max_output_tokens, Some(128_000));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert!(profile.features.contains(&ModelFeature::ServerContinuation));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let mini = model_profile("openai-codex", "gpt-5.4-mini").expect("profile should exist");
+        assert_eq!(mini.context_window_tokens, Some(400_000));
+        assert_eq!(mini.max_output_tokens, Some(128_000));
+
+        let openai = model_profile("openai", "gpt-5.4").expect("profile should exist");
+        assert_eq!(openai.context_window_tokens, Some(400_000));
+        assert!(openai.features.contains(&ModelFeature::PromptCaching));
+        assert!(!openai.features.contains(&ModelFeature::ServerContinuation));
     }
 
     #[test]

@@ -258,22 +258,22 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile> {
         let endpoint = self.endpoint_for_provider(provider);
         let candidates = self.provider_lookup_candidates(provider);
-        candidates
+        let cached = candidates.iter().find_map(|candidate_provider| {
+            load_cached_model_profile(
+                self.workspace_dir.as_path(),
+                candidate_provider,
+                model,
+                endpoint,
+            )
+        });
+        let bundled = candidates
             .iter()
             .find_map(|candidate_provider| {
-                load_cached_model_profile(
-                    self.workspace_dir.as_path(),
-                    candidate_provider,
-                    model,
-                    endpoint,
-                )
+                synapse_domain::config::model_catalog::model_profile(candidate_provider, model)
             })
-            .or_else(|| {
-                candidates.iter().find_map(|candidate_provider| {
-                    synapse_domain::config::model_catalog::model_profile(candidate_provider, model)
-                })
-            })
-            .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
+            .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model));
+
+        merge_cached_and_bundled_profile(cached, bundled)
     }
 
     fn record_context_limit_observation(
@@ -289,6 +289,35 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
             observation,
         )
     }
+}
+
+fn merge_cached_and_bundled_profile(
+    cached: Option<CatalogModelProfile>,
+    bundled: Option<CatalogModelProfile>,
+) -> Option<CatalogModelProfile> {
+    let Some(mut cached) = cached else {
+        return bundled;
+    };
+    let Some(bundled) = bundled else {
+        return Some(cached);
+    };
+    if cached.context_window_tokens.is_none()
+        && cached.max_output_tokens.is_none()
+        && cached.features.is_empty()
+    {
+        return Some(bundled);
+    }
+
+    if cached.context_window_tokens.is_none() {
+        cached.context_window_tokens = bundled.context_window_tokens;
+    }
+    if cached.max_output_tokens.is_none() {
+        cached.max_output_tokens = bundled.max_output_tokens;
+    }
+    if cached.features.is_empty() {
+        cached.features = bundled.features;
+    }
+    Some(cached)
 }
 
 pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Config) -> String {
@@ -1684,6 +1713,45 @@ mod tests {
         assert!(profile
             .features
             .contains(&ModelFeature::MultimodalUnderstanding));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_does_not_let_empty_cache_shadow_bundled_profile() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "deepseek",
+                  "fetched_at_unix": 100,
+                  "models": ["deepseek-reasoner"],
+                  "profiles": [
+                    {
+                      "model": "deepseek-reasoner",
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let catalog = WorkspaceModelProfileCatalog::new(workspace.path());
+
+        let profile = catalog
+            .lookup_model_profile("deepseek", "deepseek-reasoner")
+            .expect("bundled DeepSeek profile should fill empty cache profile");
+
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(65_536));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
     }
 
     #[test]

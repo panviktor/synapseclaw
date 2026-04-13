@@ -2400,6 +2400,28 @@ Expected outcome:
 
 ## Validation
 
+The expanded slice-by-slice closeout matrix is tracked in
+[Phase 4.10 Test Matrix](./ipc-phase4_10-test-matrix.md). Use it as the
+execution checklist before declaring the phase fully validated.
+
+4.10 live validation now also covers model switching and an optional expensive
+context-overflow switch case. OpenRouter MiniMax is tracked as a text/tool route
+(`minimax/minimax-m2.7`) only; audio/video/music generation stays on explicit
+OpenRouter media-capable profiles, while MiniMax direct media models are reserved
+for a future provider/tool adapter.
+
+OpenRouter image-generation validation is no longer admission-only: the
+OpenRouter provider now sends typed `modalities` from the catalog profile and
+maps `message.images` into the existing `[IMAGE:data:image/...]` delivery
+marker. Audio/video/music remain capability-routed but still need
+artifact-specific delivery follow-through before they are treated as fully
+implemented media artifact paths.
+
+The heavy long-dialogue test should not require compaction when the selected
+route has a large healthy context window. Use `REQUIRE_COMPACTION_SIGNAL=1` only
+for a dedicated compaction-pressure scenario; otherwise the heavy test validates
+semantic retention, memory hygiene signals, and context telemetry.
+
 ### Context economy checks
 
 - ordinary memory-setting turns should not read bootstrap docs

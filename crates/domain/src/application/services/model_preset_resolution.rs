@@ -252,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openrouter_preset_expands_into_reasoning_cheap_and_embedding_lanes() {
+    fn openrouter_preset_expands_into_reasoning_helper_and_media_lanes() {
         let mut config = Config::default();
         config.default_provider = Some("openrouter".into());
         config.default_model =
@@ -261,7 +261,7 @@ mod tests {
 
         let lanes = resolve_effective_model_lanes(&config);
 
-        assert_eq!(lanes.len(), 3);
+        assert_eq!(lanes.len(), 7);
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Reasoning));
@@ -271,6 +271,18 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::ImageGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::AudioGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::MusicGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
     }
 
     #[test]
