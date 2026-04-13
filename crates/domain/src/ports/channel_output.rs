@@ -64,3 +64,46 @@ pub trait ChannelOutputPort: Send + Sync {
         Ok(())
     }
 }
+
+pub struct NoopChannelOutput;
+
+#[async_trait]
+impl ChannelOutputPort for NoopChannelOutput {
+    async fn send_message(
+        &self,
+        _recipient: &str,
+        _text: &str,
+        _thread_ref: Option<&str>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn start_typing(&self, _recipient: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn stop_typing(&self, _recipient: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn add_reaction(&self, _recipient: &str, _message_id: &str, _emoji: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn remove_reaction(
+        &self,
+        _recipient: &str,
+        _message_id: &str,
+        _emoji: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn fetch_message_text(&self, _message_id: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+}

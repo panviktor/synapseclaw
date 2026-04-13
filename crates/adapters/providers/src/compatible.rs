@@ -1109,6 +1109,7 @@ impl OpenAiCompatibleProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            media_artifacts: Vec::new(),
         })
     }
 
@@ -1509,6 +1510,7 @@ impl Provider for OpenAiCompatibleProvider {
             tool_calls,
             usage,
             reasoning_content,
+            media_artifacts: Vec::new(),
         })
     }
 
@@ -1573,7 +1575,8 @@ impl Provider for OpenAiCompatibleProvider {
                             tool_calls: vec![],
                             usage: None,
                             reasoning_content: None,
-                        })
+                                                    media_artifacts: Vec::new(),
+})
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
                                 "{} native chat transport error: {sanitized} (responses retry failed: {responses_err})",
@@ -1610,7 +1613,8 @@ impl Provider for OpenAiCompatibleProvider {
                         tool_calls: vec![],
                         usage: None,
                         reasoning_content: None,
-                    })
+                                            media_artifacts: Vec::new(),
+})
                     .map_err(|responses_err| {
                         anyhow::anyhow!(
                             "{} API error ({status}): {sanitized} (chat completions unavailable; responses retry failed: {responses_err})",
@@ -2273,6 +2277,7 @@ mod tests {
                 }),
             }]),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
 
         let parsed = OpenAiCompatibleProvider::parse_native_response(message).unwrap();
@@ -2961,6 +2966,7 @@ mod tests {
         let message = ResponseMessage {
             content: Some("hello".to_string()),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
             tool_calls: None,
         };
 

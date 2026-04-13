@@ -14,7 +14,7 @@ pub struct CurrentConversationContext {
     /// Channel adapter name: "telegram", "matrix", "slack", "web", etc.
     pub source_adapter: String,
     /// History/conversation key for session lookup.
-    pub conversation_ref: String,
+    pub conversation_id: String,
     /// Platform-specific reply target (chat_id, room_id, etc.).
     pub reply_ref: String,
     /// Thread ID for threaded replies (optional).
@@ -96,7 +96,7 @@ mod tests {
     fn context_to_explicit_snapshot() {
         let ctx = CurrentConversationContext {
             source_adapter: "telegram".into(),
-            conversation_ref: "tg_12345".into(),
+            conversation_id: "tg_12345".into(),
             reply_ref: "12345".into(),
             thread_ref: None,
             actor_id: "user1".into(),

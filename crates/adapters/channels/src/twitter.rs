@@ -288,6 +288,7 @@ impl Channel for TwitterChannel {
                                     .get("conversation_id")
                                     .and_then(|c| c.as_str())
                                     .map(|s| s.to_string()),
+                                media_attachments: Vec::new(),
                             };
 
                             if tx.send(channel_msg).await.is_err() {

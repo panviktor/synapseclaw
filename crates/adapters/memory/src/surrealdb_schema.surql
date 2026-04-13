@@ -246,9 +246,13 @@ DEFINE INDEX IF NOT EXISTS idx_chs_key ON channel_session FIELDS session_key;
 
 DEFINE TABLE IF NOT EXISTS channel_session_meta SCHEMALESS;
 DEFINE FIELD IF NOT EXISTS session_key ON channel_session_meta TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS label ON channel_session_meta TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS current_goal ON channel_session_meta TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON channel_session_meta TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS last_activity ON channel_session_meta TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS message_count ON channel_session_meta TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS input_tokens ON channel_session_meta TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS output_tokens ON channel_session_meta TYPE option<int>;
 DEFINE INDEX IF NOT EXISTS idx_csm_key ON channel_session_meta FIELDS session_key UNIQUE;
 
 -- ═══════════════════════════════════════════

@@ -434,8 +434,6 @@ properties.tags = { type = "array", items = { type = "string" } }
 conditional = [
     { field = "/body", operator = "ne", value = "", target = "review" },
 ]
-fallback = "research"
-
 [[steps]]
 id = "review"
 agent_id = "marketing-lead"
@@ -457,8 +455,6 @@ properties.feedback = { type = "string" }
 conditional = [
     { field = "/approved", operator = "eq", value = true, target = "publish" },
 ]
-fallback = "draft"
-
 [[steps]]
 id = "publish"
 agent_id = "publisher"
@@ -567,10 +563,7 @@ priority = 40
 name = "ipc-tasks"
 rule.field_equals = { field = "metadata.kind", value = "task" }
 target = "task-router"
-priority = 50
-
-fallback = "marketing-lead"
-```
+priority = 50```
 
 ---
 

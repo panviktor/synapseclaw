@@ -384,6 +384,7 @@ impl EmailChannel {
                 channel: "email".to_string(),
                 timestamp: email.timestamp,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             };
 
             if tx.send(msg).await.is_err() {

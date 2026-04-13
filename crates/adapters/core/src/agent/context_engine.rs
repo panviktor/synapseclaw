@@ -4,7 +4,10 @@ use synapse_domain::application::services::model_lane_resolution::ResolvedModelP
 use synapse_domain::application::services::provider_context_budget::{
     provider_context_prune_policy, ProviderContextBudgetInput,
 };
-use synapse_observability::ProviderContextStats;
+use synapse_domain::ports::context_engine::{
+    ContextEnginePort, ProviderPromptContextStats, ProviderPromptSnapshot,
+    ProviderPromptSnapshotInput,
+};
 use synapse_providers::{ChatMessage, ConversationMessage, ToolCall, ToolResultMessage};
 
 const COMPACT_TOOL_RESULT_MAX_CHARS: usize = 320;
@@ -15,10 +18,28 @@ const PROVIDER_CONTEXT_RELEVANT_TAIL_MIN_MESSAGES: usize = 2;
 const PROVIDER_CONTEXT_PROTECT_FIRST_CHAT_MESSAGES: usize = 2;
 const PROVIDER_CONTEXT_QUERY_MIN_TERM_CHARS: usize = 4;
 
-#[derive(Debug, Clone)]
-pub(crate) struct ProviderPromptSnapshot {
-    pub(crate) messages: Vec<ChatMessage>,
-    pub(crate) stats: ProviderContextStats,
+pub(crate) struct AdapterContextEngine<'a> {
+    dispatcher: &'a dyn ToolDispatcher,
+}
+
+impl<'a> AdapterContextEngine<'a> {
+    pub(crate) fn new(dispatcher: &'a dyn ToolDispatcher) -> Self {
+        Self { dispatcher }
+    }
+}
+
+impl ContextEnginePort for AdapterContextEngine<'_> {
+    fn build_provider_prompt_snapshot(
+        &self,
+        input: ProviderPromptSnapshotInput<'_>,
+    ) -> ProviderPromptSnapshot {
+        build_provider_prompt_snapshot(
+            self.dispatcher,
+            input.history,
+            input.recent_chat_limit,
+            input.target_profile,
+        )
+    }
 }
 
 pub(crate) fn total_message_chars(messages: &[ChatMessage]) -> usize {
@@ -422,7 +443,7 @@ fn provider_context_stats_for_parts(
     system_messages: &[ChatMessage],
     prior_chat_messages: &[ChatMessage],
     current_turn_messages: &[ChatMessage],
-) -> ProviderContextStats {
+) -> ProviderPromptContextStats {
     let system_breakdown = system_message_breakdown_from_chat_messages(system_messages);
     let bootstrap_chars = lookup_section_chars(&system_breakdown, "bootstrap");
     let core_memory_chars = lookup_section_chars(&system_breakdown, "core_memory");
@@ -436,7 +457,7 @@ fn provider_context_stats_for_parts(
     let prior_chat_chars = total_message_chars(prior_chat_messages);
     let current_turn_chars = total_message_chars(current_turn_messages);
 
-    ProviderContextStats {
+    ProviderPromptContextStats {
         system_messages: system_messages.len(),
         system_chars,
         bootstrap_chars,
@@ -460,7 +481,7 @@ fn provider_context_stats_for_parts(
 }
 
 fn provider_context_budget_input_from_stats(
-    stats: &ProviderContextStats,
+    stats: &ProviderPromptContextStats,
 ) -> ProviderContextBudgetInput {
     ProviderContextBudgetInput {
         total_chars: stats.total_chars,
@@ -657,6 +678,7 @@ fn sanitize_message_for_provider(message: &ConversationMessage) -> ConversationM
             text,
             tool_calls,
             reasoning_content,
+            media_artifacts,
         } => ConversationMessage::AssistantToolCalls {
             text: text
                 .as_ref()
@@ -675,6 +697,7 @@ fn sanitize_message_for_provider(message: &ConversationMessage) -> ConversationM
             reasoning_content: reasoning_content
                 .as_ref()
                 .map(|value| truncate_with_head_tail(value, PROVIDER_ASSISTANT_TEXT_MAX_CHARS)),
+            media_artifacts: media_artifacts.clone(),
         },
         ConversationMessage::ToolResults(results) => ConversationMessage::ToolResults(
             results
@@ -815,6 +838,7 @@ mod tests {
                 arguments: "{\"path\":\"/tmp/demo\"}".to_string(),
             }],
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         }
     }
 

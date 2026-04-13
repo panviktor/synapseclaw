@@ -3,7 +3,7 @@
 //! This module replaces the raw TCP implementation with axum for:
 //! - Proper HTTP/1.1 parsing and compliance
 //! - Content-Length validation (handled by hyper)
-//! - Request body size limits (64KB max)
+//! - Request body size limits
 //! - Request timeouts (30s) to prevent slow-loris attacks
 //! - Header sanitization (handled by axum/hyper)
 
@@ -22,8 +22,8 @@ use crate::channels::{
 };
 use crate::cost::CostTracker;
 use crate::runtime;
-use crate::tools;
 use crate::tools::traits::ToolSpec;
+use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
@@ -37,7 +37,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::util::truncate_with_ellipsis;
 use synapse_infra::config_io::ConfigIO;
@@ -50,8 +50,9 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
-/// Maximum request body size (64KB) — prevents memory exhaustion
-pub const MAX_BODY_SIZE: usize = 65_536;
+/// Maximum request body size. Sized for web media upload; handlers still apply
+/// field-level validation before persisting uploaded bytes.
+pub const MAX_BODY_SIZE: usize = 25 * 1024 * 1024;
 /// Request timeout (30s) — prevents slow-loris attacks
 pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// Sliding window used by gateway rate limiting.
@@ -311,9 +312,8 @@ fn normalize_max_keys(configured: usize, fallback: usize) -> usize {
     }
 }
 
-/// An in-memory chat session (agent + metadata).
+/// In-memory web chat session metadata.
 pub struct ChatSession {
-    pub agent: crate::agent::Agent,
     pub created_at: std::time::Instant,
     pub last_active: std::time::Instant,
     pub label: Option<String>,
@@ -360,6 +360,10 @@ pub struct AppState {
     pub observer: Arc<dyn synapse_observability::Observer>,
     /// Registered tool specs (for web dashboard tools page)
     pub tools_registry: Arc<Vec<ToolSpec>>,
+    /// Runtime tool registry used by the unified web/channel agent runtime.
+    pub runtime_tools_registry: Arc<Vec<Box<dyn Tool>>>,
+    /// Deferred MCP activation set shared with web runtime tool_search.
+    pub runtime_mcp_activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     /// Cost tracker (optional, for web dashboard cost page)
     pub cost_tracker: Option<Arc<CostTracker>>,
     /// SSE broadcast channel for real-time events
@@ -411,6 +415,15 @@ pub struct AppState {
     pub provisioning_state: Arc<provisioning::ProvisioningState>,
     /// In-memory chat sessions keyed by session key (e.g. `web:<hash>:<id>`)
     pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
+    /// Web runtime conversation history keyed by canonical `ConversationIdentity`.
+    pub web_conversation_histories:
+        Arc<std::sync::Mutex<HashMap<String, Vec<synapse_providers::ChatMessage>>>>,
+    /// Web runtime route overrides keyed by canonical `ConversationIdentity`.
+    pub web_route_overrides: Arc<
+        std::sync::Mutex<HashMap<String, synapse_domain::ports::route_selection::RouteSelection>>,
+    >,
+    /// Provider cache shared by web runtime route switching.
+    pub provider_cache: Arc<std::sync::Mutex<HashMap<String, Arc<dyn Provider>>>>,
     /// Persistent chat database (SQLite)
     pub chat_db: Option<Arc<chat_db::ChatDb>>,
     /// Parsed admin CIDR allowlist for non-localhost admin access
@@ -421,7 +434,7 @@ pub struct AppState {
     pub ipc_push_dedup: Option<Arc<ipc::PushDedupSet>>,
     /// Signal channel for push notifications → inbox processor (agent-side)
     pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<ipc::PushMeta>>,
-    /// Channel session backend for JSONL/SQLite channel conversation persistence
+    /// Channel session backend for durable channel conversation persistence
     pub channel_session_backend: Option<Arc<dyn crate::channels::session_backend::SessionBackend>>,
     /// Phase 4.0: Channel adapter registry with long-lived cached instances
     pub channel_registry:
@@ -480,6 +493,13 @@ pub async fn run_gateway(
              [gateway] allow_public_bind = true in config.toml (NOT recommended)."
         );
     }
+    let channel_registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
+        channel_registry.unwrap_or_else(|| {
+            Arc::new(crate::channels::registry::CachedChannelRegistry::new(
+                config.clone(),
+                Arc::new(crate::channels::build_channel_by_id),
+            ))
+        });
     let config_state = Arc::new(Mutex::new(config.clone()));
 
     // ── Hooks ──────────────────────────────────────────────────────
@@ -548,35 +568,6 @@ pub async fn run_gateway(
     } else {
         (None, None)
     };
-
-    let (tools_registry_raw, _delegate_handle_gw, _) = tools::all_tools_with_runtime(
-        Arc::new(config.clone()),
-        &security,
-        runtime,
-        Arc::clone(&mem),
-        composio_key,
-        composio_entity_id,
-        &config.browser,
-        &config.http_request,
-        &config.web_fetch,
-        &config.workspace_dir,
-        &config.agents,
-        config.api_key.as_deref(),
-        &config,
-        None, // IPC tools get their own client from config
-        Some(agent_runner.clone()),
-        shared_surreal.clone(),
-        None,
-        None,
-        None,
-        None, // orchestration tool ports — gateway tools are for spec listing
-        None, // user_profile_store
-        None, // user_profile_context
-        None, // turn_defaults_context
-        None, // run_recipe_store
-    );
-    let tools_registry: Arc<Vec<ToolSpec>> =
-        Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
 
     // Cost tracker (optional)
     let cost_tracker = if config.cost.enabled {
@@ -888,6 +879,17 @@ pub async fn run_gateway(
         "web chat session persistence"
     );
 
+    let channel_session_backend =
+        crate::channels::build_channel_session_backend(&config, shared_surreal.as_ref())?;
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            channel_session_backend.clone(),
+        );
+    let runtime_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::composite_conversation_store(
+            vec![conversation_store.clone(), channel_conversation_store],
+        );
+
     // ── Phase 4.0: RunStorePort (SurrealDB-backed) ──
     let run_store: Option<Arc<dyn synapse_domain::ports::run_store::RunStorePort>> =
         shared_surreal.as_ref().map(|s| {
@@ -927,6 +929,67 @@ pub async fn run_gateway(
             config.workspace_dir.clone(),
         ),
     );
+    let user_profile_store: Arc<
+        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
+    > = if let Some(db) = shared_surreal.as_ref() {
+        Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
+    } else {
+        let profile_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("user_profiles.json");
+        Arc::new(
+            synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path)
+                .with_context(|| {
+                    format!(
+                        "failed to initialize persistent user profile store at {}",
+                        profile_path.display()
+                    )
+                })?,
+        )
+    };
+
+    let (mut tools_registry_raw, delegate_handle_gw, _) = tools::RuntimeToolRegistryFactory::build(
+        tools::RuntimeToolRegistryInputs {
+            config: Arc::new(config.clone()),
+            security: &security,
+            runtime,
+            memory: Arc::clone(&mem),
+            composio_key,
+            composio_entity_id,
+            browser_config: &config.browser,
+            http_config: &config.http_request,
+            web_fetch_config: &config.web_fetch,
+            workspace_dir: &config.workspace_dir,
+            agents: &config.agents,
+            default_api_key: config.api_key.as_deref(),
+            root_config: &config,
+        },
+        tools::RuntimeToolPorts {
+            shared_ipc_client: None,
+            agent_runner: Some(agent_runner.clone()),
+            cron_db: shared_surreal.clone(),
+            conversation_context: Some(shared_conversation_context.clone()),
+                conversation_store: runtime_conversation_store.clone(),
+            channel_registry: Some(Arc::clone(&channel_registry)),
+            standing_order_store: None,
+            user_profile_store: Some(Arc::clone(&user_profile_store)),
+            user_profile_context: Some(Arc::clone(&shared_user_profile_context)),
+            turn_defaults_context: Some(Arc::clone(&shared_turn_defaults_context)),
+            run_recipe_store: Some(Arc::clone(&run_recipe_store)),
+        },
+    );
+    let mcp_registration = tools::register_configured_mcp_tools(
+        &config,
+        &mut tools_registry_raw,
+        delegate_handle_gw.as_ref(),
+    )
+    .await;
+    let tools_registry: Arc<Vec<ToolSpec>> =
+        Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
+    let runtime_tools_registry = Arc::new(tools_registry_raw);
+    let runtime_mcp_activated_tools = mcp_registration.activated_tools;
 
     let mut state = AppState {
         config: config_state,
@@ -960,6 +1023,8 @@ pub async fn run_gateway(
         wati: wati_channel,
         observer: broadcast_observer,
         tools_registry,
+        runtime_tools_registry,
+        runtime_mcp_activated_tools,
         cost_tracker,
         event_tx,
         dialogue_state_store: Arc::new(
@@ -967,24 +1032,7 @@ pub async fn run_gateway(
             ),
         ),
         run_recipe_store,
-        user_profile_store: if let Some(db) = shared_surreal.as_ref() {
-            Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
-        } else {
-            let profile_path = config
-                .config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("user_profiles.json");
-            Arc::new(
-                synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path)
-                    .with_context(|| {
-                        format!(
-                            "failed to initialize persistent user profile store at {}",
-                            profile_path.display()
-                        )
-                    })?,
-            )
-        },
+        user_profile_store,
         conversation_context: shared_conversation_context,
         user_profile_context: shared_user_profile_context,
         turn_defaults_context: shared_turn_defaults_context,
@@ -1040,6 +1088,9 @@ pub async fn run_gateway(
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(admin_cidrs),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db,
         ipc_push_dispatcher: None, // initialized below after state is built
         ipc_push_dedup: if config.agents_ipc.enabled && config.agents_ipc.push_enabled {
@@ -1048,26 +1099,8 @@ pub async fn run_gateway(
             None
         },
         ipc_push_signal: None, // initialized below for agent-side inbox processor
-        channel_session_backend: if config.channels_config.session_persistence {
-            if let Some(ref db) = shared_surreal {
-                Some(Arc::new(
-                    crate::channels::session_surreal::SurrealSessionBackend::new(Arc::clone(db)),
-                )
-                    as Arc<dyn crate::channels::session_backend::SessionBackend>)
-            } else {
-                match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
-                    Ok(store) => Some(Arc::new(store)
-                        as Arc<dyn crate::channels::session_backend::SessionBackend>),
-                    Err(e) => {
-                        tracing::warn!("Channel session backend disabled: {e}");
-                        None
-                    }
-                }
-            }
-        } else {
-            None
-        },
-        channel_registry,
+        channel_session_backend,
+        channel_registry: Some(channel_registry),
         conversation_store,
         run_store: run_store.clone(),
         pipeline_store: None,    // initialized below if pipelines enabled
@@ -1208,15 +1241,9 @@ pub async fn run_gateway(
             .as_ref()
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| pipeline_dir.join("routing.toml"));
-        let routing_fallback = config
-            .pipelines
-            .routing_fallback
-            .clone()
-            .unwrap_or_else(|| "default".into());
         let message_router: Arc<dyn synapse_domain::ports::message_router::MessageRouterPort> =
             Arc::new(crate::routing::rule_chain::TomlMessageRouter::load(
                 &routing_path,
-                &routing_fallback,
             ));
 
         // Build tool middleware chain
@@ -1340,6 +1367,11 @@ pub async fn run_gateway(
             agent_health_poll_loop(poll_state).await;
         });
     }
+
+    let runtime_trace_state = state.clone();
+    tokio::spawn(async move {
+        runtime_trace_maintenance_loop(runtime_trace_state).await;
+    });
 
     // Agent-side: spawn inbox processor if this agent has IPC push support
     if config.agents_ipc.enabled
@@ -1555,6 +1587,7 @@ pub async fn run_gateway(
         .route("/api/tools", get(api::handle_api_tools))
         .route("/api/activity", get(api::handle_api_activity))
         .route("/api/chat/sessions", get(api::handle_api_chat_sessions))
+        .route("/api/chat/media", post(ws::handle_api_chat_media_upload))
         .route(
             "/api/chat/sessions/{key}/messages",
             get(api::handle_api_chat_session_messages),
@@ -1727,6 +1760,70 @@ async fn agent_health_poll_loop(state: AppState) {
                     );
                 }
             }
+        }
+    }
+}
+
+async fn runtime_trace_maintenance_loop(state: AppState) {
+    let interval = Duration::from_secs(
+        synapse_domain::application::services::runtime_trace_janitor::RUNTIME_TRACE_MAINTENANCE_INTERVAL_SECS,
+    );
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs() as i64);
+        let config_snapshot = state.config.lock().clone();
+        let history_compaction_cache =
+            crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+                &config_snapshot.workspace_dir,
+                &state.agent_id,
+            );
+        let snapshots = {
+            let Ok(routes) = state.web_route_overrides.lock() else {
+                tracing::debug!("Runtime trace maintenance skipped: web route lock poisoned");
+                continue;
+            };
+            routes
+                .iter()
+                .map(|(key, route)| (key.clone(), route.clone()))
+                .collect::<Vec<_>>()
+        };
+        let mut maintained_sessions = 0usize;
+        for (key, route_snapshot) in snapshots {
+            let context_cache =
+                crate::runtime_history_hygiene::route_effective_context_cache_stats(
+                    &config_snapshot.compression,
+                    config_snapshot.compression_overrides.as_slice(),
+                    history_compaction_cache.as_ref(),
+                    &route_snapshot,
+                )
+                .await;
+            let Ok(mut routes) = state.web_route_overrides.lock() else {
+                tracing::debug!("Runtime trace maintenance skipped: web route lock poisoned");
+                continue;
+            };
+            let Some(route) = routes.get_mut(&key) else {
+                continue;
+            };
+            if route.provider != route_snapshot.provider
+                || route.model != route_snapshot.model
+                || route.lane != route_snapshot.lane
+                || route.candidate_index != route_snapshot.candidate_index
+            {
+                continue;
+            }
+            route.context_cache = Some(context_cache);
+            route.run_runtime_trace_maintenance(now_unix);
+            maintained_sessions += 1;
+        }
+        if maintained_sessions > 0 {
+            tracing::trace!(
+                sessions = maintained_sessions,
+                "Runtime trace maintenance tick completed"
+            );
         }
     }
 }

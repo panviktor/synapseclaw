@@ -2,7 +2,7 @@
 //!
 //! Gives the agent a bounded task scratchpad instead of keeping plans
 //! implicit in chat history. Items are session-scoped (keyed by
-//! conversation_ref) and in-memory only.
+//! conversation_id) and in-memory only.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -43,7 +43,7 @@ impl TodoTool {
         self.context
             .as_ref()
             .and_then(|c| c.get_current())
-            .map(|c| c.conversation_ref)
+            .map(|c| c.conversation_id)
             .unwrap_or_else(|| "default".to_string())
     }
 

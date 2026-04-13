@@ -639,6 +639,7 @@ pub fn sanitize_tool_protocol_after_compaction(
                 text,
                 tool_calls,
                 reasoning_content,
+                media_artifacts,
             } => {
                 insert_missing_tool_result_stubs(
                     &mut sanitized,
@@ -650,6 +651,7 @@ pub fn sanitize_tool_protocol_after_compaction(
                     text,
                     tool_calls,
                     reasoning_content,
+                    media_artifacts,
                 });
             }
             ConversationMessage::ToolResults(results) => {
@@ -915,6 +917,7 @@ mod tests {
                     arguments: "{}".into(),
                 }],
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             },
             ConversationMessage::Chat(ChatMessage::assistant("after compaction")),
         ];

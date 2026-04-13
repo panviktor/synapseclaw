@@ -1,4 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
+use crate::outbound_media::resolve_outbound_media_uri;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -6,7 +7,10 @@ use reqwest::multipart::{Form, Part};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
@@ -54,6 +58,62 @@ impl DiscordChannel {
         let part = token.split('.').next()?;
         base64_decode(part)
     }
+}
+
+fn discord_attachment_kind(att: &serde_json::Value) -> InboundMediaKind {
+    let content_type = att
+        .get("content_type")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if content_type.starts_with("image/") {
+        return InboundMediaKind::Image;
+    }
+    if content_type.starts_with("audio/") {
+        return InboundMediaKind::Audio;
+    }
+    if content_type.starts_with("video/") {
+        return InboundMediaKind::Video;
+    }
+
+    let filename = att
+        .get("filename")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match Path::new(&filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+    {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => InboundMediaKind::Image,
+        "mp3" | "m4a" | "wav" | "flac" | "ogg" | "oga" | "opus" => InboundMediaKind::Audio,
+        "mp4" | "mov" | "mkv" | "avi" | "webm" => InboundMediaKind::Video,
+        _ => InboundMediaKind::File,
+    }
+}
+
+fn discord_inbound_media_attachments(
+    attachments: &[serde_json::Value],
+) -> Vec<InboundMediaAttachment> {
+    attachments
+        .iter()
+        .filter_map(|att| {
+            let uri = att.get("url").and_then(|value| value.as_str())?;
+            Some(InboundMediaAttachment {
+                kind: discord_attachment_kind(att),
+                uri: uri.to_string(),
+                mime_type: att
+                    .get("content_type")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                label: att
+                    .get("filename")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// Process Discord message attachments and return a string to append to the
@@ -104,7 +164,7 @@ async fn process_attachments(
     parts.join("\n---\n")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiscordAttachmentKind {
     Image,
     Document,
@@ -119,21 +179,44 @@ impl DiscordAttachmentKind {
             "IMAGE" | "PHOTO" => Some(Self::Image),
             "DOCUMENT" | "FILE" => Some(Self::Document),
             "VIDEO" => Some(Self::Video),
-            "AUDIO" => Some(Self::Audio),
+            "AUDIO" | "MUSIC" => Some(Self::Audio),
             "VOICE" => Some(Self::Voice),
             _ => None,
         }
     }
 
-    fn marker_name(&self) -> &'static str {
-        match self {
-            Self::Image => "IMAGE",
-            Self::Document => "DOCUMENT",
-            Self::Video => "VIDEO",
-            Self::Audio => "AUDIO",
-            Self::Voice => "VOICE",
-        }
+}
+
+fn discord_attachment_kind_for_artifact(kind: MediaArtifactKind) -> DiscordAttachmentKind {
+    match kind {
+        MediaArtifactKind::Image => DiscordAttachmentKind::Image,
+        MediaArtifactKind::Audio | MediaArtifactKind::Music => DiscordAttachmentKind::Audio,
+        MediaArtifactKind::Video => DiscordAttachmentKind::Video,
     }
+}
+
+fn discord_attachment_fallback_file_name(kind: DiscordAttachmentKind) -> &'static str {
+    match kind {
+        DiscordAttachmentKind::Image => "image.png",
+        DiscordAttachmentKind::Document => "document.bin",
+        DiscordAttachmentKind::Video => "video.mp4",
+        DiscordAttachmentKind::Audio => "audio.bin",
+        DiscordAttachmentKind::Voice => "voice.ogg",
+    }
+}
+
+fn discord_media_artifact_attachments(
+    artifacts: &[MediaArtifact],
+) -> anyhow::Result<Vec<DiscordAttachment>> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            Ok(DiscordAttachment {
+                kind: discord_attachment_kind_for_artifact(artifact.kind),
+                target: artifact_delivery_uri("discord", artifact)?.to_string(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,50 +270,6 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<DiscordAttachment>) {
     (cleaned.trim().to_string(), attachments)
 }
 
-fn classify_outgoing_attachments(
-    attachments: &[DiscordAttachment],
-) -> (Vec<PathBuf>, Vec<String>, Vec<String>) {
-    let mut local_files = Vec::new();
-    let mut remote_urls = Vec::new();
-    let mut unresolved_markers = Vec::new();
-
-    for attachment in attachments {
-        let target = attachment.target.trim();
-        if target.starts_with("https://") || target.starts_with("http://") {
-            remote_urls.push(target.to_string());
-            continue;
-        }
-
-        let path = Path::new(target);
-        if path.exists() && path.is_file() {
-            local_files.push(path.to_path_buf());
-            continue;
-        }
-
-        unresolved_markers.push(format!("[{}:{}]", attachment.kind.marker_name(), target));
-    }
-
-    (local_files, remote_urls, unresolved_markers)
-}
-
-fn with_inline_attachment_urls(
-    content: &str,
-    remote_urls: &[String],
-    unresolved_markers: &[String],
-) -> String {
-    let mut lines = Vec::new();
-    if !content.trim().is_empty() {
-        lines.push(content.trim().to_string());
-    }
-    if !remote_urls.is_empty() {
-        lines.extend(remote_urls.iter().cloned());
-    }
-    if !unresolved_markers.is_empty() {
-        lines.extend(unresolved_markers.iter().cloned());
-    }
-    lines.join("\n")
-}
-
 async fn send_discord_message_json(
     client: &reqwest::Client,
     bot_token: &str,
@@ -259,32 +298,26 @@ async fn send_discord_message_json(
     Ok(())
 }
 
+struct DiscordUpload {
+    file_name: String,
+    bytes: Vec<u8>,
+}
+
 async fn send_discord_message_with_files(
     client: &reqwest::Client,
     bot_token: &str,
     recipient: &str,
     content: &str,
-    files: &[PathBuf],
+    files: &[DiscordUpload],
 ) -> anyhow::Result<()> {
     let url = format!("https://discord.com/api/v10/channels/{recipient}/messages");
 
     let mut form = Form::new().text("payload_json", json!({ "content": content }).to_string());
 
-    for (idx, path) in files.iter().enumerate() {
-        let bytes = tokio::fs::read(path).await.map_err(|error| {
-            anyhow::anyhow!(
-                "Discord attachment read failed for '{}': {error}",
-                path.display()
-            )
-        })?;
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("attachment.bin")
-            .to_string();
+    for (idx, file) in files.iter().enumerate() {
         form = form.part(
             format!("files[{idx}]"),
-            Part::bytes(bytes).file_name(filename),
+            Part::bytes(file.bytes.clone()).file_name(file.file_name.clone()),
         );
     }
 
@@ -488,39 +521,47 @@ impl Channel for DiscordChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let (cleaned_content, parsed_attachments) = parse_attachment_markers(&message.content);
-        let (mut local_files, remote_urls, unresolved_markers) =
-            classify_outgoing_attachments(&parsed_attachments);
+        let content = message.content.as_str();
+        let (cleaned_content, mut parsed_attachments) = parse_attachment_markers(content);
+        parsed_attachments.extend(discord_media_artifact_attachments(&message.media_artifacts)?);
 
-        if !unresolved_markers.is_empty() {
-            tracing::warn!(
-                unresolved = ?unresolved_markers,
-                "discord: unresolved attachment markers were sent as plain text"
-            );
+        let client = self.http_client();
+        let mut uploads = Vec::new();
+        for attachment in &parsed_attachments {
+            let fallback_file_name = discord_attachment_fallback_file_name(attachment.kind);
+            let upload = resolve_outbound_media_uri(
+                &client,
+                &attachment.target,
+                None,
+                None,
+                fallback_file_name,
+            )
+            .await?;
+            uploads.push(DiscordUpload {
+                file_name: upload.file_name,
+                bytes: upload.bytes,
+            });
         }
 
         // Discord accepts max 10 files per message.
-        if local_files.len() > 10 {
-            tracing::warn!(
-                count = local_files.len(),
-                "discord: truncating local attachment upload list to 10 files"
+        if uploads.len() > 10 {
+            anyhow::bail!(
+                "discord cannot deliver {} media artifacts in one message; Discord accepts max 10 files",
+                uploads.len()
             );
-            local_files.truncate(10);
         }
 
-        let content =
-            with_inline_attachment_urls(&cleaned_content, &remote_urls, &unresolved_markers);
+        let content = cleaned_content;
         let chunks = split_message_for_discord(&content);
-        let client = self.http_client();
 
         for (i, chunk) in chunks.iter().enumerate() {
-            if i == 0 && !local_files.is_empty() {
+            if i == 0 && !uploads.is_empty() {
                 send_discord_message_with_files(
                     &client,
                     &self.bot_token,
                     &message.recipient,
                     chunk,
-                    &local_files,
+                    &uploads,
                 )
                 .await?;
             } else {
@@ -721,14 +762,13 @@ impl Channel for DiscordChannel {
                         continue;
                     };
 
-                    let attachment_text = {
-                        let atts = d
-                            .get("attachments")
-                            .and_then(|a| a.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        process_attachments(&atts, &self.http_client()).await
-                    };
+                    let atts = d
+                        .get("attachments")
+                        .and_then(|a| a.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let media_attachments = discord_inbound_media_attachments(&atts);
+                    let attachment_text = process_attachments(&atts, &self.http_client()).await;
                     let final_content = if attachment_text.is_empty() {
                         clean_content
                     } else {
@@ -790,13 +830,12 @@ impl Channel for DiscordChannel {
                         // Discord thread detection: if the message has a
                         // message_reference (reply chain) or the payload contains a
                         // "thread" object, the channel_id IS the thread ID.
-                        thread_ts: if d.get("message_reference").is_some()
-                            || d.get("thread").is_some()
-                        {
+                        thread_ts: if d.get("message_reference").is_some() || d.get("thread").is_some() {
                             Some(channel_id.clone())
                         } else {
                             None
                         },
+                        media_attachments,
                     };
 
                     if tx.send(channel_msg).await.is_err() {
@@ -1522,47 +1561,4 @@ mod tests {
         assert!(attachments.is_empty());
     }
 
-    #[test]
-    fn classify_outgoing_attachments_splits_local_remote_and_unresolved() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let file_path = temp.path().join("image.png");
-        std::fs::write(&file_path, b"fake").expect("write fixture");
-
-        let attachments = vec![
-            DiscordAttachment {
-                kind: DiscordAttachmentKind::Image,
-                target: file_path.to_string_lossy().to_string(),
-            },
-            DiscordAttachment {
-                kind: DiscordAttachmentKind::Image,
-                target: "https://example.com/remote.png".to_string(),
-            },
-            DiscordAttachment {
-                kind: DiscordAttachmentKind::Video,
-                target: "/tmp/does-not-exist.mp4".to_string(),
-            },
-        ];
-
-        let (locals, remotes, unresolved) = classify_outgoing_attachments(&attachments);
-        assert_eq!(locals.len(), 1);
-        assert_eq!(locals[0], file_path);
-        assert_eq!(remotes, vec!["https://example.com/remote.png".to_string()]);
-        assert_eq!(
-            unresolved,
-            vec!["[VIDEO:/tmp/does-not-exist.mp4]".to_string()]
-        );
-    }
-
-    #[test]
-    fn with_inline_attachment_urls_appends_urls_and_unresolved_markers() {
-        let content = "Done";
-        let remote_urls = vec!["https://example.com/a.png".to_string()];
-        let unresolved = vec!["[IMAGE:/tmp/missing.png]".to_string()];
-
-        let rendered = with_inline_attachment_urls(content, &remote_urls, &unresolved);
-        assert_eq!(
-            rendered,
-            "Done\nhttps://example.com/a.png\n[IMAGE:/tmp/missing.png]"
-        );
-    }
 }

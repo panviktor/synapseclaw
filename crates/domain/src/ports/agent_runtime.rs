@@ -7,7 +7,7 @@
 use crate::domain::message::ChatMessage;
 use crate::domain::tool_fact::TypedToolFact;
 use crate::domain::tool_repair::ToolRepairTrace;
-use crate::ports::provider::ProviderCapabilities;
+use crate::ports::provider::{MediaArtifact, ProviderCapabilities};
 use async_trait::async_trait;
 
 /// Result of an agent execution turn.
@@ -29,6 +29,8 @@ pub struct AgentTurnResult {
     pub last_tool_repair: Option<ToolRepairTrace>,
     /// Distinct structured tool self-repair traces emitted during the turn.
     pub tool_repairs: Vec<ToolRepairTrace>,
+    /// Generated media artifacts returned by the provider during this turn.
+    pub media_artifacts: Vec<MediaArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -172,6 +172,7 @@ impl Provider for NonVisionProvider {
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 }
@@ -222,6 +223,7 @@ impl Provider for VisionProvider {
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 }
@@ -247,6 +249,7 @@ impl ScriptedProvider {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             })
             .collect();
         Self {
@@ -275,6 +278,7 @@ fn native_tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -284,6 +288,7 @@ fn text_chat_response(text: &str) -> ChatResponse {
         tool_calls: Vec::new(),
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -1125,12 +1130,14 @@ async fn run_tool_call_loop_native_mode_preserves_structured_tool_call_ids() {
             }],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         },
         ChatResponse {
             text: Some("done".into()),
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         },
     ])
     .with_native_tool_support();

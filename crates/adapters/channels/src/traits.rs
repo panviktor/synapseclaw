@@ -36,6 +36,7 @@ mod tests {
                 channel: "dummy".into(),
                 timestamp: 123,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             })
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -52,6 +53,7 @@ mod tests {
             channel: "dummy".into(),
             timestamp: 999,
             thread_ts: None,
+            media_attachments: Vec::new(),
         };
 
         let cloned = message.clone();

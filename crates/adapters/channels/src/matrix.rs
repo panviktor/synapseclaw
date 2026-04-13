@@ -1,6 +1,10 @@
+use crate::outbound_media::{local_media_path, resolve_outbound_media_uri};
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use matrix_sdk::{
     attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo},
     authentication::matrix::MatrixSession,
@@ -241,12 +245,43 @@ impl MatrixOutgoingAttachmentKind {
     fn from_marker(marker: &str) -> Option<Self> {
         match marker.trim().to_ascii_uppercase().as_str() {
             "IMAGE" | "PHOTO" => Some(Self::Image),
-            "DOCUMENT" | "FILE" => Some(Self::File),
-            "AUDIO" => Some(Self::Audio),
+            "DOCUMENT" | "FILE" | "VIDEO" => Some(Self::File),
+            "AUDIO" | "MUSIC" => Some(Self::Audio),
             "VOICE" => Some(Self::Voice),
             _ => None,
         }
     }
+}
+
+fn matrix_attachment_kind_for_artifact(kind: MediaArtifactKind) -> MatrixOutgoingAttachmentKind {
+    match kind {
+        MediaArtifactKind::Image => MatrixOutgoingAttachmentKind::Image,
+        MediaArtifactKind::Audio | MediaArtifactKind::Music => MatrixOutgoingAttachmentKind::Audio,
+        MediaArtifactKind::Video => MatrixOutgoingAttachmentKind::File,
+    }
+}
+
+fn matrix_attachment_fallback_file_name(kind: MatrixOutgoingAttachmentKind) -> &'static str {
+    match kind {
+        MatrixOutgoingAttachmentKind::Image => "image.png",
+        MatrixOutgoingAttachmentKind::File => "file.bin",
+        MatrixOutgoingAttachmentKind::Audio => "audio.bin",
+        MatrixOutgoingAttachmentKind::Voice => "voice.ogg",
+    }
+}
+
+fn matrix_media_artifact_attachments(
+    artifacts: &[MediaArtifact],
+) -> anyhow::Result<Vec<MatrixOutgoingAttachment>> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            Ok(MatrixOutgoingAttachment {
+                kind: matrix_attachment_kind_for_artifact(artifact.kind),
+                target: artifact_delivery_uri("matrix", artifact)?.to_string(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +346,19 @@ fn is_image_extension(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn matrix_inbound_media_attachment(
+    kind: InboundMediaKind,
+    path: &Path,
+    label: impl Into<String>,
+) -> InboundMediaAttachment {
+    InboundMediaAttachment {
+        kind,
+        uri: path.to_string_lossy().into_owned(),
+        mime_type: None,
+        label: Some(label.into()),
+    }
 }
 
 /// Download media from a Matrix media source via the SDK client, save to disk.
@@ -1209,10 +1257,12 @@ impl Channel for MatrixChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let (after_reactions, reaction_markers) = parse_matrix_reaction_markers(&message.content);
+        let content = message.content.as_str();
+        let (after_reactions, reaction_markers) = parse_matrix_reaction_markers(content);
         let (after_locations, location_markers) = parse_matrix_location_markers(&after_reactions);
-        let (cleaned_content, parsed_attachments) =
+        let (cleaned_content, mut parsed_attachments) =
             parse_matrix_attachment_markers(&after_locations);
+        parsed_attachments.extend(matrix_media_artifact_attachments(&message.media_artifacts)?);
 
         let client = self.matrix_client().await?;
         let target_room_id = if let Some((_, room)) = message.recipient.split_once("||") {
@@ -1269,68 +1319,55 @@ impl Channel for MatrixChannel {
         // media for E2EE rooms (unlike client.media().upload() which uploads plain).
         for attachment in &parsed_attachments {
             let target = attachment.target.trim();
-            let path = Path::new(target);
+            if let Some(path) = local_media_path(target) {
+                if !path.exists() || !path.is_file() {
+                    anyhow::bail!("Matrix outgoing attachment not found or not a file: {target}");
+                }
 
-            if !path.exists() || !path.is_file() {
-                tracing::warn!(
-                    "Matrix outgoing attachment not found or not a file: {}",
-                    target
-                );
-                continue;
-            }
-
-            // Security: restrict uploads to the workspace/media directory to
-            // prevent [IMAGE:path] markers in bot responses from exfiltrating
-            // arbitrary host files via Matrix media uploads.
-            if let Some(ref zdir) = self.synapseclaw_dir {
-                let allowed_dir = zdir.join("workspace");
-                match path.canonicalize() {
-                    Ok(canonical) => {
-                        if !canonical.starts_with(&allowed_dir) {
-                            tracing::warn!(
-                                "Matrix outgoing attachment path '{}' is outside workspace directory '{}' — refusing upload",
-                                canonical.display(),
-                                allowed_dir.display()
+                // Security: restrict uploads to the workspace/media directory to
+                // prevent [IMAGE:path] markers in bot responses from exfiltrating
+                // arbitrary host files via Matrix media uploads.
+                if let Some(ref zdir) = self.synapseclaw_dir {
+                    let allowed_dir = zdir.join("workspace");
+                    match path.canonicalize() {
+                        Ok(canonical) => {
+                            if !canonical.starts_with(&allowed_dir) {
+                                anyhow::bail!(
+                                    "Matrix outgoing attachment path '{}' is outside workspace directory '{}' — refusing upload",
+                                    canonical.display(),
+                                    allowed_dir.display()
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            anyhow::bail!(
+                                "Matrix outgoing attachment path '{}' could not be canonicalized: {err}",
+                                target
                             );
-                            continue;
                         }
                     }
-                    Err(err) => {
-                        tracing::warn!(
-                            "Matrix outgoing attachment path '{}' could not be canonicalized: {err} — refusing upload",
-                            target
-                        );
-                        continue;
-                    }
+                } else {
+                    anyhow::bail!(
+                        "Matrix cannot deliver outgoing attachment without synapseclaw_dir path validation: {target}"
+                    );
                 }
-            } else {
-                tracing::warn!(
-                    "Matrix: no synapseclaw_dir configured — cannot validate attachment path '{}', refusing upload",
-                    target
-                );
-                continue;
             }
 
-            let bytes = match tokio::fs::read(path).await {
-                Ok(b) => b,
-                Err(error) => {
-                    tracing::warn!(
-                        "Matrix failed to read outgoing attachment '{}': {error}",
-                        path.display()
-                    );
-                    continue;
-                }
-            };
+            let upload = resolve_outbound_media_uri(
+                &self.http_client,
+                target,
+                None,
+                None,
+                matrix_attachment_fallback_file_name(attachment.kind),
+            )
+            .await?;
 
-            let mime = mime_guess::from_path(path)
-                .first()
+            let mime = upload
+                .mime_type
+                .parse()
                 .unwrap_or(mime_guess::mime::APPLICATION_OCTET_STREAM);
-
-            let filename = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("attachment.bin")
-                .to_string();
+            let filename = upload.file_name;
+            let bytes = upload.bytes;
 
             let config = match attachment.kind {
                 MatrixOutgoingAttachmentKind::Voice => {
@@ -1350,9 +1387,11 @@ impl Channel for MatrixChannel {
                 _ => AttachmentConfig::new(),
             };
 
-            if let Err(error) = room.send_attachment(&filename, &mime, bytes, config).await {
-                tracing::warn!("Matrix media send failed for '{}': {error}", path.display());
-            }
+            room.send_attachment(&filename, &mime, bytes, config)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("Matrix media send failed for '{}': {error}", filename)
+                })?;
         }
 
         // Send remaining text (if any) after attachments/reactions, with threading support.
@@ -1376,7 +1415,7 @@ impl Channel for MatrixChannel {
             && location_markers.is_empty()
         {
             // No markers were found — send original content as text.
-            room.send(send_text(&message.content)).await?;
+            room.send(send_text(content)).await?;
         }
 
         Ok(())
@@ -1527,6 +1566,7 @@ impl Channel for MatrixChannel {
                     }
                 }
 
+                let mut media_attachments = Vec::new();
                 let body = match &event.content.msgtype {
                     MessageType::Text(content) => content.body.clone(),
                     MessageType::Notice(content) => content.body.clone(),
@@ -1542,8 +1582,18 @@ impl Channel for MatrixChannel {
                         match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
                             Ok(local_path) => {
                                 if is_image_extension(&local_path) {
+                                    media_attachments.push(matrix_inbound_media_attachment(
+                                        InboundMediaKind::Image,
+                                        &local_path,
+                                        filename.clone(),
+                                    ));
                                     format!("[IMAGE:{}]", local_path.display())
                                 } else {
+                                    media_attachments.push(matrix_inbound_media_attachment(
+                                        InboundMediaKind::File,
+                                        &local_path,
+                                        filename.clone(),
+                                    ));
                                     format!("[Document: {}] {}", filename, local_path.display())
                                 }
                             }
@@ -1564,6 +1614,11 @@ impl Channel for MatrixChannel {
                         let sdk_client = room.client();
                         match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
                             Ok(local_path) => {
+                                media_attachments.push(matrix_inbound_media_attachment(
+                                    InboundMediaKind::File,
+                                    &local_path,
+                                    filename.clone(),
+                                ));
                                 format!("[Document: {}] {}", filename, local_path.display())
                             }
                             Err(error) => {
@@ -1613,6 +1668,11 @@ impl Channel for MatrixChannel {
                                             };
                                             match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
                                                 Ok(local_path) => {
+                                                    media_attachments.push(matrix_inbound_media_attachment(
+                                                        InboundMediaKind::Audio,
+                                                        &local_path,
+                                                        filename.clone(),
+                                                    ));
                                                     format!("[Document: {}] {}", filename, local_path.display())
                                                 }
                                                 Err(dl_error) => {
@@ -1636,6 +1696,11 @@ impl Channel for MatrixChannel {
                             };
                             match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
                                 Ok(local_path) => {
+                                    media_attachments.push(matrix_inbound_media_attachment(
+                                        InboundMediaKind::Audio,
+                                        &local_path,
+                                        filename.clone(),
+                                    ));
                                     format!("[Document: {}] {}", filename, local_path.display())
                                 }
                                 Err(error) => {
@@ -1706,10 +1771,6 @@ impl Channel for MatrixChannel {
                     _ => None,
                 };
 
-                // Include the event_id so the LLM can reference it in
-                // [REACT:emoji:event_id] markers without guessing.
-                let body = format!("[msg_id:{}] {}", event_id, body);
-
                 // Mark message as read + start typing indicator.
                 if let Ok(eid) = event_id.parse::<OwnedEventId>() {
                     let _ = room
@@ -1732,6 +1793,7 @@ impl Channel for MatrixChannel {
                         .unwrap_or_default()
                         .as_secs(),
                     thread_ts,
+                    media_attachments,
                 };
 
                 let _ = tx.send(msg).await;
@@ -1837,6 +1899,7 @@ impl Channel for MatrixChannel {
                         .unwrap_or_default()
                         .as_secs(),
                     thread_ts,
+                    media_attachments: Vec::new(),
                 };
 
                 let _ = tx.send(msg).await;

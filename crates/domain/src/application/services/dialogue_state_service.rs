@@ -16,7 +16,7 @@ use std::collections::HashMap;
 /// TTL for dialogue state entries (30 minutes).
 const STATE_TTL_SECS: u64 = 1800;
 
-/// In-memory store for dialogue state, keyed by conversation_ref.
+/// In-memory store for dialogue state, keyed by conversation_id.
 pub struct DialogueStateStore {
     states: RwLock<HashMap<String, DialogueState>>,
 }
@@ -29,9 +29,9 @@ impl DialogueStateStore {
     }
 
     /// Get current state for a conversation (None if absent or stale).
-    pub fn get(&self, conversation_ref: &str) -> Option<DialogueState> {
+    pub fn get(&self, conversation_id: &str) -> Option<DialogueState> {
         let states = self.states.read();
-        states.get(conversation_ref).and_then(|s| {
+        states.get(conversation_id).and_then(|s| {
             if s.is_stale(STATE_TTL_SECS) {
                 None
             } else {
@@ -41,9 +41,9 @@ impl DialogueStateStore {
     }
 
     /// Update state for a conversation.
-    pub fn set(&self, conversation_ref: &str, state: DialogueState) {
+    pub fn set(&self, conversation_id: &str, state: DialogueState) {
         let mut states = self.states.write();
-        states.insert(conversation_ref.to_string(), state);
+        states.insert(conversation_id.to_string(), state);
     }
 
     /// Evict stale entries (call periodically).

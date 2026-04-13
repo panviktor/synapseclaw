@@ -1,4 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
+use crate::outbound_media::{local_media_path, resolve_outbound_media_uri};
 use anyhow::Context;
 use async_trait::async_trait;
 use directories::UserDirs;
@@ -9,6 +10,9 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use synapse_domain::config::schema::{Config, StreamMode};
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use synapse_infra::config_io::ConfigIO;
 use synapse_security::pairing::PairingGuard;
 use tokio::fs;
@@ -148,11 +152,43 @@ impl TelegramAttachmentKind {
             "IMAGE" | "PHOTO" => Some(Self::Image),
             "DOCUMENT" | "FILE" => Some(Self::Document),
             "VIDEO" => Some(Self::Video),
-            "AUDIO" => Some(Self::Audio),
+            "AUDIO" | "MUSIC" => Some(Self::Audio),
             "VOICE" => Some(Self::Voice),
             _ => None,
         }
     }
+}
+
+fn telegram_attachment_kind_for_artifact(kind: MediaArtifactKind) -> TelegramAttachmentKind {
+    match kind {
+        MediaArtifactKind::Image => TelegramAttachmentKind::Image,
+        MediaArtifactKind::Audio | MediaArtifactKind::Music => TelegramAttachmentKind::Audio,
+        MediaArtifactKind::Video => TelegramAttachmentKind::Video,
+    }
+}
+
+fn telegram_attachment_fallback_file_name(kind: TelegramAttachmentKind) -> &'static str {
+    match kind {
+        TelegramAttachmentKind::Image => "image.png",
+        TelegramAttachmentKind::Document => "document.bin",
+        TelegramAttachmentKind::Video => "video.mp4",
+        TelegramAttachmentKind::Audio => "audio.bin",
+        TelegramAttachmentKind::Voice => "voice.ogg",
+    }
+}
+
+fn telegram_media_artifact_attachments(
+    artifacts: &[MediaArtifact],
+) -> anyhow::Result<Vec<TelegramAttachment>> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            Ok(TelegramAttachment {
+                kind: telegram_attachment_kind_for_artifact(artifact.kind),
+                target: artifact_delivery_uri("telegram", artifact)?.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Check whether a file path has a recognized image extension.
@@ -188,6 +224,28 @@ fn format_attachment_content(
         _ => {
             format!("[Document: {}] {}", local_filename, local_path.display())
         }
+    }
+}
+
+fn inbound_media_attachment_for_telegram_attachment(
+    _kind: IncomingAttachmentKind,
+    local_filename: &str,
+    local_path: &Path,
+) -> InboundMediaAttachment {
+    let target = local_path.to_string_lossy();
+    let kind = match infer_attachment_kind_from_target(&target) {
+        Some(TelegramAttachmentKind::Image) => InboundMediaKind::Image,
+        Some(TelegramAttachmentKind::Video) => InboundMediaKind::Video,
+        Some(TelegramAttachmentKind::Audio | TelegramAttachmentKind::Voice) => {
+            InboundMediaKind::Audio
+        }
+        Some(TelegramAttachmentKind::Document) | None => InboundMediaKind::File,
+    };
+    InboundMediaAttachment {
+        kind,
+        uri: target.into_owned(),
+        mime_type: None,
+        label: Some(local_filename.to_string()),
     }
 }
 
@@ -1061,6 +1119,11 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         if let Some(quote) = self.extract_reply_context(message) {
             content = format!("{quote}\n\n{content}");
         }
+        let media_attachments = vec![inbound_media_attachment_for_telegram_attachment(
+            attachment.kind,
+            &local_filename,
+            &local_path,
+        )];
 
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
@@ -1073,6 +1136,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 .unwrap_or_default()
                 .as_secs(),
             thread_ts: thread_id,
+            media_attachments,
         })
     }
 
@@ -1149,6 +1213,33 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 return None;
             }
         };
+        let media_attachments = if let Some(workspace) = &self.workspace_dir {
+            let save_dir = workspace.join("telegram_files");
+            if let Err(e) = tokio::fs::create_dir_all(&save_dir).await {
+                tracing::warn!("Failed to create telegram_files directory for voice: {e}");
+                Vec::new()
+            } else {
+                let local_filename = format!("voice_{chat_id}_{message_id}_{file_name}");
+                let local_path = save_dir.join(&local_filename);
+                match tokio::fs::write(&local_path, &audio_data).await {
+                    Ok(()) => vec![InboundMediaAttachment {
+                        kind: InboundMediaKind::Audio,
+                        uri: local_path.display().to_string(),
+                        mime_type: None,
+                        label: Some(local_filename),
+                    }],
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to save Telegram voice attachment to {}: {e}",
+                            local_path.display()
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         let text =
             match super::transcription::transcribe_audio(audio_data, &file_name, config).await {
@@ -1190,6 +1281,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 .unwrap_or_default()
                 .as_secs(),
             thread_ts: thread_id,
+            media_attachments,
         })
     }
 
@@ -1346,6 +1438,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                 .unwrap_or_default()
                 .as_secs(),
             thread_ts: thread_id,
+            media_attachments: Vec::new(),
         })
     }
 
@@ -1678,6 +1771,51 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         Ok(())
     }
 
+    async fn send_attachment_bytes(
+        &self,
+        chat_id: &str,
+        thread_id: Option<&str>,
+        kind: TelegramAttachmentKind,
+        file_bytes: Vec<u8>,
+        file_name: &str,
+        caption: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let (method, media_field) = match kind {
+            TelegramAttachmentKind::Image => ("sendPhoto", "photo"),
+            TelegramAttachmentKind::Document => ("sendDocument", "document"),
+            TelegramAttachmentKind::Video => ("sendVideo", "video"),
+            TelegramAttachmentKind::Audio => ("sendAudio", "audio"),
+            TelegramAttachmentKind::Voice => ("sendVoice", "voice"),
+        };
+        let part = Part::bytes(file_bytes).file_name(file_name.to_string());
+        let mut form = Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part(media_field, part);
+
+        if let Some(tid) = thread_id {
+            form = form.text("message_thread_id", tid.to_string());
+        }
+
+        if let Some(cap) = caption {
+            form = form.text("caption", cap.to_string());
+        }
+
+        let resp = self
+            .http_client()
+            .post(self.api_url(method))
+            .multipart(form)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await?;
+            anyhow::bail!("Telegram {method} failed: {err}");
+        }
+
+        tracing::info!("Telegram {method} sent to {chat_id}: {file_name}");
+        Ok(())
+    }
+
     async fn send_attachment(
         &self,
         chat_id: &str,
@@ -1687,7 +1825,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         let target = attachment.target.trim();
 
         if is_http_url(target) {
-            let result = match attachment.kind {
+            match attachment.kind {
                 TelegramAttachmentKind::Image => {
                     self.send_photo_by_url(chat_id, thread_id, target, None)
                         .await
@@ -1708,30 +1846,31 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     self.send_voice_by_url(chat_id, thread_id, target, None)
                         .await
                 }
-            };
-
-            // If sending media by URL failed (e.g. Telegram can't fetch the URL,
-            // wrong content type, etc.), fall back to sending the URL as a text link
-            // instead of losing the reply entirely.
-            if let Err(e) = result {
-                tracing::warn!(
-                    url = target,
-                    error = %e,
-                    "Telegram send media by URL failed; falling back to text link"
-                );
-                let kind_label = match attachment.kind {
-                    TelegramAttachmentKind::Image => "Image",
-                    TelegramAttachmentKind::Document => "Document",
-                    TelegramAttachmentKind::Video => "Video",
-                    TelegramAttachmentKind::Audio => "Audio",
-                    TelegramAttachmentKind::Voice => "Voice",
-                };
-                let fallback_text = format!("{kind_label}: {target}");
-                self.send_text_chunks(&fallback_text, chat_id, thread_id)
-                    .await?;
-            }
+            }?;
 
             return Ok(());
+        }
+
+        if target.starts_with("data:") {
+            let client = self.http_client();
+            let upload = resolve_outbound_media_uri(
+                &client,
+                target,
+                None,
+                None,
+                telegram_attachment_fallback_file_name(attachment.kind),
+            )
+            .await?;
+            return self
+                .send_attachment_bytes(
+                    chat_id,
+                    thread_id,
+                    attachment.kind,
+                    upload.bytes,
+                    &upload.file_name,
+                    None,
+                )
+                .await;
         }
 
         // Remap Docker container workspace path (/workspace/...) to the host
@@ -1749,7 +1888,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             target
         };
 
-        let path = Path::new(target);
+        let path_buf = local_media_path(target)
+            .unwrap_or_else(|| std::path::PathBuf::from(target));
+        let path = path_buf.as_path();
         if !path.exists() {
             anyhow::bail!("Telegram attachment path not found: {target}");
         }
@@ -2498,7 +2639,8 @@ impl Channel for TelegramChannel {
             None => (message.recipient.as_str(), None),
         };
 
-        let (text_without_markers, attachments) = parse_attachment_markers(content);
+        let (text_without_markers, mut attachments) = parse_attachment_markers(content);
+        attachments.extend(telegram_media_artifact_attachments(&message.media_artifacts)?);
 
         if !attachments.is_empty() {
             if !text_without_markers.is_empty() {

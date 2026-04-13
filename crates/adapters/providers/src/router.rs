@@ -231,6 +231,7 @@ mod tests {
                 tool_calls: Vec::new(),
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             })
         }
     }

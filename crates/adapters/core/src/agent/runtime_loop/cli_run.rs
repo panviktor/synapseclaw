@@ -96,31 +96,35 @@ pub async fn run_with_shared_memory(
         (None, None)
     };
     let (mut tools_registry, delegate_handle, ipc_client_for_key_reg) =
-        tools::all_tools_with_runtime(
-            Arc::new(config.clone()),
-            &security,
-            runtime,
-            mem.clone(),
-            composio_key,
-            composio_entity_id,
-            &config.browser,
-            &config.http_request,
-            &config.web_fetch,
-            &config.workspace_dir,
-            &config.agents,
-            config.api_key.as_deref(),
-            &config,
-            None, // Agents create their own IpcClient (no shared daemon client)
-            None,
-            surreal_handle,
-            None,
-            None,
-            None,
-            None, // orchestration tool ports (CLI has no live conversation)
-            None,
-            None,
-            None,
-            None,
+        tools::RuntimeToolRegistryFactory::build(
+            tools::RuntimeToolRegistryInputs {
+                config: Arc::new(config.clone()),
+                security: &security,
+                runtime,
+                memory: mem.clone(),
+                composio_key,
+                composio_entity_id,
+                browser_config: &config.browser,
+                http_config: &config.http_request,
+                web_fetch_config: &config.web_fetch,
+                workspace_dir: &config.workspace_dir,
+                agents: &config.agents,
+                default_api_key: config.api_key.as_deref(),
+                root_config: &config,
+            },
+            tools::RuntimeToolPorts {
+                shared_ipc_client: None,
+                agent_runner: None,
+                cron_db: surreal_handle,
+                conversation_context: None,
+                conversation_store: None,
+                channel_registry: None,
+                standing_order_store: None,
+                user_profile_store: None,
+                user_profile_context: None,
+                turn_defaults_context: None,
+                run_recipe_store: None,
+            },
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -752,31 +756,35 @@ pub async fn process_message(
     } else {
         (None, None)
     };
-    let (mut tools_registry, delegate_handle_pm, _) = tools::all_tools_with_runtime(
-        Arc::new(config.clone()),
-        &security,
-        runtime,
-        mem.clone(),
-        composio_key,
-        composio_entity_id,
-        &config.browser,
-        &config.http_request,
-        &config.web_fetch,
-        &config.workspace_dir,
-        &config.agents,
-        config.api_key.as_deref(),
-        &config,
-        None,
-        None,
-        surreal_handle_pm,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+    let (mut tools_registry, delegate_handle_pm, _) = tools::RuntimeToolRegistryFactory::build(
+        tools::RuntimeToolRegistryInputs {
+            config: Arc::new(config.clone()),
+            security: &security,
+            runtime,
+            memory: mem.clone(),
+            composio_key,
+            composio_entity_id,
+            browser_config: &config.browser,
+            http_config: &config.http_request,
+            web_fetch_config: &config.web_fetch,
+            workspace_dir: &config.workspace_dir,
+            agents: &config.agents,
+            default_api_key: config.api_key.as_deref(),
+            root_config: &config,
+        },
+        tools::RuntimeToolPorts {
+            shared_ipc_client: None,
+            agent_runner: None,
+            cron_db: surreal_handle_pm,
+            conversation_context: None,
+            conversation_store: None,
+            channel_registry: None,
+            standing_order_store: None,
+            user_profile_store: None,
+            user_profile_context: None,
+            turn_defaults_context: None,
+            run_recipe_store: None,
+        },
     );
     // ── Wire MCP tools (non-fatal) — process_message path ────────
     // NOTE: Same ordering contract as the CLI path above — MCP tools must be

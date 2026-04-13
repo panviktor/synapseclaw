@@ -465,6 +465,7 @@ impl Channel for QQChannel {
                                     .unwrap_or_default()
                                     .as_secs(),
                                 thread_ts: None,
+                                media_attachments: Vec::new(),
                             };
 
                             if tx.send(channel_msg).await.is_err() {
@@ -503,6 +504,7 @@ impl Channel for QQChannel {
                                     .unwrap_or_default()
                                     .as_secs(),
                                 thread_ts: None,
+                                media_attachments: Vec::new(),
                             };
 
                             if tx.send(channel_msg).await.is_err() {

@@ -13,7 +13,9 @@
 use crate::application::services::model_preset_resolution::resolve_effective_model_lanes;
 use crate::application::services::route_switch_preflight::RouteSwitchPreflight;
 use crate::config::schema::{CapabilityLane, Config};
-use crate::domain::channel::{ChannelCapability, InboundEnvelope};
+use crate::domain::channel::{
+    ChannelCapability, ConversationIdentity, InboundEnvelope, InboundMediaAttachment,
+};
 
 // ── Runtime commands ─────────────────────────────────────────────
 
@@ -86,17 +88,20 @@ pub fn parse_runtime_command(content: &str, caps: &[ChannelCapability]) -> Optio
 
 // ── Conversation key ─────────────────────────────────────────────
 
-/// Construct the canonical conversation key for an inbound envelope.
-///
-/// Rules:
-/// - Per-sender isolation: each sender gets their own conversation
-/// - Per-thread isolation: same sender in different threads = different sessions
-/// - Key format: `{adapter}_{thread}_{actor}` or `{adapter}_{actor}`
-pub fn conversation_key(envelope: &InboundEnvelope) -> String {
-    match &envelope.thread_ref {
-        Some(tid) => format!("{}_{}_{}", envelope.source_adapter, tid, envelope.actor_id),
-        None => format!("{}_{}", envelope.source_adapter, envelope.actor_id),
-    }
+/// Construct the canonical conversation identity for an inbound envelope.
+pub fn conversation_identity(envelope: &InboundEnvelope, agent_id: &str) -> ConversationIdentity {
+    ConversationIdentity::from_envelope(agent_id, envelope)
+}
+
+pub fn conversation_key_for_agent(envelope: &InboundEnvelope, agent_id: &str) -> String {
+    conversation_identity(envelope, agent_id).conversation_key()
+}
+
+pub fn conversation_scope_key_prefix_for_agent(
+    envelope: &InboundEnvelope,
+    agent_id: &str,
+) -> String {
+    conversation_identity(envelope, agent_id).conversation_scope_key_prefix()
 }
 
 /// Construct the canonical raw-autosave memory key for an inbound envelope.
@@ -104,19 +109,9 @@ pub fn conversation_key(envelope: &InboundEnvelope) -> String {
 /// Preference order:
 /// - stable upstream event/message id when available
 /// - otherwise a bounded fallback derived from receipt timestamp and content size
-pub fn autosave_memory_key(envelope: &InboundEnvelope) -> String {
-    let conversation_key = conversation_key(envelope);
-    if let Some(event_ref) = envelope.event_ref.as_deref().map(str::trim) {
-        if !event_ref.is_empty() {
-            return format!("channel:{conversation_key}:{event_ref}");
-        }
-    }
-
-    format!(
-        "channel:{conversation_key}:recv{}:len{}",
-        envelope.received_at,
-        envelope.content.chars().count()
-    )
+pub fn autosave_memory_key_for_agent(envelope: &InboundEnvelope, agent_id: &str) -> String {
+    conversation_identity(envelope, agent_id)
+        .autosave_memory_key(envelope.received_at, envelope.content.chars().count())
 }
 
 // ── Message classification ───────────────────────────────────────
@@ -139,6 +134,26 @@ pub fn classify_message(content: &str, caps: &[ChannelCapability]) -> MessageCla
         return MessageClassification::Command(cmd);
     }
     MessageClassification::RegularMessage
+}
+
+pub fn provider_facing_content(
+    content: &str,
+    media_attachments: &[InboundMediaAttachment],
+) -> String {
+    let mut normalized = content.to_string();
+    for marker in media_attachments
+        .iter()
+        .filter_map(InboundMediaAttachment::marker)
+    {
+        if normalized.contains(&marker) {
+            continue;
+        }
+        if !normalized.trim().is_empty() {
+            normalized.push('\n');
+        }
+        normalized.push_str(&marker);
+    }
+    normalized
 }
 
 // ── History enrichment strategy ──────────────────────────────────
@@ -165,21 +180,23 @@ pub enum HistoryEnrichment {
 /// - If there's already history for this conversation: no enrichment
 /// - If the message is in a thread: seed from parent conversation summary
 /// - Otherwise: load relevant memory context
-pub fn decide_history_enrichment(
+pub fn decide_history_enrichment_for_agent(
     has_prior_history: bool,
     envelope: &InboundEnvelope,
+    agent_id: &str,
 ) -> HistoryEnrichment {
     if has_prior_history {
         return HistoryEnrichment::Continuation;
     }
 
+    let identity = conversation_identity(envelope, agent_id);
     match &envelope.thread_ref {
         Some(tid) => HistoryEnrichment::ThreadSeeding {
-            parent_key: format!("{}_{}", envelope.source_adapter, envelope.actor_id),
+            parent_key: identity.parent_conversation_key(),
             thread_id: tid.clone(),
         },
         None => HistoryEnrichment::MemoryContext {
-            conversation_key: conversation_key(envelope),
+            conversation_key: identity.conversation_key(),
         },
     }
 }
@@ -558,14 +575,18 @@ mod tests {
             source_kind: SourceKind::Channel,
             source_adapter: "telegram".into(),
             actor_id: "user123".into(),
-            conversation_ref: String::new(),
+            conversation_id: String::new(),
             event_ref: None,
             reply_ref: String::new(),
             thread_ref: None,
+            media_attachments: Vec::new(),
             content: String::new(),
             received_at: 0,
         };
-        assert_eq!(conversation_key(&env), "telegram_user123");
+        assert_eq!(
+            conversation_key_for_agent(&env, "test-agent"),
+            "conversation:test-agent:telegram:user123:user123"
+        );
     }
 
     #[test]
@@ -574,14 +595,18 @@ mod tests {
             source_kind: SourceKind::Channel,
             source_adapter: "slack".into(),
             actor_id: "user456".into(),
-            conversation_ref: String::new(),
+            conversation_id: String::new(),
             event_ref: None,
             reply_ref: String::new(),
             thread_ref: Some("thread789".into()),
+            media_attachments: Vec::new(),
             content: String::new(),
             received_at: 0,
         };
-        assert_eq!(conversation_key(&env), "slack_thread789_user456");
+        assert_eq!(
+            conversation_key_for_agent(&env, "test-agent"),
+            "conversation:test-agent:slack:user456:thread789:user456"
+        );
     }
 
     // ── classify_message tests ───────────────────────────────────
@@ -624,13 +649,31 @@ mod tests {
             source_kind: SourceKind::Channel,
             source_adapter: "telegram".into(),
             actor_id: "user1".into(),
-            conversation_ref: String::new(),
+            conversation_id: String::new(),
             event_ref: None,
             reply_ref: String::new(),
             thread_ref: thread.map(String::from),
+            media_attachments: Vec::new(),
             content: String::new(),
             received_at: 0,
         }
+    }
+
+    #[test]
+    fn provider_facing_content_appends_typed_media_markers_once() {
+        let attachments = vec![crate::domain::channel::InboundMediaAttachment::new(
+            crate::domain::channel::InboundMediaKind::Audio,
+            "file:///tmp/voice.ogg",
+        )];
+
+        assert_eq!(
+            provider_facing_content("listen", &attachments),
+            "listen\n[AUDIO:file:///tmp/voice.ogg]"
+        );
+        assert_eq!(
+            provider_facing_content("listen\n[AUDIO:file:///tmp/voice.ogg]", &attachments),
+            "listen\n[AUDIO:file:///tmp/voice.ogg]"
+        );
     }
 
     #[test]
@@ -638,8 +681,8 @@ mod tests {
         let mut env = envelope(None);
         env.event_ref = Some("telegram_123_456".into());
         assert_eq!(
-            autosave_memory_key(&env),
-            "channel:telegram_user1:telegram_123_456"
+            autosave_memory_key_for_agent(&env, "test-agent"),
+            "channel:conversation:test-agent:telegram:user1:user1:telegram_123_456"
         );
     }
 
@@ -649,15 +692,15 @@ mod tests {
         env.content = "hello there".into();
         env.received_at = 42;
         assert_eq!(
-            autosave_memory_key(&env),
-            "channel:telegram_user1:recv42:len11"
+            autosave_memory_key_for_agent(&env, "test-agent"),
+            "channel:conversation:test-agent:telegram:user1:user1:recv42:len11"
         );
     }
 
     #[test]
     fn enrichment_core_blocks_only_when_has_history() {
         assert_eq!(
-            decide_history_enrichment(true, &envelope(None)),
+            decide_history_enrichment_for_agent(true, &envelope(None), "test-agent"),
             HistoryEnrichment::Continuation
         );
     }
@@ -665,11 +708,11 @@ mod tests {
     #[test]
     fn enrichment_thread_seeding_for_threaded_first_message() {
         let env = envelope(Some("thread123"));
-        let result = decide_history_enrichment(false, &env);
+        let result = decide_history_enrichment_for_agent(false, &env, "test-agent");
         assert_eq!(
             result,
             HistoryEnrichment::ThreadSeeding {
-                parent_key: "telegram_user1".into(),
+                parent_key: "conversation:test-agent:telegram:user1:user1".into(),
                 thread_id: "thread123".into(),
             }
         );
@@ -678,11 +721,11 @@ mod tests {
     #[test]
     fn enrichment_memory_for_first_standalone_message() {
         let env = envelope(None);
-        let result = decide_history_enrichment(false, &env);
+        let result = decide_history_enrichment_for_agent(false, &env, "test-agent");
         assert_eq!(
             result,
             HistoryEnrichment::MemoryContext {
-                conversation_key: "telegram_user1".into(),
+                conversation_key: "conversation:test-agent:telegram:user1:user1".into(),
             }
         );
     }

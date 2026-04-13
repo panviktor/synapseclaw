@@ -299,14 +299,14 @@ fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64
     let reference_count = count_reference_candidates(interpretation, ReferenceSource::UserProfile);
     let dialogue_reference_count =
         count_reference_candidates(interpretation, ReferenceSource::DialogueState);
-    let current_conversation_reference_count =
+    let current_conversation_iderence_count =
         count_reference_candidates(interpretation, ReferenceSource::CurrentConversation);
     let direct_dialogue_reference_count = count_direct_dialogue_state_references(interpretation);
     let field_count = profile.fact_count();
 
     let competing_context_penalty = if direct_dialogue_reference_count > 0 {
         0.16
-    } else if dialogue_reference_count > 0 || current_conversation_reference_count > 0 {
+    } else if dialogue_reference_count > 0 || current_conversation_iderence_count > 0 {
         0.08
     } else {
         0.0

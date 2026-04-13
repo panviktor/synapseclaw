@@ -69,7 +69,8 @@ impl ConversationStorePort for SessionBackendConversationStore {
         Ok(self.store.delete(key).await?)
     }
 
-    async fn touch_session(&self, _key: &str) -> anyhow::Result<()> {
+    async fn touch_session(&self, key: &str) -> anyhow::Result<()> {
+        self.store.touch_session(key).await?;
         Ok(())
     }
 
@@ -114,19 +115,23 @@ impl ConversationStorePort for SessionBackendConversationStore {
         Ok(())
     }
 
-    async fn update_label(&self, _key: &str, _label: &str) -> anyhow::Result<()> {
+    async fn update_label(&self, key: &str, label: &str) -> anyhow::Result<()> {
+        self.store.update_label(key, label).await?;
         Ok(())
     }
 
-    async fn update_goal(&self, _key: &str, _goal: &str) -> anyhow::Result<()> {
+    async fn update_goal(&self, key: &str, goal: &str) -> anyhow::Result<()> {
+        self.store.update_goal(key, goal).await?;
         Ok(())
     }
 
-    async fn increment_message_count(&self, _key: &str) -> anyhow::Result<()> {
+    async fn increment_message_count(&self, key: &str) -> anyhow::Result<()> {
+        self.store.increment_message_count(key).await?;
         Ok(())
     }
 
-    async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> anyhow::Result<()> {
+    async fn add_token_usage(&self, key: &str, input: i64, output: i64) -> anyhow::Result<()> {
+        self.store.add_token_usage(key, input, output).await?;
         Ok(())
     }
 
@@ -152,14 +157,14 @@ fn session_from_metadata(
     ConversationSession {
         key: metadata.key,
         kind: ConversationKind::Channel,
-        label: None,
+        label: metadata.label,
         summary,
-        current_goal: None,
+        current_goal: metadata.current_goal,
         created_at: metadata.created_at.timestamp().max(0) as u64,
         last_active: metadata.last_activity.timestamp().max(0) as u64,
         message_count: metadata.message_count as u32,
-        input_tokens: 0,
-        output_tokens: 0,
+        input_tokens: metadata.input_tokens,
+        output_tokens: metadata.output_tokens,
     }
 }
 
@@ -176,13 +181,69 @@ fn event_type_from_role(role: &str) -> EventType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_store::SessionStore;
-    use tempfile::TempDir;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MemorySessionBackend {
+        messages: Mutex<HashMap<String, Vec<ChatMessage>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBackend for MemorySessionBackend {
+        async fn load(&self, session_key: &str) -> Vec<ChatMessage> {
+            self.messages
+                .lock()
+                .unwrap()
+                .get(session_key)
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        async fn append(
+            &self,
+            session_key: &str,
+            message: &ChatMessage,
+        ) -> std::io::Result<()> {
+            self.messages
+                .lock()
+                .unwrap()
+                .entry(session_key.to_string())
+                .or_default()
+                .push(message.clone());
+            Ok(())
+        }
+
+        async fn remove_last(&self, session_key: &str) -> std::io::Result<bool> {
+            Ok(self
+                .messages
+                .lock()
+                .unwrap()
+                .get_mut(session_key)
+                .and_then(Vec::pop)
+                .is_some())
+        }
+
+        async fn replace(
+            &self,
+            session_key: &str,
+            messages: &[ChatMessage],
+        ) -> std::io::Result<()> {
+            self.messages
+                .lock()
+                .unwrap()
+                .insert(session_key.to_string(), messages.to_vec());
+            Ok(())
+        }
+
+        async fn list_sessions(&self) -> Vec<String> {
+            self.messages.lock().unwrap().keys().cloned().collect()
+        }
+    }
 
     #[tokio::test]
     async fn exposes_session_store_as_conversation_store() {
-        let tmp = TempDir::new().unwrap();
-        let backend = Arc::new(SessionStore::new(tmp.path()).unwrap()) as Arc<dyn SessionBackend>;
+        let backend = Arc::new(MemorySessionBackend::default()) as Arc<dyn SessionBackend>;
         backend
             .append("matrix_room_alice", &ChatMessage::user("weather in Berlin"))
             .await

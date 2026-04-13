@@ -501,16 +501,6 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         items.push(DiagItem::error(cat, "gateway port is 0 (invalid)"));
     }
 
-    // Reliability: fallback providers
-    for fb in &config.reliability.fallback_providers {
-        if let Some(reason) = provider_validation_error(fb) {
-            items.push(DiagItem::warn(
-                cat,
-                format!("fallback provider \"{fb}\" is invalid: {reason}"),
-            ));
-        }
-    }
-
     // Route aliases validation
     for route in &config.route_aliases {
         if route.hint.is_empty() {
@@ -1128,34 +1118,6 @@ mod tests {
         let prov_item = items.iter().find(|i| i.message.contains("is valid"));
         assert!(prov_item.is_some());
         assert_eq!(prov_item.unwrap().severity, Severity::Ok);
-    }
-
-    #[test]
-    fn config_validation_warns_bad_fallback() {
-        let mut config = Config::default();
-        config.reliability.fallback_providers = vec!["fake-provider".into()];
-        let mut items = Vec::new();
-        check_config_semantics(&config, &mut items);
-        let fb_item = items
-            .iter()
-            .find(|i| i.message.contains("fallback provider"));
-        assert!(fb_item.is_some());
-        assert_eq!(fb_item.unwrap().severity, Severity::Warn);
-    }
-
-    #[test]
-    fn config_validation_warns_bad_custom_fallback() {
-        let mut config = Config::default();
-        config.reliability.fallback_providers = vec!["custom:".into()];
-        let mut items = Vec::new();
-        check_config_semantics(&config, &mut items);
-
-        let fb_item = items.iter().find(|item| {
-            item.message
-                .contains("fallback provider \"custom:\" is invalid")
-        });
-        assert!(fb_item.is_some());
-        assert_eq!(fb_item.unwrap().severity, Severity::Warn);
     }
 
     #[test]

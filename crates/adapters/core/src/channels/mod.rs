@@ -26,13 +26,12 @@ use crate::channel_runtime_support::{
     spawn_supervised_listener, ChannelHealthState,
 };
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
-use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_infra::approval::ApprovalManager;
 use synapse_infra::config_io::ConfigIO;
 // memory module used indirectly via synapse_memory
 use crate::runtime;
 use crate::runtime_adapter_contract::{
-    execute_runtime_command_effect, ChannelRuntimeAdapterContract, RuntimeCommandHost,
+    execute_runtime_command_output, ChannelRuntimeAdapterContract, RuntimeCommandHost,
     RuntimeModelHelpSnapshot, RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome,
     RuntimeRouteMutationRequest,
 };
@@ -46,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use synapse_domain::config::schema::Config;
 use synapse_memory::UnifiedMemoryPort;
 use synapse_observability::{self, Observer};
@@ -76,8 +75,6 @@ impl RuntimeToolNotificationHandler for ChannelToolNotificationHandler {
 
 /// Per-sender conversation history for channel messages.
 type ConversationHistoryMap = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
-/// Maximum history messages to keep per sender.
-const MAX_CHANNEL_HISTORY: usize = 50;
 
 const DEFAULT_CHANNEL_INITIAL_BACKOFF_SECS: u64 = 2;
 const DEFAULT_CHANNEL_MAX_BACKOFF_SECS: u64 = 60;
@@ -85,14 +82,32 @@ const MIN_CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 30;
 /// Default timeout for processing a single channel message (LLM + tools).
 /// Used as fallback when not configured in channels_config.message_timeout_secs.
 const CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 300;
-/// Generate a rolling summary every N messages in channel conversations.
-/// Higher than web's 10 because channel messages are typically less frequent.
-const CHANNEL_SUMMARY_INTERVAL: usize = 20;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 /// Phase 4.0: RouteSelection from synapse_domain replaces the old ChannelRouteSelection.
 type ChannelRouteSelection = synapse_domain::ports::route_selection::RouteSelection;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
+
+pub(crate) fn build_channel_session_backend(
+    config: &Config,
+    shared_surreal: Option<&Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
+) -> Result<Option<Arc<dyn crate::channels::session_backend::SessionBackend>>> {
+    if !config.channels_config.session_persistence {
+        return Ok(None);
+    }
+
+    if let Some(db) = shared_surreal {
+        tracing::info!("📂 Session persistence enabled (SurrealDB)");
+        return Ok(Some(Arc::new(session_surreal::SurrealSessionBackend::new(
+            Arc::clone(db),
+        ))
+            as Arc<dyn crate::channels::session_backend::SessionBackend>));
+    }
+
+    anyhow::bail!(
+        "channel session persistence requires the shared SurrealDB runtime; SQLite/JSONL channel session backends have been removed. Matrix SDK storage is separate."
+    )
+}
 
 fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
     configured.max(MIN_CHANNEL_MESSAGE_TIMEOUT_SECS)
@@ -214,6 +229,7 @@ struct ChannelRuntimeContext {
         Option<Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
+    conversation_store: Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
@@ -446,19 +462,13 @@ async fn route_effective_context_cache_stats(
     ctx: &ChannelRuntimeContext,
     route: &ChannelRouteSelection,
 ) -> synapse_domain::ports::route_selection::ContextCacheStats {
-    let compression =
-        synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
-            &ctx.compression,
-            ctx.compression_overrides.as_slice(),
-            route.provider.as_str(),
-            route.model.as_str(),
-            route.lane,
-            None,
-        );
-    if let Err(error) = ctx.history_compaction_cache.load(&compression).await {
-        tracing::debug!(%error, "Failed to load channel-visible history compaction cache");
-    }
-    ctx.history_compaction_cache.stats(&compression)
+    crate::runtime_history_hygiene::route_effective_context_cache_stats(
+        &ctx.compression,
+        ctx.compression_overrides.as_slice(),
+        ctx.history_compaction_cache.as_ref(),
+        route,
+    )
+    .await
 }
 
 fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: ChannelRouteSelection) {
@@ -474,11 +484,63 @@ fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: Chan
     }
 }
 
+async fn channel_runtime_trace_maintenance_loop(ctx: Arc<ChannelRuntimeContext>) {
+    let interval = Duration::from_secs(
+        synapse_domain::application::services::runtime_trace_janitor::RUNTIME_TRACE_MAINTENANCE_INTERVAL_SECS,
+    );
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let snapshots = {
+            let routes = ctx
+                .route_overrides
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            routes
+                .iter()
+                .map(|(key, route)| (key.clone(), route.clone()))
+                .collect::<Vec<_>>()
+        };
+        if snapshots.is_empty() {
+            continue;
+        }
+
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs() as i64);
+        let mut maintained_routes = 0usize;
+        for (key, route_snapshot) in snapshots {
+            let context_cache = route_effective_context_cache_stats(&ctx, &route_snapshot).await;
+            let mut routes = ctx
+                .route_overrides
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(route) = routes.get_mut(&key) else {
+                continue;
+            };
+            if route.provider != route_snapshot.provider
+                || route.model != route_snapshot.model
+                || route.lane != route_snapshot.lane
+                || route.candidate_index != route_snapshot.candidate_index
+            {
+                continue;
+            }
+            route.context_cache = Some(context_cache);
+            route.run_runtime_trace_maintenance(now_unix);
+            maintained_routes += 1;
+        }
+        if maintained_routes > 0 {
+            tracing::trace!(
+                routes = maintained_routes,
+                "Channel runtime trace maintenance tick completed"
+            );
+        }
+    }
+}
+
 fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
-    ctx.conversation_histories
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(sender_key);
+    channel_history_port(ctx).clear_history(sender_key);
 }
 
 fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
@@ -491,33 +553,13 @@ fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
     config
 }
 
-fn channel_conversation_history(
+fn channel_history_port(
     ctx: &ChannelRuntimeContext,
-    conversation_key: &str,
-) -> Vec<ChatMessage> {
-    ctx.conversation_histories
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(conversation_key)
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn compact_channel_conversation_history(
-    ctx: &ChannelRuntimeContext,
-    conversation_key: &str,
-    keep_non_system_turns: usize,
-) -> bool {
-    let mut histories = ctx
-        .conversation_histories
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    histories.get_mut(conversation_key).is_some_and(|history| {
-        synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene(
-            history,
-            keep_non_system_turns,
-        )
-    })
+) -> Arc<dyn synapse_domain::ports::conversation_history::ConversationHistoryPort> {
+    crate::inbound_runtime_ports::InboundRuntimeStoreFactory::history(
+        Arc::clone(&ctx.conversation_histories),
+        ctx.session_store.clone(),
+    )
 }
 
 fn resolve_channel_runtime_route_switch_preflight(
@@ -525,46 +567,27 @@ fn resolve_channel_runtime_route_switch_preflight(
     conversation_key: &str,
     target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
 ) -> synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflightResolution {
-    let history = channel_conversation_history(ctx, conversation_key);
-    let mut resolution =
-        synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflightResolution::new(
-            synapse_domain::application::services::route_switch_preflight::assess_route_switch_preflight_for_history(
-                &history,
-                target_profile,
-            ),
-        );
-
-    while resolution.should_attempt_compaction() {
-        if !compact_channel_conversation_history(
-            ctx,
-            conversation_key,
-            synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
-        ) {
-            break;
-        }
-        let history = channel_conversation_history(ctx, conversation_key);
-        resolution.record_compaction_pass(
-            synapse_domain::application::services::route_switch_preflight::assess_route_switch_preflight_for_history(
-                &history,
-                target_profile,
-            ),
-        );
-    }
-
-    resolution
+    let history = channel_history_port(ctx);
+    crate::runtime_history_hygiene::resolve_route_switch_preflight_for_history_port(
+        history.as_ref(),
+        conversation_key,
+        target_profile,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+    )
 }
 
-/// Generate a rolling summary of a channel conversation every
-/// [`CHANNEL_SUMMARY_INTERVAL`] messages. Uses the configured summary model
-/// (cheap/fast) so it doesn't burn primary-model tokens.
+/// Generate a rolling summary of a channel conversation through the shared inbound summary path.
 async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, history_key: &str) {
-    /// In-flight summary keys to prevent concurrent generation for the same session.
-    static INFLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-
     let store = match ctx.session_store.as_ref() {
         Some(s) => s,
         None => return,
+    };
+    let Some(conversation_store) =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(Some(
+            Arc::clone(store),
+        ))
+    else {
+        return;
     };
 
     let msg_count = ctx
@@ -574,147 +597,43 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
         .get(history_key)
         .map_or(0, |turns| turns.len());
 
-    let last_summary_count = store
-        .load_summary(history_key)
-        .await
+    let existing_summary = store.load_summary(history_key).await;
+    let last_summary_count = existing_summary
+        .as_ref()
         .map_or(0, |s| s.message_count_at_summary);
-
-    if msg_count < CHANNEL_SUMMARY_INTERVAL
-        || msg_count.saturating_sub(last_summary_count) < CHANNEL_SUMMARY_INTERVAL
-    {
-        return;
-    }
-
-    // Prevent concurrent summary generation for the same session.
-    {
-        let mut inflight = INFLIGHT.lock().unwrap_or_else(|e| e.into_inner());
-        if !inflight.insert(history_key.to_string()) {
-            return; // Another task is already summarizing this session.
-        }
-    }
-    // RAII guard to remove the inflight key when this function exits.
-    struct InflightGuard(String);
-    impl Drop for InflightGuard {
-        fn drop(&mut self) {
-            if let Ok(mut inflight) = INFLIGHT.lock() {
-                inflight.remove(&self.0);
-            }
-        }
-    }
-    let _guard = InflightGuard(history_key.to_string());
-
-    // Collect last 10 messages for the summary prompt.
-    // Lock scope is intentionally separate from the .await below (Send safety).
-    let recent_text = {
-        let histories = ctx
-            .conversation_histories
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let turns = match histories.get(history_key) {
-            Some(t) => t,
-            None => return,
-        };
-        let start = turns.len().saturating_sub(10);
-        let mut text = String::new();
-        for t in &turns[start..] {
-            use std::fmt::Write;
-            let content_preview = if t.content.chars().count() > 200 {
-                format!("{}…", t.content.chars().take(200).collect::<String>())
-            } else {
-                t.content.clone()
-            };
-            let _ = writeln!(text, "{}: {content_preview}", t.role);
-        }
-        text
-    }; // MutexGuard dropped here — before any .await
-    let prev_summary = store.load_summary(history_key).await.map(|s| s.summary);
-
-    if recent_text.is_empty() {
-        return;
-    }
-
-    let prompt = format!(
-        "Summarize this conversation in 2-3 sentences. Preserve: key decisions, user goals, open tasks.\n\
-         Previous summary: {}\n\n\
-         Recent messages:\n{}",
-        prev_summary.as_deref().unwrap_or("(none)"),
-        recent_text,
-    );
+    let previous_summary = existing_summary.map(|s| s.summary);
 
     let mut summary_config = synapse_domain::config::schema::Config::default();
+    summary_config.workspace_dir = ctx.workspace_dir.as_ref().clone();
+    summary_config.default_provider = Some(ctx.default_provider.as_ref().clone());
+    summary_config.default_model = Some(ctx.model.as_ref().clone());
     summary_config.summary = ctx.summary_config.as_ref().clone();
     summary_config.summary_model = ctx.summary_model.clone();
     summary_config.model_lanes = ctx.model_lanes.as_ref().clone();
-    let summary_route = resolve_summary_route(&summary_config, &ctx.model);
 
-    tracing::debug!(
-        history_key,
-        summary_route_source = summary_route.source.as_str(),
-        summary_provider = summary_route.provider.as_deref().unwrap_or("current"),
-        summary_model = summary_route.model.as_str(),
-        "Channel summary lane selected"
-    );
-
-    let summary_result = if let Some(ref provider_name) = summary_route.provider {
-        let api_key = summary_route
-            .api_key_env
-            .as_deref()
-            .and_then(|env| std::env::var(env).ok())
-            .or_else(|| summary_route.api_key.clone());
-        match synapse_providers::create_provider_with_options(
-            provider_name,
-            api_key.as_deref(),
-            &ctx.provider_runtime_options,
-        ) {
-            Ok(provider) => {
-                provider
-                    .chat_with_system(
-                        None,
-                        &prompt,
-                        &summary_route.model,
-                        summary_route.temperature,
-                    )
-                    .await
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Channel summary provider '{provider_name}' init failed: {e}, using current route"
-                );
-                ctx.provider
-                    .chat_with_system(None, &prompt, &ctx.model, summary_route.temperature)
-                    .await
-            }
-        }
-    } else {
-        ctx.provider
-            .chat_with_system(
-                None,
-                &prompt,
-                &summary_route.model,
-                summary_route.temperature,
-            )
-            .await
-    };
-
-    match summary_result {
-        Ok(summary) => {
-            let summary = if summary.chars().count() > 300 {
-                format!("{}…", summary.chars().take(300).collect::<String>())
-            } else {
-                summary
-            };
-            let channel_summary = session_backend::ChannelSummary {
-                summary: summary.clone(),
-                message_count_at_summary: msg_count,
-                updated_at: chrono::Utc::now(),
-            };
-            if let Err(e) = store.save_summary(history_key, &channel_summary).await {
-                tracing::warn!("Failed to persist channel summary: {e}");
-            }
+    match crate::inbound_runtime_summary::summarize_session_if_needed(
+        crate::inbound_runtime_summary::InboundRuntimeSummaryInput {
+            store: conversation_store.as_ref(),
+            current_provider: Arc::clone(&ctx.provider),
+            config: &summary_config,
+            current_model: &ctx.model,
+            provider_runtime_options: &ctx.provider_runtime_options,
+            session_key: history_key,
+            message_count: msg_count,
+            last_summary_count,
+            previous_summary: previous_summary.as_deref(),
+            interval: synapse_domain::application::services::conversation_service::CHANNEL_SUMMARY_INTERVAL,
+            transport_label: "channel",
+        },
+    )
+    .await
+    {
+        Ok(Some(summary)) => {
             tracing::debug!("Channel summary updated for {history_key}: {summary}");
         }
-        Err(e) => {
-            tracing::warn!("Channel summary generation failed for {history_key}: {e}");
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!("Channel summary generation failed for {history_key}: {error}");
         }
     }
 }
@@ -810,30 +729,22 @@ async fn handle_message_via_orchestrator(
         "channel.message.received"
     );
 
-    use crate::runtime::{agent_runtime_adapter, hooks_adapter};
-    use synapse_channels::inbound::{
-        channel_output_adapter, conversation_history_adapter, conversation_store_adapter,
-        route_selection_adapter, session_summary_adapter,
-    };
+    use crate::runtime::hooks_adapter;
+    use synapse_channels::inbound::channel_output_adapter;
     use synapse_domain::application::use_cases::handle_inbound_message as uc;
     use synapse_domain::ports::hooks::NoOpHooks;
 
     // ── Build ports from ChannelRuntimeContext ────────────────────
-    let history_port: Arc<
-        dyn synapse_domain::ports::conversation_history::ConversationHistoryPort,
-    > = Arc::new(
-        conversation_history_adapter::MutexMapConversationHistory::new(
-            ctx.conversation_histories.clone(),
-            ctx.session_store.clone(),
-        ),
+    let history_port = crate::inbound_runtime_ports::InboundRuntimeStoreFactory::history(
+        ctx.conversation_histories.clone(),
+        ctx.session_store.clone(),
     );
 
-    let route_port: Arc<dyn synapse_domain::ports::route_selection::RouteSelectionPort> =
-        Arc::new(route_selection_adapter::MutexMapRouteSelection::new(
-            ctx.route_overrides.clone(),
-            ctx.default_provider.to_string(),
-            ctx.model.to_string(),
-        ));
+    let route_port = crate::inbound_runtime_ports::InboundRuntimeStoreFactory::routes(
+        ctx.route_overrides.clone(),
+        ctx.default_provider.to_string(),
+        ctx.model.to_string(),
+    );
 
     let hooks_port: Arc<dyn synapse_domain::ports::hooks::HooksPort> =
         if let Some(ref runner) = ctx.hooks {
@@ -859,8 +770,7 @@ async fn handle_message_via_orchestrator(
                 Arc::clone(ch),
             ))
         } else {
-            // No channel — use a null output that drops everything
-            Arc::new(NullChannelOutput)
+            Arc::new(synapse_domain::ports::channel_output::NoopChannelOutput)
         };
 
     let presentation_mode = synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(
@@ -878,7 +788,10 @@ async fn handle_message_via_orchestrator(
                 let reply_target = original_msg.reply_target.clone();
                 let thread_ts = original_msg.thread_ts.clone();
                 let session_store_for_tools = ctx.session_store.clone();
-                let conversation_key = envelope.conversation_ref.clone();
+                let conversation_key = synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+                    envelope,
+                    &ctx.agent_id,
+                );
                 tokio::spawn(async move {
                     while let Some(tool_msg) = tool_rx.recv().await {
                         // Send to channel
@@ -912,15 +825,89 @@ async fn handle_message_via_orchestrator(
             Arc::clone(&ctx.observer)
         };
 
-    let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> =
-        Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
-            provider: Arc::clone(&ctx.provider),
-            default_provider_name: ctx.default_provider.as_ref().clone(),
-            default_api_key: ctx.api_key.clone(),
-            default_api_url: ctx.api_url.clone(),
-            provider_cache: Arc::clone(&ctx.provider_cache),
-            reliability: ctx.reliability.as_ref().clone(),
-            provider_runtime_options: ctx.provider_runtime_options.clone(),
+    let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> = Arc::new(
+        crate::agent_runtime_factory::ChannelAgentRuntimeFactory::build(
+            crate::agent_runtime_factory::ChannelAgentRuntimeInput {
+                provider: Arc::clone(&ctx.provider),
+                default_provider_name: ctx.default_provider.as_ref().clone(),
+                default_api_key: ctx.api_key.clone(),
+                default_api_url: ctx.api_url.clone(),
+                provider_cache: Arc::clone(&ctx.provider_cache),
+                reliability: ctx.reliability.as_ref().clone(),
+                provider_runtime_options: ctx.provider_runtime_options.clone(),
+                workspace_dir: ctx.workspace_dir.as_ref().to_path_buf(),
+                tools_registry: Arc::clone(&ctx.tools_registry),
+                observer: observer_for_runtime,
+                approval_manager: Arc::clone(&ctx.approval_manager),
+                channel_name: original_msg.channel.clone(),
+                multimodal: ctx.multimodal.clone(),
+                excluded_tools: Arc::clone(&ctx.non_cli_excluded_tools),
+                dedup_exempt_tools: Arc::clone(&ctx.tool_call_dedup_exempt),
+                hooks: ctx.hooks.clone(),
+                activated_tools: ctx.activated_tools.clone(),
+                message_timeout_secs: ctx.message_timeout_secs,
+                max_tool_iterations: ctx.max_tool_iterations,
+            },
+        ),
+    );
+
+    let Some(registry) = ctx.channel_registry.clone() else {
+        tracing::error!("channel runtime registry is required");
+        return;
+    };
+
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            ctx.session_store.clone(),
+        );
+    let conversation_store = ctx
+        .conversation_store
+        .clone()
+        .or_else(|| channel_conversation_store.clone());
+    let session_summary =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_summary(
+            channel_conversation_store,
+        );
+
+    // Bootstrap identity files are compiled into the static prompt at startup.
+    // Per-turn continuity comes from structured memory and turn context.
+    let system_prompt = ctx.system_prompt.to_string();
+
+    let config = crate::inbound_runtime_config::InboundRuntimeConfigFactory::build(
+        crate::inbound_runtime_config::InboundRuntimeConfigInput {
+            system_prompt,
+            default_provider: ctx.default_provider.to_string(),
+            default_model: ctx.model.to_string(),
+            temperature: ctx.temperature,
+            max_tool_iterations: ctx.max_tool_iterations,
+            auto_save_memory: ctx.auto_save_memory,
+            model_lanes: ctx.model_lanes.as_ref().clone(),
+            model_preset: ctx.model_preset.clone(),
+            query_classification: ctx.query_classification.clone(),
+            message_timeout_secs: ctx.message_timeout_secs,
+            min_relevance_score: ctx.min_relevance_score,
+            ack_reactions: ctx.ack_reactions,
+            agent_id: ctx.agent_id.to_string(),
+            prompt_budget_config: ctx.prompt_budget_config.clone(),
+            presentation_mode,
+        },
+    );
+
+    let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
+        Some(Arc::clone(&ctx.memory));
+
+    let ports = crate::inbound_runtime_ports::InboundRuntimePortsFactory::build(
+        crate::inbound_runtime_ports::InboundRuntimePortsInput {
+            history: history_port,
+            routes: route_port,
+            hooks: hooks_port,
+            channel_output: channel_output.clone(),
+            agent_runtime,
+            channel_registry: registry,
+            session_summary,
+            memory: memory_port,
+            event_tx: ctx.event_tx.clone(),
+            conversation_context: ctx.conversation_context.clone(),
             model_profile_catalog: Some(Arc::new(
                 crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
                     ctx.workspace_dir.as_ref().to_path_buf(),
@@ -928,227 +915,47 @@ async fn handle_message_via_orchestrator(
                     ctx.api_url.as_deref(),
                 ),
             )),
-            tools_registry: Arc::clone(&ctx.tools_registry),
-            observer: observer_for_runtime,
-            approval_manager: Arc::clone(&ctx.approval_manager),
-            channel_name: original_msg.channel.clone(),
-            multimodal: ctx.multimodal.clone(),
-            excluded_tools: Arc::clone(&ctx.non_cli_excluded_tools),
-            dedup_exempt_tools: Arc::clone(&ctx.tool_call_dedup_exempt),
-            hooks: ctx.hooks.clone(),
-            activated_tools: ctx.activated_tools.clone(),
-            message_timeout_secs: ctx.message_timeout_secs,
-            max_tool_iterations: ctx.max_tool_iterations,
-        });
-
-    let registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
-        ctx.channel_registry.clone().unwrap_or_else(|| {
-            Arc::new(crate::channels::registry::CachedChannelRegistry::new(
-                synapse_domain::config::schema::Config::default(),
-                std::sync::Arc::new(build_channel_by_id),
-            ))
-        });
-
-    let session_summary: Option<
-        Arc<dyn synapse_domain::ports::session_summary::SessionSummaryPort>,
-    > = ctx.session_store.as_ref().map(|store| {
-        Arc::new(session_summary_adapter::SessionStoreAdapter::new(
-            Arc::clone(store),
-        )) as Arc<dyn synapse_domain::ports::session_summary::SessionSummaryPort>
-    });
-    let conversation_store: Option<
-        Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>,
-    > = ctx.session_store.as_ref().map(|store| {
-        Arc::new(
-            conversation_store_adapter::SessionBackendConversationStore::new(Arc::clone(store)),
-        ) as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
-    });
-
-    // Bootstrap identity files are compiled into the static prompt at startup.
-    // Per-turn continuity comes from structured memory and turn context.
-    let system_prompt = ctx.system_prompt.to_string();
-
-    let config = uc::InboundMessageConfig {
-        system_prompt,
-        default_provider: ctx.default_provider.to_string(),
-        default_model: ctx.model.to_string(),
-        temperature: ctx.temperature,
-        max_tool_iterations: ctx.max_tool_iterations,
-        auto_save_memory: ctx.auto_save_memory,
-        model_lanes: ctx.model_lanes.as_ref().clone(),
-        model_preset: ctx.model_preset.clone(),
-        thread_root_max_chars: 500,
-        thread_parent_recent_turns: 3,
-        thread_parent_max_chars: 2000,
-        query_classifier: {
-            let qc = ctx.query_classification.clone();
-            if qc.enabled {
-                Some(std::sync::Arc::new(move |msg: &str| {
-                    crate::agent::classifier::classify(&qc, msg)
-                })
-                    as std::sync::Arc<
-                        dyn Fn(&str) -> Option<String> + Send + Sync,
-                    >)
-            } else {
-                None
-            }
+            turn_defaults_context: ctx.turn_defaults_context.clone(),
+            scoped_instruction_context: ctx.scoped_instruction_context.clone(),
+            conversation_store,
+            dialogue_state_store: ctx.dialogue_state_store.clone(),
+            run_recipe_store: ctx.run_recipe_store.clone(),
+            user_profile_store: ctx.user_profile_store.clone(),
         },
-        message_timeout_secs: ctx.message_timeout_secs,
-        min_relevance_score: ctx.min_relevance_score,
-        ack_reactions: ctx.ack_reactions,
-        agent_id: ctx.agent_id.to_string(),
-        prompt_budget: {
-            let mut b = ctx.prompt_budget_config.to_prompt_budget();
-            b.recall_min_relevance = ctx.min_relevance_score;
-            b
-        },
-        continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
-        presentation_mode,
-        // Signal patterns are loaded once into the shared runtime context.
-        // Future: refresh them through a typed config/runtime update path.
-    };
-
-    let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
-        Some(Arc::clone(&ctx.memory));
-
-    let ports = uc::InboundMessagePorts {
-        history: history_port,
-        routes: route_port,
-        hooks: hooks_port,
-        channel_output: channel_output.clone(),
-        agent_runtime,
-        channel_registry: registry,
-        session_summary,
-        memory: memory_port,
-        event_tx: ctx.event_tx.clone(),
-        conversation_context: ctx.conversation_context.clone(),
-        model_profile_catalog: Some(Arc::new(
-            crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
-                ctx.workspace_dir.as_ref().to_path_buf(),
-                Some(ctx.default_provider.as_ref()),
-                ctx.api_url.as_deref(),
-            ),
-        )),
-        turn_defaults_context: ctx.turn_defaults_context.clone(),
-        scoped_instruction_context: ctx.scoped_instruction_context.clone(),
-        conversation_store,
-        dialogue_state_store: ctx.dialogue_state_store.clone(),
-        run_recipe_store: ctx.run_recipe_store.clone(),
-        user_profile_store: ctx.user_profile_store.clone(),
-    };
-
-    // ── Phase 4.1: Check if message should trigger a pipeline ─────
-    tracing::info!(
-        has_router = ctx.message_router.is_some(),
-        has_store = ctx.pipeline_store.is_some(),
-        has_executor = ctx.pipeline_executor.is_some(),
-        content = %envelope.content,
-        "pipeline routing check"
     );
-    if let (Some(ref router), Some(ref store), Some(ref executor)) = (
-        &ctx.message_router,
-        &ctx.pipeline_store,
-        &ctx.pipeline_executor,
-    ) {
-        let routing_input = synapse_domain::domain::routing::RoutingInput {
-            content: envelope.content.clone(),
-            source_kind: format!("{:?}", envelope.source_kind),
-            metadata: std::collections::HashMap::new(),
-        };
-        let route_result = router.route(&routing_input).await;
-        tracing::info!(
-            target = %route_result.target,
-            pipeline = ?route_result.pipeline,
-            matched = ?route_result.matched_rule,
-            fallback = route_result.is_fallback,
-            "pipeline routing result"
-        );
-        if let Some(ref pipeline_name) = route_result.pipeline {
-            if store.get(pipeline_name).await.is_some() {
-                let matched = route_result.matched_rule.as_deref().unwrap_or("fallback");
-                tracing::info!(
-                    pipeline = %pipeline_name,
-                    matched_rule = %matched,
-                    content = %envelope.content,
-                    "message routed to pipeline"
-                );
-                // Build pipeline input from the message
-                let input = serde_json::json!({
-                    "message": envelope.content,
-                    "source": envelope.source_adapter,
-                    "sender": envelope.actor_id,
-                });
-                // Build minimal ports for pipeline run
-                let run_store: Arc<dyn synapse_domain::ports::run_store::RunStorePort> =
-                    Arc::new(synapse_domain::ports::run_store::NoOpRunStore);
-                let pipeline_ports =
-                    synapse_domain::application::services::pipeline_service::PipelineRunnerPorts {
-                        pipeline_store: Arc::clone(store),
-                        executor: Arc::clone(executor),
-                        run_store,
-                        dead_letter: None,
-                    };
-                let params =
-                    synapse_domain::application::services::pipeline_service::StartPipelineParams {
-                        pipeline_name: pipeline_name.clone(),
-                        input,
-                        triggered_by: envelope.actor_id.clone(),
-                        depth: 0,
-                        parent_run_id: None,
-                    };
-                let result = synapse_domain::application::services::pipeline_service::run_pipeline(
-                    &pipeline_ports,
-                    params,
-                )
-                .await;
-                // Report result back to channel.
-                // Show the last step's "summary" or "status" field as a human-readable
-                // one-liner. The pipeline is generic — each step decides what to return.
-                // If no summary field, fall back to step name + "done".
-                let reply = match &result.state {
-                    synapse_domain::domain::pipeline_context::PipelineState::Completed => {
-                        result
-                            .data
-                            .as_object()
-                            .and_then(|obj| {
-                                // Last step output (skip "_input" metadata key)
-                                obj.iter()
-                                    .rev()
-                                    .find(|(k, _)| *k != "_input")
-                                    .map(|(step, val)| {
-                                        // Prefer "summary", then "status", then stringify
-                                        let detail = val
-                                            .get("summary")
-                                            .and_then(|s| s.as_str())
-                                            .or_else(|| val.get("status").and_then(|s| s.as_str()))
-                                            .unwrap_or("done");
-                                        format!("Pipeline `{pipeline_name}` — {step}: {detail}")
-                                    })
-                            })
-                            .unwrap_or_else(|| format!("Pipeline `{pipeline_name}` completed."))
-                    }
-                    synapse_domain::domain::pipeline_context::PipelineState::Failed => {
-                        let err = result.error.as_deref().unwrap_or("unknown error");
-                        format!("Pipeline `{pipeline_name}` failed: {err}")
-                    }
-                    _ => {
-                        format!(
-                            "Pipeline `{pipeline_name}` ended in state: {:?}",
-                            result.state
-                        )
-                    }
-                };
-                if let Some(ch) = &target_channel {
-                    let send_msg = SendMessage::new(&reply, &original_msg.reply_target)
-                        .in_thread(original_msg.thread_ts.clone());
-                    if let Err(e) = ch.send(&send_msg).await {
-                        tracing::warn!("Failed to send pipeline result: {e}");
-                    }
-                }
-                return; // pipeline handled the message — skip normal LLM processing
-            }
-        }
+
+    // ── Shared explicit routing: pipeline route or local handling ──
+    if let Some(output) = crate::message_routing_service::route_explicit_message(
+        envelope,
+        crate::message_routing_service::MessageRoutingPorts {
+            router: ctx.message_router.clone(),
+            pipeline_store: ctx.pipeline_store.clone(),
+            pipeline_executor: ctx.pipeline_executor.clone(),
+            run_store: None,
+            dead_letter: None,
+        },
+        synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+            reply_ref: Some(original_msg.reply_target.clone()),
+            thread_ref: original_msg.thread_ts.clone(),
+            already_delivered: false,
+        },
+    )
+    .await
+    {
+        send_presented_output_to_channel(
+            &output,
+            target_channel.as_ref(),
+            &original_msg.reply_target,
+            original_msg.thread_ts.clone(),
+            "pipeline result",
+        )
+        .await;
+        return;
     }
+    tracing::info!(
+        agent_id = %ctx.agent_id,
+        "explicit routing no match; handling locally"
+    );
 
     // ── Call orchestrator ─────────────────────────────────────────
     // The orchestrator sends responses/errors directly via ChannelOutputPort.
@@ -1158,20 +965,30 @@ async fn handle_message_via_orchestrator(
             effect,
             conversation_key,
         }) => {
-            let response = format_command_effect(&effect, ctx, &conversation_key).await;
-            if let Some(ch) = &target_channel {
-                let send_msg = SendMessage::new(&response, &original_msg.reply_target)
-                    .in_thread(original_msg.thread_ts.clone());
-                if let Err(e) = ch.send(&send_msg).await {
-                    tracing::warn!("Failed to send command response: {e}");
-                }
-            }
+            let output = format_command_effect(&effect, ctx, &conversation_key).await;
+            send_presented_output_to_channel(
+                &output,
+                target_channel.as_ref(),
+                &original_msg.reply_target,
+                original_msg.thread_ts.clone(),
+                "command response",
+            )
+            .await;
         }
         Ok(uc::HandleResult::Cancelled { reason }) => {
             tracing::info!(%reason, "Message cancelled by hook");
         }
-        // Response already sent by orchestrator via ChannelOutputPort
-        Ok(uc::HandleResult::Response { .. } | uc::HandleResult::CommandNoChannel) => {}
+        Ok(uc::HandleResult::Response { output, .. }) => {
+            send_presented_output_to_channel(
+                &output,
+                target_channel.as_ref(),
+                &original_msg.reply_target,
+                original_msg.thread_ts.clone(),
+                "response",
+            )
+            .await;
+        }
+        Ok(uc::HandleResult::CommandNoChannel) => {}
         Err(e) => {
             // Unexpected orchestrator error (should be rare — most errors handled internally)
             tracing::warn!("Message handling failed unexpectedly: {e}");
@@ -1186,9 +1003,11 @@ async fn handle_message_via_orchestrator(
 
     // Persist session store turn if available
     if let Some(ref _store) = ctx.session_store {
-        let key = synapse_domain::application::services::inbound_message_service::conversation_key(
-            envelope,
-        );
+        let key =
+            synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+                envelope,
+                &ctx.agent_id,
+            );
         let _history = ports.history.get_history(&key);
         // Session store is already updated through the history port's append_turn
         // Just trigger summary generation if needed
@@ -1200,53 +1019,66 @@ async fn handle_message_via_orchestrator(
     }
 }
 
-/// Null channel output for when no channel is available.
-struct NullChannelOutput;
-
-#[async_trait::async_trait]
-impl synapse_domain::ports::channel_output::ChannelOutputPort for NullChannelOutput {
-    async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn start_typing(&self, _r: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn stop_typing(&self, _r: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn add_reaction(&self, _r: &str, _m: &str, _e: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn remove_reaction(&self, _r: &str, _m: &str, _e: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn fetch_message_text(&self, _m: &str) -> anyhow::Result<Option<String>> {
-        Ok(None)
-    }
-    fn supports_streaming(&self) -> bool {
-        false
-    }
-}
-
 /// Format a command effect into a user-facing response string.
 async fn format_command_effect(
     effect: &synapse_domain::application::services::inbound_message_service::CommandEffect,
     ctx: &ChannelRuntimeContext,
     conversation_key: &str,
-) -> String {
+) -> synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
     let adapter_contract = ChannelRuntimeAdapterContract;
     let mut command_host = ChannelRuntimeCommandHost {
         ctx,
         conversation_key,
     };
-    execute_runtime_command_effect(
+    match execute_runtime_command_output(
         &adapter_contract,
         &mut command_host,
         effect,
         ctx.default_provider.as_str(),
+        synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints::default(),
     )
     .await
-    .unwrap_or_else(|error| synapse_providers::sanitize_api_error(&error.to_string()))
+    {
+        Ok(output) => output,
+        Err(error) => synapse_domain::application::services::assistant_output_presentation::AssistantOutputPresenter::success(
+            synapse_providers::sanitize_api_error(&error.to_string()),
+            Vec::new(),
+            String::new(),
+            false,
+            synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints::default(),
+        ),
+    }
+}
+
+async fn send_presented_output_to_channel(
+    output: &synapse_domain::application::services::assistant_output_presentation::PresentedOutput,
+    target_channel: Option<&Arc<dyn synapse_domain::ports::channel::Channel>>,
+    default_reply_ref: &str,
+    default_thread_ref: Option<String>,
+    output_kind: &'static str,
+) {
+    if output.delivery_hints.already_delivered {
+        return;
+    }
+    let Some(channel) = target_channel else {
+        return;
+    };
+    let recipient = output
+        .delivery_hints
+        .reply_ref
+        .as_deref()
+        .unwrap_or(default_reply_ref);
+    let thread_ref = output
+        .delivery_hints
+        .thread_ref
+        .clone()
+        .or(default_thread_ref);
+    let send_msg = SendMessage::new(&output.text, recipient)
+        .in_thread(thread_ref)
+        .with_media_artifacts(output.media_artifacts.clone());
+    if let Err(error) = channel.send(&send_msg).await {
+        tracing::warn!(%error, output_kind, "failed to send presented channel output");
+    }
 }
 
 struct ChannelRuntimeCommandHost<'a> {
@@ -1256,7 +1088,7 @@ struct ChannelRuntimeCommandHost<'a> {
 
 #[async_trait::async_trait]
 impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
-    fn fallback_provider(&self) -> String {
+    fn current_provider(&self) -> String {
         get_route_selection(self.ctx, self.conversation_key).provider
     }
 
@@ -1302,7 +1134,7 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
         request: RuntimeRouteMutationRequest,
         compacted: bool,
     ) -> anyhow::Result<RuntimeModelSwitchOutcome> {
-        let provider = request.provider.unwrap_or_else(|| self.fallback_provider());
+        let provider = request.provider.unwrap_or_else(|| self.current_provider());
         let model = request
             .model
             .ok_or_else(|| anyhow::anyhow!("runtime route mutation request missing model"))?;
@@ -2411,40 +2243,31 @@ pub async fn start_channels(
     // Build system prompt from workspace identity files + skills
     let workspace = config.workspace_dir.clone();
     let channel_session_store: Option<Arc<dyn LocalSessionBackend>> =
-        if config.channels_config.session_persistence {
-            if let Some(ref db) = shared_surreal {
-                tracing::info!("📂 Session persistence enabled (SurrealDB)");
-                Some(
-                    Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
-                        as Arc<dyn LocalSessionBackend>,
-                )
-            } else {
-                match session_store::SessionStore::new(&config.workspace_dir) {
-                    Ok(store) => {
-                        tracing::info!("📂 Session persistence enabled (JSONL fallback)");
-                        Some(Arc::new(store) as Arc<dyn LocalSessionBackend>)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Session persistence disabled: {e}");
-                        None
-                    }
-                }
-            }
-        } else {
-            None
-        };
-    let channel_conversation_store: Option<
+        build_channel_session_backend(&config, shared_surreal.as_ref())?;
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            channel_session_store.clone(),
+        );
+    let web_conversation_store: Option<
         Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>,
-    > = channel_session_store.as_ref().map(|store| {
-        Arc::new(synapse_channels::inbound::conversation_store_adapter::SessionBackendConversationStore::new(Arc::clone(store)))
+    > = shared_surreal.as_ref().map(|db| {
+        let chat_db = Arc::new(crate::gateway::chat_db::ChatDb::new(Arc::clone(db)));
+        Arc::new(crate::storage::conversation_store::ChatDbConversationStore::new(chat_db))
             as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
+    let retrieval_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::composite_conversation_store(
+            vec![channel_conversation_store.clone(), web_conversation_store],
+        );
     let shared_conversation_context: Arc<
         dyn synapse_domain::ports::conversation_context::ConversationContextPort,
     > = Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
     let shared_turn_defaults_context: Arc<
         dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort,
     > = Arc::new(synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new());
+    let shared_user_profile_context: Arc<
+        dyn synapse_domain::ports::user_profile_context::UserProfileContextPort,
+    > = Arc::new(synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new());
     let shared_scoped_instruction_context: Arc<
         dyn synapse_domain::ports::scoped_instruction_context::ScopedInstructionContextPort,
     > = Arc::new(
@@ -2452,32 +2275,41 @@ pub async fn start_channels(
             config.workspace_dir.clone(),
         ),
     );
+    let channel_registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
+        Arc::new(crate::channels::registry::CachedChannelRegistry::new(
+            config.clone(),
+            std::sync::Arc::new(build_channel_by_id),
+        ));
     let (mut built_tools, delegate_handle_ch, ipc_client_for_key_reg): (Vec<Box<dyn Tool>>, _, _) =
-        tools::all_tools_with_runtime(
-            Arc::new(config.clone()),
-            &security,
-            runtime,
-            Arc::clone(&mem),
-            composio_key,
-            composio_entity_id,
-            &config.browser,
-            &config.http_request,
-            &config.web_fetch,
-            &workspace,
-            &config.agents,
-            config.api_key.as_deref(),
-            &config,
-            None, // IPC tools get their own client from config
-            None,
-            shared_surreal.clone(),
-            Some(shared_conversation_context.clone()),
-            channel_conversation_store,
-            None, // channel_registry — wired later if needed
-            standing_order_store,
-            Some(Arc::clone(&user_profile_store)),
-            None, // user_profile_context — channels derive keys from current conversation
-            Some(Arc::clone(&shared_turn_defaults_context)),
-            Some(Arc::clone(&run_recipe_store)),
+        tools::RuntimeToolRegistryFactory::build(
+            tools::RuntimeToolRegistryInputs {
+                config: Arc::new(config.clone()),
+                security: &security,
+                runtime,
+                memory: Arc::clone(&mem),
+                composio_key,
+                composio_entity_id,
+                browser_config: &config.browser,
+                http_config: &config.http_request,
+                web_fetch_config: &config.web_fetch,
+                workspace_dir: &workspace,
+                agents: &config.agents,
+                default_api_key: config.api_key.as_deref(),
+                root_config: &config,
+            },
+            tools::RuntimeToolPorts {
+                shared_ipc_client: None,
+                agent_runner: None,
+                cron_db: shared_surreal.clone(),
+                conversation_context: Some(shared_conversation_context.clone()),
+                conversation_store: retrieval_conversation_store.clone(),
+                channel_registry: Some(Arc::clone(&channel_registry)),
+                standing_order_store,
+                user_profile_store: Some(Arc::clone(&user_profile_store)),
+                user_profile_context: Some(Arc::clone(&shared_user_profile_context)),
+                turn_defaults_context: Some(Arc::clone(&shared_turn_defaults_context)),
+                run_recipe_store: Some(Arc::clone(&run_recipe_store)),
+            },
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -2492,69 +2324,14 @@ pub async fn start_channels(
     // Wire MCP tools into the registry before freezing — non-fatal.
     // When `deferred_loading` is enabled, MCP tools are NOT added eagerly.
     // Instead, a `tool_search` built-in is registered for on-demand loading.
-    let mut deferred_section = String::new();
-    let mut ch_activated_handle: Option<
-        std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>,
-    > = None;
-    if config.mcp.enabled && !config.mcp.servers.is_empty() {
-        tracing::info!(
-            "Initializing MCP client — {} server(s) configured",
-            config.mcp.servers.len()
-        );
-        match crate::tools::McpRegistry::connect_all(&config.mcp.servers).await {
-            Ok(registry) => {
-                let registry = std::sync::Arc::new(registry);
-                if config.mcp.deferred_loading {
-                    let deferred_set = crate::tools::DeferredMcpToolSet::from_registry(
-                        std::sync::Arc::clone(&registry),
-                    )
-                    .await;
-                    tracing::info!(
-                        "MCP deferred: {} tool stub(s) from {} server(s)",
-                        deferred_set.len(),
-                        registry.server_count()
-                    );
-                    deferred_section =
-                        synapse_mcp::mcp_deferred::build_deferred_tools_section(&deferred_set);
-                    let activated = std::sync::Arc::new(std::sync::Mutex::new(
-                        crate::tools::ActivatedToolSet::new(),
-                    ));
-                    ch_activated_handle = Some(std::sync::Arc::clone(&activated));
-                    built_tools.push(Box::new(crate::tools::ToolSearchTool::new(
-                        deferred_set,
-                        activated,
-                    )));
-                } else {
-                    let names = registry.tool_names();
-                    let mut registered = 0usize;
-                    for name in names {
-                        if let Some(def) = registry.get_tool_def(&name).await {
-                            let wrapper: std::sync::Arc<dyn Tool> =
-                                std::sync::Arc::new(crate::tools::McpToolWrapper::new(
-                                    name,
-                                    def,
-                                    std::sync::Arc::clone(&registry),
-                                ));
-                            if let Some(ref handle) = delegate_handle_ch {
-                                handle.write().push(std::sync::Arc::clone(&wrapper));
-                            }
-                            built_tools.push(Box::new(crate::tools::ArcToolRef(wrapper)));
-                            registered += 1;
-                        }
-                    }
-                    tracing::info!(
-                        "MCP: {} tool(s) registered from {} server(s)",
-                        registered,
-                        registry.server_count()
-                    );
-                }
-            }
-            Err(e) => {
-                // Non-fatal — daemon continues with the tools registered above.
-                tracing::error!("MCP registry failed to initialize: {e:#}");
-            }
-        }
-    }
+    let mcp_registration = crate::tools::register_configured_mcp_tools(
+        &config,
+        &mut built_tools,
+        delegate_handle_ch.as_ref(),
+    )
+    .await;
+    let deferred_section = mcp_registration.deferred_section;
+    let ch_activated_handle = mcp_registration.activated_tools;
 
     // ── SYNAPSECLAW_ALLOWED_TOOLS enforcement for channel/daemon mode ──
     // Same security boundary as the agent runtime loop — filter tools when the env
@@ -2853,12 +2630,6 @@ pub async fn start_channels(
         };
 
         // Message router
-        let fallback_agent = config
-            .pipelines
-            .routing_fallback
-            .clone()
-            .or_else(|| config.agents_ipc.agent_id.clone())
-            .unwrap_or_else(|| config.agents_ipc.role.clone());
         let router: Option<Arc<dyn synapse_domain::ports::message_router::MessageRouterPort>> = {
             let routing_file = config
                 .pipelines
@@ -2866,8 +2637,7 @@ pub async fn start_channels(
                 .as_ref()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| config.workspace_dir.join("pipelines/routing.toml"));
-            let router =
-                crate::routing::rule_chain::TomlMessageRouter::load(&routing_file, &fallback_agent);
+            let router = crate::routing::rule_chain::TomlMessageRouter::load(&routing_file);
             tracing::info!("message router loaded from {}", routing_file.display());
             Some(Arc::new(router)
                 as Arc<
@@ -2963,22 +2733,18 @@ pub async fn start_channels(
         user_profile_store: Some(user_profile_store),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: channel_session_store,
+        conversation_store: retrieval_conversation_store,
         summary_config: Arc::new(config.summary.clone()),
         summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
-        channel_registry: Some(Arc::new(
-            crate::channels::registry::CachedChannelRegistry::new(
-                config.clone(),
-                std::sync::Arc::new(build_channel_by_id),
-            ),
-        )),
+        channel_registry: Some(channel_registry),
         pipeline_store,
         pipeline_executor,
         message_router,
     });
 
-    // Hydrate in-memory conversation histories from persisted JSONL session files.
+    // Hydrate in-memory conversation histories from durable channel session storage.
     if let Some(ref store) = runtime_ctx.session_store {
         // Collect sessions first (no MutexGuard held across .await)
         let session_keys = store.list_sessions().await;
@@ -3004,7 +2770,16 @@ pub async fn start_channels(
         }
     }
 
+    let runtime_trace_maintenance_handle = {
+        let maintenance_ctx = Arc::clone(&runtime_ctx);
+        tokio::spawn(async move {
+            channel_runtime_trace_maintenance_loop(maintenance_ctx).await;
+        })
+    };
+
     run_message_dispatch_loop(rx, runtime_ctx, max_in_flight_messages).await;
+    runtime_trace_maintenance_handle.abort();
+    let _ = runtime_trace_maintenance_handle.await;
 
     // Wait for all channel tasks
     for h in handles {
@@ -3323,6 +3098,7 @@ mod tests {
             user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
+            conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -3834,6 +3610,7 @@ mod tests {
             user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
+            conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -3860,6 +3637,7 @@ mod tests {
             channel: "test-channel".to_string(),
             timestamp: 1,
             thread_ts: None,
+            media_attachments: Vec::new(),
         })
         .await
         .unwrap();
@@ -3871,6 +3649,7 @@ mod tests {
             channel: "test-channel".to_string(),
             timestamp: 2,
             thread_ts: None,
+            media_attachments: Vec::new(),
         })
         .await
         .unwrap();
@@ -3949,6 +3728,7 @@ mod tests {
             user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
+            conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -3976,6 +3756,7 @@ mod tests {
                 channel: "telegram".to_string(),
                 timestamp: 1,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();
@@ -3988,6 +3769,7 @@ mod tests {
                 channel: "telegram".to_string(),
                 timestamp: 2,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();
@@ -4071,6 +3853,7 @@ mod tests {
             user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
+            conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
             summary_model: None,
             multimodal: synapse_domain::config::schema::MultimodalConfig::default(),
@@ -4106,6 +3889,7 @@ mod tests {
                 channel: "slack".to_string(),
                 timestamp: 1,
                 thread_ts: Some("1741234567.100001".to_string()),
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();
@@ -4118,6 +3902,7 @@ mod tests {
                 channel: "slack".to_string(),
                 timestamp: 2,
                 thread_ts: Some("1741234567.100001".to_string()),
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();
@@ -4206,6 +3991,7 @@ mod tests {
             user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
+            conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -4233,6 +4019,7 @@ mod tests {
                 channel: "telegram".to_string(),
                 timestamp: 1,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();
@@ -4245,6 +4032,7 @@ mod tests {
                 channel: "telegram".to_string(),
                 timestamp: 2,
                 thread_ts: None,
+                media_attachments: Vec::new(),
             })
             .await
             .unwrap();

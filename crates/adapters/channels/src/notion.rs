@@ -362,6 +362,7 @@ impl Channel for NotionChannel {
                                 channel: "notion".into(),
                                 timestamp,
                                 thread_ts: None,
+                                media_attachments: Vec::new(),
                             })
                             .await
                             .is_err()

@@ -31,6 +31,7 @@ impl HooksPort for HookRunnerAdapter {
             #[allow(clippy::cast_sign_loss)]
             timestamp: chrono::Utc::now().timestamp() as u64,
             thread_ts: None,
+            media_attachments: Vec::new(),
         };
 
         match self.runner.run_on_message_received(msg).await {

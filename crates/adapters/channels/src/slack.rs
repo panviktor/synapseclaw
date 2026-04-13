@@ -1,4 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
+use crate::outbound_media::resolve_outbound_media_artifact;
 use anyhow::Context;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -9,6 +10,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::application::services::media_artifact_delivery::{
+    artifact_delivery_uri, strip_media_artifact_markers,
+};
+use synapse_domain::ports::provider::MediaArtifact;
 use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -60,6 +66,13 @@ const SLACK_SUPPORTED_IMAGE_MIME_TYPES: &[&str] = &[
     "image/gif",
     "image/bmp",
 ];
+
+struct SlackOutboundArtifactUpload {
+    file_name: String,
+    title: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+}
 
 impl SlackChannel {
     pub fn new(
@@ -406,13 +419,59 @@ impl SlackChannel {
         require_mention: bool,
         bot_user_id: &str,
     ) -> Option<String> {
+        self.build_incoming_content_with_media(message, require_mention, bot_user_id)
+            .await
+            .map(|(content, _)| content)
+    }
+
+    async fn build_incoming_content_with_media(
+        &self,
+        message: &serde_json::Value,
+        require_mention: bool,
+        bot_user_id: &str,
+    ) -> Option<(String, Vec<InboundMediaAttachment>)> {
         let text = message
             .get("text")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
         let normalized_text = Self::normalize_incoming_text(text, require_mention, bot_user_id)?;
         let attachment_blocks = self.render_file_attachments(message).await;
+        let media_attachments = Self::media_attachments_from_rendered_blocks(&attachment_blocks);
         Self::compose_incoming_content(normalized_text, attachment_blocks)
+            .map(|content| (content, media_attachments))
+    }
+
+    fn media_attachments_from_rendered_blocks(blocks: &[String]) -> Vec<InboundMediaAttachment> {
+        blocks
+            .iter()
+            .filter_map(|block| {
+                let marker = block.trim();
+                let (kind, uri) = if let Some(uri) = marker
+                    .strip_prefix("[IMAGE:")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                {
+                    (InboundMediaKind::Image, uri)
+                } else if let Some(uri) = marker
+                    .strip_prefix("[AUDIO:")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                {
+                    (InboundMediaKind::Audio, uri)
+                } else if let Some(uri) = marker
+                    .strip_prefix("[VIDEO:")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                {
+                    (InboundMediaKind::Video, uri)
+                } else if let Some(uri) = marker
+                    .strip_prefix("[FILE:")
+                    .and_then(|rest| rest.strip_suffix(']'))
+                {
+                    (InboundMediaKind::File, uri)
+                } else {
+                    return None;
+                };
+                Some(InboundMediaAttachment::new(kind, uri.to_string()))
+            })
+            .collect()
     }
 
     async fn render_file_attachments(&self, message: &serde_json::Value) -> Vec<String> {
@@ -1755,8 +1814,8 @@ impl SlackChannel {
                 let require_mention =
                     self.mention_only && is_group_message && !allow_sender_without_mention;
 
-                let Some(normalized_text) = self
-                    .build_incoming_content(event, require_mention, bot_user_id)
+                let Some((normalized_text, media_attachments)) = self
+                    .build_incoming_content_with_media(event, require_mention, bot_user_id)
                     .await
                 else {
                     continue;
@@ -1776,6 +1835,7 @@ impl SlackChannel {
                         .unwrap_or_default()
                         .as_secs(),
                     thread_ts: Self::inbound_thread_ts(event, ts),
+                    media_attachments,
                 };
 
                 if tx.send(channel_msg).await.is_err() {
@@ -2135,21 +2195,130 @@ impl SlackChannel {
             }
         }
     }
-}
 
-#[async_trait]
-impl Channel for SlackChannel {
-    fn name(&self) -> &str {
-        "slack"
+    async fn send_media_artifact_message(&self, message: &SendMessage) -> anyhow::Result<()> {
+        let uploads = self
+            .classify_outbound_media_artifacts(&message.media_artifacts)
+            .await?;
+        let cleaned_text = strip_media_artifact_markers(&message.content, &message.media_artifacts);
+        let text = cleaned_text;
+
+        if uploads.is_empty() {
+            return self
+                .post_text_message(&message.recipient, message.thread_ts.as_deref(), &text)
+                .await;
+        }
+
+        for (idx, upload) in uploads.iter().enumerate() {
+            let initial_comment = (idx == 0)
+                .then_some(text.as_str())
+                .filter(|comment| !comment.trim().is_empty());
+            self.upload_external_file(
+                &message.recipient,
+                message.thread_ts.as_deref(),
+                upload,
+                initial_comment,
+            )
+            .await?;
+        }
+
+        Ok(())
     }
 
-    async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+    async fn classify_outbound_media_artifacts(
+        &self,
+        artifacts: &[MediaArtifact],
+    ) -> anyhow::Result<Vec<SlackOutboundArtifactUpload>> {
+        let mut uploads = Vec::new();
+        for artifact in artifacts {
+            let uri = artifact_delivery_uri("slack", artifact)?;
+            let upload = self.outbound_artifact_upload(artifact, uri).await?;
+            uploads.push(upload);
+        }
+        Ok(uploads)
+    }
+
+    async fn outbound_artifact_upload(
+        &self,
+        artifact: &MediaArtifact,
+        uri: &str,
+    ) -> anyhow::Result<SlackOutboundArtifactUpload> {
+        let client = self.http_client();
+        let upload = resolve_outbound_media_artifact(
+            &client,
+            artifact,
+            uri,
+            artifact.kind.marker_label(),
+        )
+        .await?;
+        Ok(Self::artifact_upload_from_bytes(
+            artifact,
+            &upload.file_name,
+            &upload.mime_type,
+            upload.bytes,
+        ))
+    }
+
+    fn artifact_upload_from_bytes(
+        artifact: &MediaArtifact,
+        file_name: &str,
+        mime_type: &str,
+        bytes: Vec<u8>,
+    ) -> SlackOutboundArtifactUpload {
+        let safe_name = Self::sanitize_attachment_filename(file_name)
+            .unwrap_or_else(|| artifact.kind.marker_label().to_ascii_lowercase());
+        let ext = Self::media_artifact_extension(artifact, mime_type);
+        let file_name = Self::ensure_file_extension(&safe_name, ext);
+        let title = artifact
+            .label
+            .clone()
+            .unwrap_or_else(|| safe_name.trim().to_string());
+        SlackOutboundArtifactUpload {
+            file_name,
+            title,
+            mime_type: mime_type.to_string(),
+            bytes,
+        }
+    }
+
+    fn media_artifact_extension(artifact: &MediaArtifact, mime_type: &str) -> &'static str {
+        match mime_type {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            "image/bmp" => "bmp",
+            "audio/mpeg" => "mp3",
+            "audio/mp4" => "m4a",
+            "audio/ogg" => "ogg",
+            "audio/wav" | "audio/x-wav" => "wav",
+            "video/mp4" => "mp4",
+            "video/webm" => "webm",
+            _ => match artifact.kind {
+                synapse_domain::ports::provider::MediaArtifactKind::Image => "png",
+                synapse_domain::ports::provider::MediaArtifactKind::Audio => "bin",
+                synapse_domain::ports::provider::MediaArtifactKind::Video => "mp4",
+                synapse_domain::ports::provider::MediaArtifactKind::Music => "bin",
+            },
+        }
+    }
+
+    async fn post_text_message(
+        &self,
+        recipient: &str,
+        thread_ts: Option<&str>,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+
         let mut body = serde_json::json!({
-            "channel": message.recipient,
-            "text": message.content
+            "channel": recipient,
+            "text": text
         });
 
-        if let Some(ref ts) = message.thread_ts {
+        if let Some(ts) = thread_ts {
             body["thread_ts"] = serde_json::json!(ts);
         }
 
@@ -2161,28 +2330,140 @@ impl Channel for SlackChannel {
             .send()
             .await?;
 
+        Self::check_slack_json_response(resp, "Slack chat.postMessage").await
+    }
+
+    async fn upload_external_file(
+        &self,
+        channel: &str,
+        thread_ts: Option<&str>,
+        upload: &SlackOutboundArtifactUpload,
+        initial_comment: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if upload.bytes.is_empty() {
+            anyhow::bail!(
+                "Slack files.getUploadURLExternal requires a non-empty file: {}",
+                upload.file_name
+            );
+        }
+
+        let form = vec![
+            ("filename", upload.file_name.clone()),
+            ("length", upload.bytes.len().to_string()),
+        ];
+        let resp = self
+            .http_client()
+            .post("https://slack.com/api/files.getUploadURLExternal")
+            .bearer_auth(&self.bot_token)
+            .form(&form)
+            .send()
+            .await?;
+
+        let ticket =
+            Self::slack_json_payload(resp, "Slack files.getUploadURLExternal").await?;
+        let upload_url = ticket
+            .get("upload_url")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Slack files.getUploadURLExternal omitted upload_url"))?;
+        let file_id = ticket
+            .get("file_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Slack files.getUploadURLExternal omitted file_id"))?;
+
+        let upload_resp = self
+            .http_client()
+            .post(upload_url)
+            .header(reqwest::header::CONTENT_TYPE, upload.mime_type.as_str())
+            .body(upload.bytes.clone())
+            .send()
+            .await?;
+        if !upload_resp.status().is_success() {
+            let status = upload_resp.status();
+            let body = upload_resp
+                .text()
+                .await
+                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
+            let sanitized = synapse_providers::sanitize_api_error(&body);
+            anyhow::bail!("Slack file byte upload failed ({status}): {sanitized}");
+        }
+
+        let mut body = serde_json::json!({
+            "files": [{
+                "id": file_id,
+                "title": upload.title.as_str(),
+            }],
+            "channel_id": channel,
+        });
+        if let Some(comment) = initial_comment {
+            body["initial_comment"] = serde_json::json!(comment);
+        }
+        if let Some(ts) = thread_ts {
+            body["thread_ts"] = serde_json::json!(ts);
+        }
+
+        let resp = self
+            .http_client()
+            .post("https://slack.com/api/files.completeUploadExternal")
+            .bearer_auth(&self.bot_token)
+            .json(&body)
+            .send()
+            .await?;
+
+        Self::check_slack_json_response(resp, "Slack files.completeUploadExternal").await
+    }
+
+    async fn check_slack_json_response(
+        resp: reqwest::Response,
+        operation: &str,
+    ) -> anyhow::Result<()> {
+        Self::slack_json_payload(resp, operation).await.map(|_| ())
+    }
+
+    async fn slack_json_payload(
+        resp: reqwest::Response,
+        operation: &str,
+    ) -> anyhow::Result<serde_json::Value> {
         let status = resp.status();
         let body = resp
             .text()
             .await
-            .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
+            .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
 
         if !status.is_success() {
             let sanitized = synapse_providers::sanitize_api_error(&body);
-            anyhow::bail!("Slack chat.postMessage failed ({status}): {sanitized}");
+            anyhow::bail!("{operation} failed ({status}): {sanitized}");
         }
 
-        // Slack returns 200 for most app-level errors; check JSON "ok" field
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
         if parsed.get("ok") == Some(&serde_json::Value::Bool(false)) {
             let err = parsed
                 .get("error")
-                .and_then(|e| e.as_str())
+                .and_then(|error| error.as_str())
                 .unwrap_or("unknown");
-            anyhow::bail!("Slack chat.postMessage failed: {err}");
+            anyhow::bail!("{operation} failed: {err}");
         }
 
-        Ok(())
+        Ok(parsed)
+    }
+}
+
+#[async_trait]
+impl Channel for SlackChannel {
+    fn name(&self) -> &str {
+        "slack"
+    }
+
+    async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+        if !message.media_artifacts.is_empty() {
+            return self.send_media_artifact_message(message).await;
+        }
+
+        self.post_text_message(
+            &message.recipient,
+            message.thread_ts.as_deref(),
+            &message.content,
+        )
+            .await
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
@@ -2319,8 +2600,8 @@ impl Channel for SlackChannel {
                             is_group_message && self.is_group_sender_trigger_enabled(user);
                         let require_mention =
                             self.mention_only && is_group_message && !allow_sender_without_mention;
-                        let Some(normalized_text) = self
-                            .build_incoming_content(msg, require_mention, &bot_user_id)
+                        let Some((normalized_text, media_attachments)) = self
+                            .build_incoming_content_with_media(msg, require_mention, &bot_user_id)
                             .await
                         else {
                             continue;
@@ -2340,6 +2621,7 @@ impl Channel for SlackChannel {
                                 .unwrap_or_default()
                                 .as_secs(),
                             thread_ts: Self::inbound_thread_ts(msg, ts),
+                            media_attachments,
                         };
 
                         if tx.send(channel_msg).await.is_err() {
@@ -2396,8 +2678,8 @@ impl Channel for SlackChannel {
                         is_group_message && self.is_group_sender_trigger_enabled(user);
                     let require_mention =
                         self.mention_only && is_group_message && !allow_sender_without_mention;
-                    let Some(normalized_text) = self
-                        .build_incoming_content(reply, require_mention, &bot_user_id)
+                    let Some((normalized_text, media_attachments)) = self
+                        .build_incoming_content_with_media(reply, require_mention, &bot_user_id)
                         .await
                     else {
                         continue;
@@ -2424,6 +2706,7 @@ impl Channel for SlackChannel {
                             .unwrap_or_default()
                             .as_secs(),
                         thread_ts: Some(thread_ts.clone()),
+                        media_attachments,
                     };
 
                     if tx.send(channel_msg).await.is_err() {

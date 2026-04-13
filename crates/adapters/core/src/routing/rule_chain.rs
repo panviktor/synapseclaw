@@ -20,15 +20,14 @@ pub struct TomlMessageRouter {
 
 impl TomlMessageRouter {
     /// Create a router from a TOML file.
-    /// Falls back to a default table if the file doesn't exist.
-    pub fn load(path: impl Into<PathBuf>, default_fallback: &str) -> Self {
+    /// Uses an empty table if the file doesn't exist.
+    pub fn load(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let table = match Self::parse_file(&path) {
             Ok(t) => {
                 info!(
                     path = %path.display(),
                     routes = t.routes.len(),
-                    fallback = %t.fallback,
                     "routing table loaded"
                 );
                 t
@@ -37,12 +36,9 @@ impl TomlMessageRouter {
                 warn!(
                     path = %path.display(),
                     error = %e,
-                    "routing TOML not loaded, using default fallback"
+                    "routing TOML not loaded, using empty routing table"
                 );
-                RoutingTable {
-                    routes: vec![],
-                    fallback: default_fallback.into(),
-                }
+                RoutingTable { routes: vec![] }
             }
         };
 
@@ -63,7 +59,7 @@ impl TomlMessageRouter {
 
 #[async_trait]
 impl MessageRouterPort for TomlMessageRouter {
-    async fn route(&self, input: &RoutingInput) -> RoutingResult {
+    async fn route(&self, input: &RoutingInput) -> Option<RoutingResult> {
         self.table.read().await.resolve(input)
     }
 
@@ -88,8 +84,6 @@ mod tests {
     use tempfile::TempDir;
 
     const ROUTING_TOML: &str = r#"
-fallback = "marketing-lead"
-
 [[routes]]
 name = "research"
 target = "news-reader"
@@ -113,7 +107,7 @@ keywords = ["deploy", "restart", "server"]
         let path = dir.path().join("routing.toml");
         fs::write(&path, ROUTING_TOML).unwrap();
 
-        let router = TomlMessageRouter::load(&path, "default");
+        let router = TomlMessageRouter::load(&path);
 
         let r = router
             .route(&RoutingInput {
@@ -121,7 +115,8 @@ keywords = ["deploy", "restart", "server"]
                 source_kind: "channel".into(),
                 metadata: HashMap::default(),
             })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(r.target, "news-reader");
 
         let r2 = router
@@ -130,23 +125,23 @@ keywords = ["deploy", "restart", "server"]
                 source_kind: "channel".into(),
                 metadata: HashMap::default(),
             })
-            .await;
+            .await
+            .unwrap();
         assert_eq!(r2.target, "devops");
 
-        let r3 = router
+        let no_route = router
             .route(&RoutingInput {
                 content: "hello there".into(),
                 source_kind: "channel".into(),
                 metadata: HashMap::default(),
             })
             .await;
-        assert_eq!(r3.target, "marketing-lead");
-        assert!(r3.is_fallback);
+        assert!(no_route.is_none());
     }
 
     #[tokio::test]
-    async fn load_missing_file_uses_default() {
-        let router = TomlMessageRouter::load("/nonexistent/routing.toml", "fallback-agent");
+    async fn load_missing_file_uses_empty_table() {
+        let router = TomlMessageRouter::load("/nonexistent/routing.toml");
 
         let r = router
             .route(&RoutingInput {
@@ -155,7 +150,7 @@ keywords = ["deploy", "restart", "server"]
                 metadata: HashMap::default(),
             })
             .await;
-        assert_eq!(r.target, "fallback-agent");
+        assert!(r.is_none());
     }
 
     #[tokio::test]
@@ -164,9 +159,9 @@ keywords = ["deploy", "restart", "server"]
         let path = dir.path().join("routing.toml");
         fs::write(&path, ROUTING_TOML).unwrap();
 
-        let router = TomlMessageRouter::load(&path, "default");
+        let router = TomlMessageRouter::load(&path);
 
-        // Change fallback
+        // Changing the ignored legacy fallback must not create a route.
         let new_toml = ROUTING_TOML.replace("marketing-lead", "new-default");
         fs::write(&path, new_toml).unwrap();
 
@@ -179,6 +174,6 @@ keywords = ["deploy", "restart", "server"]
                 metadata: HashMap::default(),
             })
             .await;
-        assert_eq!(r.target, "new-default");
+        assert!(r.is_none());
     }
 }

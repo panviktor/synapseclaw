@@ -163,7 +163,7 @@ pub struct Config {
     #[serde(default)]
     pub runtime: RuntimeConfig,
 
-    /// Reliability settings: retries, fallback providers, backoff (`[reliability]`).
+    /// Reliability settings: retries, API key rotation, channel restart backoff (`[reliability]`).
     #[serde(default)]
     pub reliability: ReliabilityConfig,
 
@@ -1876,10 +1876,6 @@ pub struct PipelineEngineConfig {
     #[serde(default = "default_true_val")]
     pub hot_reload: bool,
 
-    /// Default fallback agent for message routing (default: agent's own ID).
-    #[serde(default)]
-    pub routing_fallback: Option<String>,
-
     /// Agent ID used by the pipeline runner for IPC dispatch.
     /// Defaults to the broker's own agent ID (trust=0, can send tasks to all agents).
     #[serde(default)]
@@ -1901,7 +1897,6 @@ impl Default for PipelineEngineConfig {
             directory: None,
             routing_file: None,
             hot_reload: true,
-            routing_fallback: None,
             runner_agent_id: None,
             default_tool_rate_limit: 0,
             approval_required_tools: vec![],
@@ -4015,26 +4010,20 @@ impl Default for RuntimeConfig {
 
 /// Reliability and supervision configuration (`[reliability]` section).
 ///
-/// Controls provider retries, fallback chains, API key rotation, and channel restart backoff.
+/// Controls provider retries, API key rotation, and channel restart backoff.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReliabilityConfig {
-    /// Retries per provider before failing over.
+    /// Retries on the selected provider before returning failure.
     #[serde(default = "default_provider_retries")]
     pub provider_retries: u32,
     /// Base backoff (ms) for provider retry delay.
     #[serde(default = "default_provider_backoff_ms")]
     pub provider_backoff_ms: u64,
-    /// Fallback provider chain (e.g. `["anthropic", "openai"]`).
-    #[serde(default)]
-    pub fallback_providers: Vec<String>,
     /// Additional API keys for round-robin rotation on rate-limit (429) errors.
     /// The primary `api_key` is always tried first; these are extras.
     #[serde(default)]
     pub api_keys: Vec<String>,
-    /// Per-model fallback chains. When a model fails, try these alternatives in order.
-    /// Example: `{ "primary-model-id" = ["fallback-model-id", "second-fallback-model-id"] }`
-    #[serde(default)]
-    pub model_fallbacks: std::collections::HashMap<String, Vec<String>>,
     /// Initial backoff for channel/daemon restarts.
     #[serde(default = "default_channel_backoff_secs")]
     pub channel_initial_backoff_secs: u64,
@@ -4078,9 +4067,7 @@ impl Default for ReliabilityConfig {
         Self {
             provider_retries: default_provider_retries(),
             provider_backoff_ms: default_provider_backoff_ms(),
-            fallback_providers: Vec::new(),
             api_keys: Vec::new(),
-            model_fallbacks: std::collections::HashMap::new(),
             channel_initial_backoff_secs: default_channel_backoff_secs(),
             channel_max_backoff_secs: default_channel_backoff_max_secs(),
             scheduler_poll_secs: default_scheduler_poll_secs(),
@@ -4684,14 +4671,11 @@ pub struct ChannelsConfig {
     /// When `true`, tool calls may be rendered as individual channel messages.
     #[serde(default = "default_false")]
     pub show_tool_calls: bool,
-    /// Persist channel conversation history to JSONL files so sessions survive
-    /// daemon restarts. Files are stored in `{workspace}/sessions/`. Default: `true`.
+    /// Persist channel conversation history so sessions survive daemon restarts.
+    /// Requires the shared SurrealDB runtime. Matrix SDK storage is separate.
+    /// Default: `true`.
     #[serde(default = "default_true")]
     pub session_persistence: bool,
-    /// Session persistence backend: `"jsonl"` (legacy) or `"sqlite"` (new default).
-    /// SQLite provides FTS5 search, metadata tracking, and TTL cleanup.
-    #[serde(default = "default_session_backend")]
-    pub session_backend: String,
     /// Auto-archive stale sessions older than this many hours. `0` disables. Default: `0`.
     #[serde(default)]
     pub session_ttl_hours: u32,
@@ -4808,10 +4792,6 @@ fn default_channel_message_timeout_secs() -> u64 {
     300
 }
 
-pub fn default_session_backend() -> String {
-    "sqlite".into()
-}
-
 impl Default for ChannelsConfig {
     fn default() -> Self {
         Self {
@@ -4846,7 +4826,6 @@ impl Default for ChannelsConfig {
             ack_reactions: true,
             show_tool_calls: false,
             session_persistence: true,
-            session_backend: default_session_backend(),
             session_ttl_hours: 0,
         }
     }

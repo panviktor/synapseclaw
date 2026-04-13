@@ -1065,7 +1065,7 @@ mod tests {
         };
         let current = CurrentConversationContext {
             source_adapter: "matrix".into(),
-            conversation_ref: "matrix_room".into(),
+            conversation_id: "matrix_room".into(),
             reply_ref: "!room:example.com".into(),
             thread_ref: Some("$thread".into()),
             actor_id: "alice".into(),

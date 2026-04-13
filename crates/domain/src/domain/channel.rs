@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::ports::provider::MediaArtifact;
+
 /// What the core wants to happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntentKind {
@@ -72,6 +74,18 @@ pub enum ChannelCapability {
     InterruptOnNewMessage,
     /// Channel supports displaying tool call context in history.
     ToolContextDisplay,
+}
+
+pub fn web_channel_capabilities() -> Vec<ChannelCapability> {
+    vec![
+        ChannelCapability::SendText,
+        ChannelCapability::ReceiveText,
+        ChannelCapability::Threads,
+        ChannelCapability::Attachments,
+        ChannelCapability::Typing,
+        ChannelCapability::RuntimeCommands,
+        ChannelCapability::ToolContextDisplay,
+    ]
 }
 
 /// The canonical outbound intent — Phase 4.0's first domain object.
@@ -163,17 +177,187 @@ pub struct InboundEnvelope {
     /// Who sent the message (user ID, agent ID, "system").
     pub actor_id: String,
     /// Conversation key for history lookup (e.g. "telegram_123456", "web:session:abc").
-    pub conversation_ref: String,
+    pub conversation_id: String,
     /// Stable upstream event/message identifier when the source provides one.
     pub event_ref: Option<String>,
     /// Platform-specific reply target (e.g. Telegram chat ID, Matrix room ID).
     pub reply_ref: String,
     /// Optional thread reference for threaded replies.
     pub thread_ref: Option<String>,
+    /// Typed inbound media references supplied by transport adapters.
+    pub media_attachments: Vec<InboundMediaAttachment>,
     /// Message text content.
     pub content: String,
     /// Unix timestamp (seconds).
     pub received_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundMediaKind {
+    Image,
+    Audio,
+    Video,
+    File,
+}
+
+impl InboundMediaKind {
+    pub fn marker_label(self) -> &'static str {
+        match self {
+            Self::Image => "IMAGE",
+            Self::Audio => "AUDIO",
+            Self::Video => "VIDEO",
+            Self::File => "FILE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundMediaAttachment {
+    pub kind: InboundMediaKind,
+    pub uri: String,
+    pub mime_type: Option<String>,
+    pub label: Option<String>,
+}
+
+impl InboundMediaAttachment {
+    pub fn new(kind: InboundMediaKind, uri: impl Into<String>) -> Self {
+        Self {
+            kind,
+            uri: uri.into(),
+            mime_type: None,
+            label: None,
+        }
+    }
+
+    pub fn marker(&self) -> Option<String> {
+        let uri = self.uri.trim();
+        (!uri.is_empty()).then(|| format!("[{}:{}]", self.kind.marker_label(), uri))
+    }
+}
+
+/// Stable identity for an inbound conversation turn.
+///
+/// Transport adapters may carry very different delivery metadata, but runtime
+/// policy must derive history, route, memory, and profile keys from this single
+/// shape rather than from ad-hoc web/channel strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationIdentity {
+    pub agent_id: String,
+    pub transport: String,
+    pub conversation_id: String,
+    pub actor_id: String,
+    pub thread_id: Option<String>,
+    pub message_id: Option<String>,
+    pub reply_target: String,
+}
+
+impl ConversationIdentity {
+    pub fn from_envelope(agent_id: impl Into<String>, envelope: &InboundEnvelope) -> Self {
+        let transport = if envelope.source_adapter.trim().is_empty() {
+            envelope.source_kind.to_string()
+        } else {
+            envelope.source_adapter.clone()
+        };
+        let conversation_id = if !envelope.conversation_id.trim().is_empty() {
+            envelope.conversation_id.clone()
+        } else if !envelope.reply_ref.trim().is_empty() {
+            envelope.reply_ref.clone()
+        } else {
+            envelope.actor_id.clone()
+        };
+        Self {
+            agent_id: agent_id.into(),
+            transport,
+            conversation_id,
+            actor_id: envelope.actor_id.clone(),
+            thread_id: envelope.thread_ref.clone(),
+            message_id: envelope.event_ref.clone(),
+            reply_target: envelope.reply_ref.clone(),
+        }
+    }
+
+    pub fn conversation_key(&self) -> String {
+        let mut parts = vec![
+            "conversation".to_string(),
+            key_component(&self.agent_id),
+            key_component(&self.transport),
+            key_component(&self.conversation_id),
+        ];
+        if let Some(thread_id) = self
+            .thread_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            parts.push(key_component(thread_id));
+        }
+        parts.push(key_component(&self.actor_id));
+        parts.join(":")
+    }
+
+    pub fn conversation_scope_key_prefix(&self) -> String {
+        let parts = [
+            "conversation".to_string(),
+            key_component(&self.agent_id),
+            key_component(&self.transport),
+            key_component(&self.conversation_id),
+        ];
+        format!("{}:", parts.join(":"))
+    }
+
+    pub fn actor_profile_key(&self) -> String {
+        [
+            "user".to_string(),
+            key_component(&self.agent_id),
+            key_component(&self.transport),
+            key_component(&self.actor_id),
+        ]
+        .join(":")
+    }
+
+    pub fn parent_conversation_key(&self) -> String {
+        let mut parent = self.clone();
+        parent.thread_id = None;
+        parent.conversation_key()
+    }
+
+    pub fn autosave_memory_key(&self, received_at: u64, content_chars: usize) -> String {
+        if let Some(message_id) = self
+            .message_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return format!(
+                "channel:{}:{}",
+                self.conversation_key(),
+                key_component(message_id)
+            );
+        }
+
+        format!(
+            "channel:{}:recv{}:len{}",
+            self.conversation_key(),
+            received_at,
+            content_chars
+        )
+    }
+}
+
+fn key_component(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "_".to_string();
+    }
+    trimmed
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '@') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 // ── Channel message types ────────────────────────────────────────────
@@ -190,6 +374,12 @@ pub struct ChannelMessage {
     /// Platform thread identifier (e.g. Slack `ts`, Discord thread ID).
     /// When set, replies should be posted as threaded responses.
     pub thread_ts: Option<String>,
+    /// Typed inbound media references supplied by transport adapters.
+    ///
+    /// Transport metadata belongs here, not in provider-facing prompt prose.
+    /// Legacy text markers remain supported by the adapter-core normalizer for
+    /// compatibility while channel adapters are migrated.
+    pub media_attachments: Vec<InboundMediaAttachment>,
 }
 
 /// Message to send through a channel adapter.
@@ -200,6 +390,7 @@ pub struct SendMessage {
     pub subject: Option<String>,
     /// Platform thread identifier for threaded replies (e.g. Slack `thread_ts`).
     pub thread_ts: Option<String>,
+    pub media_artifacts: Vec<MediaArtifact>,
 }
 
 impl SendMessage {
@@ -210,6 +401,7 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: None,
             thread_ts: None,
+            media_artifacts: Vec::new(),
         }
     }
 
@@ -224,12 +416,18 @@ impl SendMessage {
             recipient: recipient.into(),
             subject: Some(subject.into()),
             thread_ts: None,
+            media_artifacts: Vec::new(),
         }
     }
 
     /// Set the thread identifier for threaded replies.
     pub fn in_thread(mut self, thread_ts: Option<String>) -> Self {
         self.thread_ts = thread_ts;
+        self
+    }
+
+    pub fn with_media_artifacts(mut self, media_artifacts: Vec<MediaArtifact>) -> Self {
+        self.media_artifacts = media_artifacts;
         self
     }
 }

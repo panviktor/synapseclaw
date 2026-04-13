@@ -305,6 +305,7 @@ impl AzureOpenAiProvider {
             tool_calls,
             usage: None,
             reasoning_content,
+            media_artifacts: Vec::new(),
         })
     }
 

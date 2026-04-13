@@ -267,6 +267,7 @@ impl SignalChannel {
             channel: "signal".to_string(),
             timestamp: timestamp / 1000, // millis → secs
             thread_ts: None,
+            media_attachments: Vec::new(),
         })
     }
 }

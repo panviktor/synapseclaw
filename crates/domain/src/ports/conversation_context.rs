@@ -72,7 +72,7 @@ mod tests {
     fn make_ctx(label: &str) -> CurrentConversationContext {
         CurrentConversationContext {
             source_adapter: "matrix".into(),
-            conversation_ref: label.into(),
+            conversation_id: label.into(),
             reply_ref: format!("!{label}:example.com"),
             thread_ref: Some(format!("${label}")),
             actor_id: "user".into(),
@@ -88,7 +88,7 @@ mod tests {
             tokio::spawn(async move {
                 port.set_current(Some(make_ctx("alpha")));
                 tokio::task::yield_now().await;
-                port.get_current().map(|ctx| ctx.conversation_ref)
+                port.get_current().map(|ctx| ctx.conversation_id)
             })
         };
 
@@ -97,7 +97,7 @@ mod tests {
             tokio::spawn(async move {
                 port.set_current(Some(make_ctx("beta")));
                 tokio::task::yield_now().await;
-                port.get_current().map(|ctx| ctx.conversation_ref)
+                port.get_current().map(|ctx| ctx.conversation_id)
             })
         };
 
@@ -110,7 +110,7 @@ mod tests {
         let port = InMemoryConversationContext::new();
         port.set_current(Some(make_ctx("sync")));
         assert_eq!(
-            port.get_current().map(|ctx| ctx.conversation_ref),
+            port.get_current().map(|ctx| ctx.conversation_id),
             Some("sync".to_string())
         );
         port.set_current(None);

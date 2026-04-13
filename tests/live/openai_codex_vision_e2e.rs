@@ -156,6 +156,7 @@ async fn openai_codex_second_vision_support() -> Result<()> {
         extra_headers: std::collections::HashMap::new(),
         api_path: None,
         prompt_caching: false,
+        ..ProviderRuntimeOptions::default()
     };
 
     let provider =

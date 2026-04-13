@@ -37,7 +37,7 @@ use synapse_domain::domain::turn_admission::{
 };
 use synapse_domain::ports::model_profile_catalog::{
     CatalogModelProfile, CatalogModelProfileSource, ContextLimitProfileObservation,
-    ModelProfileCatalogPort,
+    ModelProfileCatalogPort, ModelProfileObservation,
 };
 use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection};
 
@@ -197,57 +197,101 @@ impl WorkspaceModelProfileCatalog {
             select_observation_cache_provider(&state, candidates.as_slice(), endpoint.as_deref());
         let now = current_unix_secs();
 
-        let entry_index = if let Some(index) = state.entries.iter().position(|entry| {
-            model_cache_entry_matches(entry, target_provider.as_str(), endpoint.as_deref())
-        }) {
-            index
-        } else {
-            state.entries.push(ModelCacheEntry {
-                provider: target_provider.clone(),
-                endpoint: endpoint.clone(),
-                fetched_at_unix: now,
-                models: Vec::new(),
-                profiles: Vec::new(),
-            });
-            state.entries.len() - 1
-        };
-
+        let entry_index = ensure_model_cache_entry_index(
+            &mut state,
+            target_provider.as_str(),
+            endpoint.as_deref(),
+            now,
+        );
         let entry = &mut state.entries[entry_index];
-        let mut changed = false;
-        if !entry
-            .models
-            .iter()
-            .any(|cached_model| cached_model.eq_ignore_ascii_case(model))
+        let mut changed = ensure_model_cache_entry_model(entry, model);
+        let (profile_index, created) = ensure_model_profile_cache_entry_index(entry, model);
+        changed |= created;
+        let profile = &mut entry.profiles[profile_index];
+        if profile
+            .context_window_tokens
+            .is_none_or(|existing| observed_window <= existing)
         {
-            entry.models.push(model.to_string());
-            changed = true;
-        }
-
-        if let Some(profile) = entry
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.model.eq_ignore_ascii_case(model))
-        {
-            if profile
-                .context_window_tokens
-                .is_none_or(|existing| observed_window <= existing)
-            {
-                profile.context_window_tokens = Some(observed_window);
-                profile.observed_at_unix = Some(now);
-                changed = true;
-            }
-        } else {
-            entry.profiles.push(ModelProfileCacheEntry {
-                model: model.to_string(),
-                context_window_tokens: Some(observed_window),
-                max_output_tokens: None,
-                features: Vec::new(),
-                observed_at_unix: Some(now),
-            });
+            profile.context_window_tokens = Some(observed_window);
+            profile.observed_at_unix = Some(now);
             changed = true;
         }
 
         if changed {
+            save_model_cache_state(cache_path.as_path(), &state)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn record_model_profile_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ModelProfileObservation,
+    ) -> anyhow::Result<()> {
+        let provider = provider.trim();
+        let model = model.trim();
+        if provider.is_empty() {
+            anyhow::bail!("model profile observation provider cannot be empty");
+        }
+        if model.is_empty() {
+            anyhow::bail!("model profile observation model cannot be empty");
+        }
+
+        let context_window_tokens = observation
+            .context_window_tokens
+            .filter(|tokens| *tokens > 0);
+        let max_output_tokens = observation.max_output_tokens.filter(|tokens| *tokens > 0);
+        let mut features = observation.features;
+        dedupe_model_features(&mut features);
+        if context_window_tokens.is_none() && max_output_tokens.is_none() && features.is_empty() {
+            return Ok(());
+        }
+
+        let endpoint = self.endpoint_for_provider(provider).map(str::to_string);
+        let candidates = self.provider_lookup_candidates(provider);
+        let cache_path = model_cache_path(self.workspace_dir.as_path());
+        let mut state = load_model_cache_state_for_update(cache_path.as_path())?;
+        let target_provider =
+            select_observation_cache_provider(&state, candidates.as_slice(), endpoint.as_deref());
+        let now = current_unix_secs();
+
+        let entry_index = ensure_model_cache_entry_index(
+            &mut state,
+            target_provider.as_str(),
+            endpoint.as_deref(),
+            now,
+        );
+        let entry = &mut state.entries[entry_index];
+        let mut changed = ensure_model_cache_entry_model(entry, model);
+        let (profile_index, created) = ensure_model_profile_cache_entry_index(entry, model);
+        changed |= created;
+
+        {
+            let profile = &mut entry.profiles[profile_index];
+            if let Some(context_window_tokens) = context_window_tokens {
+                if profile.context_window_tokens != Some(context_window_tokens) {
+                    profile.context_window_tokens = Some(context_window_tokens);
+                    changed = true;
+                }
+            }
+            if let Some(max_output_tokens) = max_output_tokens {
+                if profile.max_output_tokens != Some(max_output_tokens) {
+                    profile.max_output_tokens = Some(max_output_tokens);
+                    changed = true;
+                }
+            }
+            if !features.is_empty() && profile.features != features {
+                profile.features = features;
+                changed = true;
+            }
+            if changed {
+                profile.observed_at_unix = Some(now);
+            }
+        }
+
+        if changed {
+            entry.fetched_at_unix = now;
             save_model_cache_state(cache_path.as_path(), &state)?;
         }
         Ok(())
@@ -283,6 +327,20 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
         observation: ContextLimitProfileObservation,
     ) -> anyhow::Result<()> {
         WorkspaceModelProfileCatalog::record_context_limit_observation(
+            self,
+            provider,
+            model,
+            observation,
+        )
+    }
+
+    fn record_model_profile_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ModelProfileObservation,
+    ) -> anyhow::Result<()> {
+        WorkspaceModelProfileCatalog::record_model_profile_observation(
             self,
             provider,
             model,
@@ -633,6 +691,72 @@ fn select_observation_cache_provider(
         .copied()
         .unwrap_or("unknown")
         .to_string()
+}
+
+fn ensure_model_cache_entry_index(
+    state: &mut ModelCacheState,
+    target_provider: &str,
+    endpoint: Option<&str>,
+    now: u64,
+) -> usize {
+    if let Some(index) = state
+        .entries
+        .iter()
+        .position(|entry| model_cache_entry_matches(entry, target_provider, endpoint))
+    {
+        index
+    } else {
+        state.entries.push(ModelCacheEntry {
+            provider: target_provider.to_string(),
+            endpoint: endpoint.map(str::to_string),
+            fetched_at_unix: now,
+            models: Vec::new(),
+            profiles: Vec::new(),
+        });
+        state.entries.len() - 1
+    }
+}
+
+fn ensure_model_cache_entry_model(entry: &mut ModelCacheEntry, model: &str) -> bool {
+    if entry
+        .models
+        .iter()
+        .any(|cached_model| cached_model.eq_ignore_ascii_case(model))
+    {
+        false
+    } else {
+        entry.models.push(model.to_string());
+        true
+    }
+}
+
+fn ensure_model_profile_cache_entry_index(
+    entry: &mut ModelCacheEntry,
+    model: &str,
+) -> (usize, bool) {
+    if let Some(index) = entry
+        .profiles
+        .iter()
+        .position(|profile| profile.model.eq_ignore_ascii_case(model))
+    {
+        (index, false)
+    } else {
+        entry.profiles.push(ModelProfileCacheEntry {
+            model: model.to_string(),
+            ..Default::default()
+        });
+        (entry.profiles.len() - 1, true)
+    }
+}
+
+fn dedupe_model_features(features: &mut Vec<ModelFeature>) {
+    let mut deduped = Vec::with_capacity(features.len());
+    for feature in features.drain(..) {
+        if !deduped.contains(&feature) {
+            deduped.push(feature);
+        }
+    }
+    *features = deduped;
 }
 
 fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> String {
@@ -1870,6 +1994,41 @@ mod tests {
             Some(CatalogModelProfileSource::CachedProviderCatalog)
         );
         assert_eq!(profile.observed_at_unix, Some(300));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_records_endpoint_scoped_profile_observation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openai"),
+            Some("https://api.deepseek.com/v1/"),
+        );
+
+        catalog
+            .record_model_profile_observation(
+                "openai",
+                "deepseek-chat",
+                ModelProfileObservation {
+                    context_window_tokens: Some(256_000),
+                    max_output_tokens: Some(32_000),
+                    features: vec![ModelFeature::ToolCalling, ModelFeature::ToolCalling],
+                },
+            )
+            .unwrap();
+
+        let profile = catalog
+            .lookup_model_profile("openai", "deepseek-chat")
+            .expect("endpoint-scoped observation should resolve through inferred provider");
+
+        assert_eq!(profile.context_window_tokens, Some(256_000));
+        assert_eq!(profile.max_output_tokens, Some(32_000));
+        assert_eq!(profile.features, vec![ModelFeature::ToolCalling]);
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::CachedProviderCatalog)
+        );
+        assert!(profile.observed_at_unix.is_some());
     }
 
     #[test]

@@ -13,7 +13,8 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait MessageRouterPort: Send + Sync {
     /// Route an inbound message to a target agent.
-    async fn route(&self, input: &RoutingInput) -> RoutingResult;
+    /// Returns `None` when no explicit route matches.
+    async fn route(&self, input: &RoutingInput) -> Option<RoutingResult>;
 
     /// Reload routing rules from source (e.g. re-read TOML).
     async fn reload(&self) -> anyhow::Result<()>;
@@ -39,7 +40,7 @@ impl InMemoryRouter {
 
 #[async_trait]
 impl MessageRouterPort for InMemoryRouter {
-    async fn route(&self, input: &RoutingInput) -> RoutingResult {
+    async fn route(&self, input: &RoutingInput) -> Option<RoutingResult> {
         self.table.read().await.resolve(input)
     }
 
@@ -65,7 +66,6 @@ mod tests {
                 pipeline: None,
                 priority: 10,
             }],
-            fallback: "default".into(),
         };
         let router = InMemoryRouter::new(table);
 
@@ -74,16 +74,13 @@ mod tests {
             source_kind: "channel".into(),
             metadata: HashMap::new(),
         };
-        let result = router.route(&input).await;
+        let result = router.route(&input).await.unwrap();
         assert_eq!(result.target, "test-agent");
     }
 
     #[tokio::test]
     async fn in_memory_router_replace() {
-        let table1 = RoutingTable {
-            routes: vec![],
-            fallback: "old".into(),
-        };
+        let table1 = RoutingTable { routes: vec![] };
         let router = InMemoryRouter::new(table1);
 
         let input = RoutingInput {
@@ -91,13 +88,10 @@ mod tests {
             source_kind: "web".into(),
             metadata: HashMap::new(),
         };
-        assert_eq!(router.route(&input).await.target, "old");
+        assert!(router.route(&input).await.is_none());
 
-        let table2 = RoutingTable {
-            routes: vec![],
-            fallback: "new".into(),
-        };
+        let table2 = RoutingTable { routes: vec![] };
         router.replace(table2).await;
-        assert_eq!(router.route(&input).await.target, "new");
+        assert!(router.route(&input).await.is_none());
     }
 }
