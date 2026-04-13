@@ -1579,6 +1579,10 @@ pub async fn run_gateway(
             "/api/agents/{agent_id}/chat/sessions/{key}/messages",
             get(api::handle_api_agent_chat_messages_proxy),
         )
+        .route(
+            "/api/agents/{agent_id}/chat/media",
+            post(api::handle_api_agent_chat_media_upload_proxy),
+        )
         .route("/api/status", get(api::handle_api_status))
         .route("/api/heartbeat", get(api::handle_api_heartbeat))
         .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))
