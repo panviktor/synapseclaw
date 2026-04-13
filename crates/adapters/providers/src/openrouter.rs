@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use synapse_domain::config::model_catalog;
+use synapse_domain::config::schema::ModelFeature;
 
 pub struct OpenRouterProvider {
     credential: Option<String>,
@@ -22,6 +24,8 @@ struct ChatRequest {
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<OpenRouterReasoningOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modalities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,7 +65,10 @@ struct Choice {
 
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    images: Vec<GeneratedImage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,6 +78,8 @@ struct NativeChatRequest {
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<OpenRouterReasoningOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modalities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -153,6 +162,8 @@ struct NativeChoice {
 struct NativeResponseMessage {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    images: Vec<GeneratedImage>,
     /// Reasoning/thinking models may return output in `reasoning_content`.
     #[serde(default)]
     reasoning_content: Option<String>,
@@ -162,6 +173,17 @@ struct NativeResponseMessage {
     reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<NativeToolCall>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeneratedImage {
+    #[serde(default, rename = "image_url", alias = "imageUrl")]
+    image_url: Option<GeneratedImageUrl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeneratedImageUrl {
+    url: String,
 }
 
 impl OpenRouterProvider {
@@ -181,15 +203,28 @@ impl OpenRouterProvider {
         }
     }
 
-    fn reasoning_options(&self) -> Option<OpenRouterReasoningOptions> {
-        match (self.reasoning_enabled, self.reasoning_effort.as_ref()) {
+    fn reasoning_options(&self, model: &str) -> Option<OpenRouterReasoningOptions> {
+        if self.reasoning_enabled == Some(false) {
+            return Some(OpenRouterReasoningOptions {
+                enabled: Some(false),
+                effort: None,
+            });
+        }
+
+        let policy = model_catalog::model_request_policy("openrouter", model)?;
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .and_then(|requested| policy.resolve_reasoning_effort(requested));
+
+        match (self.reasoning_enabled, effort) {
             (Some(false), _) => Some(OpenRouterReasoningOptions {
                 enabled: Some(false),
                 effort: None,
             }),
             (Some(true), Some(effort)) => Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
-                effort: Some(effort.clone()),
+                effort: Some(effort),
             }),
             (Some(true), None) => Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
@@ -197,9 +232,63 @@ impl OpenRouterProvider {
             }),
             (None, Some(effort)) => Some(OpenRouterReasoningOptions {
                 enabled: None,
-                effort: Some(effort.clone()),
+                effort: Some(effort),
             }),
             (None, None) => None,
+        }
+    }
+
+    fn output_modalities_for_model(model: &str) -> Option<Vec<String>> {
+        let profile = model_catalog::model_profile("openrouter", model)?;
+        let has = |feature| profile.features.iter().any(|item| *item == feature);
+        let mut modalities = Vec::new();
+
+        if has(ModelFeature::ImageGeneration) {
+            modalities.push("image".to_string());
+        }
+        if has(ModelFeature::AudioGeneration) || has(ModelFeature::MusicGeneration) {
+            modalities.push("audio".to_string());
+        }
+        if has(ModelFeature::VideoGeneration) {
+            modalities.push("video".to_string());
+        }
+        if modalities.is_empty() {
+            return None;
+        }
+
+        if has(ModelFeature::MultimodalUnderstanding)
+            || has(ModelFeature::Vision)
+            || has(ModelFeature::ToolCalling)
+        {
+            modalities.push("text".to_string());
+        }
+
+        modalities.sort();
+        modalities.dedup();
+        Some(modalities)
+    }
+
+    fn merge_content_and_generated_images(
+        content: Option<String>,
+        images: &[GeneratedImage],
+    ) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(content) = content {
+            let content = content.trim();
+            if !content.is_empty() {
+                parts.push(content.to_string());
+            }
+        }
+
+        parts.extend(images.iter().filter_map(|image| {
+            let url = image.image_url.as_ref()?.url.trim();
+            (!url.is_empty()).then(|| format!("[IMAGE:{url}]"))
+        }));
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n"))
         }
     }
 
@@ -391,7 +480,7 @@ impl OpenRouterProvider {
             .collect::<anyhow::Result<Vec<_>>>()?;
 
         Ok(ProviderChatResponse {
-            text: message.content,
+            text: Self::merge_content_and_generated_images(message.content, &message.images),
             tool_calls,
             usage: None,
             reasoning_content,
@@ -492,7 +581,8 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
+            modalities: Self::output_modalities_for_model(model),
         };
 
         let response = self
@@ -516,7 +606,10 @@ impl Provider for OpenRouterProvider {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .map(|c| {
+                Self::merge_content_and_generated_images(c.message.content, &c.message.images)
+                    .unwrap_or_default()
+            })
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))
     }
 
@@ -541,7 +634,8 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
+            modalities: Self::output_modalities_for_model(model),
         };
 
         let response = self
@@ -565,7 +659,10 @@ impl Provider for OpenRouterProvider {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .map(|c| {
+                Self::merge_content_and_generated_images(c.message.content, &c.message.images)
+                    .unwrap_or_default()
+            })
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))
     }
 
@@ -586,7 +683,8 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
+            modalities: Self::output_modalities_for_model(model),
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
         };
@@ -680,7 +778,8 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: native_messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
+            modalities: Self::output_modalities_for_model(model),
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
         };
@@ -752,12 +851,13 @@ mod tests {
             OpenRouterProvider::new_with_reasoning(None, Some(true), Some("high".to_string()));
 
         assert_eq!(
-            provider.reasoning_options(),
+            provider.reasoning_options("x-ai/grok-4.20"),
             Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
                 effort: Some("high".to_string()),
             })
         );
+        assert_eq!(provider.reasoning_options("unknown/no-policy"), None);
     }
 
     #[test]
@@ -766,7 +866,7 @@ mod tests {
             OpenRouterProvider::new_with_reasoning(None, Some(false), Some("high".to_string()));
 
         assert_eq!(
-            provider.reasoning_options(),
+            provider.reasoning_options("unknown/no-policy"),
             Some(OpenRouterReasoningOptions {
                 enabled: Some(false),
                 effort: None,
@@ -830,6 +930,7 @@ mod tests {
             ],
             temperature: 0.5,
             reasoning: None,
+            modalities: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -864,6 +965,7 @@ mod tests {
                 .collect(),
             temperature: 0.0,
             reasoning: None,
+            modalities: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -888,6 +990,7 @@ mod tests {
                 enabled: Some(true),
                 effort: Some("high".into()),
             }),
+            modalities: None,
             tools: None,
             tool_choice: None,
         };
@@ -899,13 +1002,89 @@ mod tests {
     }
 
     #[test]
+    fn output_modalities_follow_catalog_generation_features() {
+        assert_eq!(
+            OpenRouterProvider::output_modalities_for_model("sourceful/riverflow-v2-fast"),
+            Some(vec!["image".to_string()])
+        );
+        assert_eq!(
+            OpenRouterProvider::output_modalities_for_model(
+                "google/gemini-3.1-flash-image-preview"
+            ),
+            Some(vec!["image".to_string(), "text".to_string()])
+        );
+        assert_eq!(
+            OpenRouterProvider::output_modalities_for_model("google/lyria-3-clip-preview"),
+            Some(vec!["audio".to_string(), "text".to_string()])
+        );
+        assert_eq!(
+            OpenRouterProvider::output_modalities_for_model("google/veo-3.1"),
+            Some(vec!["video".to_string()])
+        );
+        assert_eq!(
+            OpenRouterProvider::output_modalities_for_model("minimax/minimax-m2.7"),
+            None
+        );
+    }
+
+    #[test]
+    fn native_request_serializes_generation_modalities() {
+        let request = NativeChatRequest {
+            model: "sourceful/riverflow-v2-fast".into(),
+            messages: vec![NativeMessage {
+                role: "user".into(),
+                content: Some(MessageContent::Text("draw a test image".into())),
+                tool_call_id: None,
+                tool_calls: None,
+                reasoning_content: None,
+            }],
+            temperature: 0.1,
+            reasoning: None,
+            modalities: OpenRouterProvider::output_modalities_for_model(
+                "sourceful/riverflow-v2-fast",
+            ),
+            tools: None,
+            tool_choice: None,
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(json["modalities"], serde_json::json!(["image"]));
+    }
+
+    #[test]
     fn response_deserializes_single_choice() {
         let json = r#"{"choices":[{"message":{"content":"Hi from OpenRouter"}}]}"#;
 
         let response: ApiChatResponse = serde_json::from_str(json).unwrap();
 
         assert_eq!(response.choices.len(), 1);
-        assert_eq!(response.choices[0].message.content, "Hi from OpenRouter");
+        assert_eq!(
+            response.choices[0].message.content.as_deref(),
+            Some("Hi from OpenRouter")
+        );
+    }
+
+    #[test]
+    fn response_deserializes_generated_images() {
+        let json = r#"{
+            "choices":[{
+                "message":{
+                    "content": null,
+                    "images": [
+                        {"type":"image_url","image_url":{"url":"data:image/png;base64,abcd"}}
+                    ]
+                }
+            }]
+        }"#;
+
+        let response: ApiChatResponse = serde_json::from_str(json).unwrap();
+        let image_url = response.choices[0].message.images[0]
+            .image_url
+            .as_ref()
+            .map(|image| image.url.as_str());
+
+        assert_eq!(image_url, Some("data:image/png;base64,abcd"));
     }
 
     #[test]
@@ -993,6 +1172,7 @@ mod tests {
     fn parse_native_response_converts_to_chat_response() {
         let message = NativeResponseMessage {
             content: Some("Here you go.".into()),
+            images: Vec::new(),
             reasoning_content: None,
             reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
@@ -1011,6 +1191,28 @@ mod tests {
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].id, "call_789");
         assert_eq!(response.tool_calls[0].name, "file_read");
+    }
+
+    #[test]
+    fn parse_native_response_converts_generated_images_to_attachment_markers() {
+        let message = NativeResponseMessage {
+            content: None,
+            images: vec![GeneratedImage {
+                image_url: Some(GeneratedImageUrl {
+                    url: "data:image/png;base64,abcd".into(),
+                }),
+            }],
+            reasoning_content: None,
+            reasoning: None,
+            tool_calls: None,
+        };
+
+        let response = OpenRouterProvider::parse_native_response(message).unwrap();
+
+        assert_eq!(
+            response.text.as_deref(),
+            Some("[IMAGE:data:image/png;base64,abcd]")
+        );
     }
 
     #[test]
@@ -1148,6 +1350,7 @@ mod tests {
     fn parse_native_response_captures_reasoning_content() {
         let message = NativeResponseMessage {
             content: Some("answer".into()),
+            images: Vec::new(),
             reasoning_content: Some("thinking step".into()),
             reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
@@ -1168,6 +1371,7 @@ mod tests {
     fn parse_native_response_captures_openrouter_reasoning_field() {
         let message = NativeResponseMessage {
             content: Some("answer".into()),
+            images: Vec::new(),
             reasoning_content: None,
             reasoning: Some("normalized thinking".into()),
             tool_calls: None,
@@ -1185,6 +1389,7 @@ mod tests {
     fn parse_native_response_none_reasoning_content_for_normal_model() {
         let message = NativeResponseMessage {
             content: Some("hello".into()),
+            images: Vec::new(),
             reasoning_content: None,
             reasoning: None,
             tool_calls: None,

@@ -26,6 +26,8 @@ pub struct CuratedModelDefinition {
 #[derive(Debug, Clone, Deserialize)]
 struct ModelCatalogData {
     #[serde(default)]
+    default_preset: Option<String>,
+    #[serde(default)]
     presets: Vec<ModelPresetCatalogEntry>,
     #[serde(default)]
     providers: Vec<ProviderModelCatalogEntry>,
@@ -35,19 +37,25 @@ struct ModelCatalogData {
     profiles: Vec<ModelProfileCatalogEntry>,
     #[serde(default)]
     embedding_profiles: Vec<EmbeddingProfileCatalogEntry>,
-    #[serde(default, alias = "model_routes")]
+    #[serde(default)]
     route_aliases: Vec<ModelRouteConfig>,
+    #[serde(default)]
+    request_policies: Vec<ModelRequestPolicyCatalogEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ModelPresetCatalogEntry {
     id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
     title: String,
     description: String,
     default_provider: String,
     default_model: String,
     #[serde(default)]
     seed_multimodal_from_reasoning: bool,
+    #[serde(default)]
+    provider_aliases: Vec<String>,
     #[serde(default)]
     extra_lanes: Vec<ModelLaneConfig>,
 }
@@ -79,6 +87,54 @@ struct ModelProfileCatalogEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModelRequestPolicyCatalogEntry {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    fixed_temperature: Option<f64>,
+    #[serde(default)]
+    reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_effort_aliases: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelRequestPolicy {
+    pub fixed_temperature: Option<f64>,
+    pub reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: Option<String>,
+    pub reasoning_effort_aliases: HashMap<String, String>,
+}
+
+impl ModelRequestPolicy {
+    pub fn resolve_reasoning_effort(&self, requested: &str) -> Option<String> {
+        let requested = requested.trim().to_ascii_lowercase();
+        if requested.is_empty() {
+            return self.default_reasoning_effort.clone();
+        }
+
+        let resolved = self
+            .reasoning_effort_aliases
+            .get(&requested)
+            .cloned()
+            .unwrap_or(requested);
+
+        if self.reasoning_efforts.is_empty()
+            || self
+                .reasoning_efforts
+                .iter()
+                .any(|effort| effort.eq_ignore_ascii_case(&resolved))
+        {
+            return Some(resolved);
+        }
+
+        self.default_reasoning_effort.clone()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -154,6 +210,10 @@ fn merge_catalog_data(
 ) -> ModelCatalogData {
     let mut merged = base.clone();
 
+    if override_data.default_preset.is_some() {
+        merged.default_preset = override_data.default_preset;
+    }
+
     for preset in override_data.presets {
         if let Some(existing) = merged.presets.iter_mut().find(|item| item.id == preset.id) {
             *existing = preset;
@@ -221,6 +281,17 @@ fn merge_catalog_data(
         }
     }
 
+    for policy in override_data.request_policies {
+        if let Some(existing) = merged.request_policies.iter_mut().find(|item| {
+            item.provider.eq_ignore_ascii_case(&policy.provider)
+                && item.model.eq_ignore_ascii_case(&policy.model)
+        }) {
+            *existing = policy;
+        } else {
+            merged.request_policies.push(policy);
+        }
+    }
+
     merged
 }
 
@@ -250,6 +321,42 @@ pub fn known_model_presets() -> &'static [KnownModelPreset] {
     active_model_catalog().presets_view.as_slice()
 }
 
+fn default_preset_entry(catalog: &ParsedModelCatalog) -> Option<&ModelPresetCatalogEntry> {
+    catalog
+        .data
+        .default_preset
+        .as_deref()
+        .and_then(|id| {
+            let id = id.trim();
+            (!id.is_empty()).then_some(id)
+        })
+        .and_then(|id| {
+            catalog
+                .data
+                .presets
+                .iter()
+                .find(|preset| preset.id.eq_ignore_ascii_case(id))
+        })
+        .or_else(|| catalog.data.presets.first())
+}
+
+pub fn default_model_preset_id() -> Option<&'static str> {
+    default_preset_entry(active_model_catalog()).map(|preset| preset.id.as_str())
+}
+
+pub fn default_reasoning_seed() -> Option<(&'static str, &'static str)> {
+    default_preset_entry(active_model_catalog()).map(|preset| {
+        (
+            preset.default_provider.as_str(),
+            preset.default_model.as_str(),
+        )
+    })
+}
+
+pub fn default_provider() -> Option<&'static str> {
+    default_reasoning_seed().map(|(provider, _)| provider)
+}
+
 pub fn preset_title(preset_id: &str) -> Option<&'static str> {
     active_model_catalog()
         .presets_view
@@ -264,6 +371,46 @@ pub fn preset_description(preset_id: &str) -> Option<&'static str> {
         .iter()
         .find(|preset| preset.id == preset_id)
         .map(|preset| preset.description.as_str())
+}
+
+pub fn normalize_model_preset_id(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .presets
+        .iter()
+        .find(|preset| {
+            preset.id.eq_ignore_ascii_case(value)
+                || preset
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(value))
+        })
+        .map(|preset| preset.id.as_str())
+}
+
+pub fn recommended_preset_for_provider(provider: &str) -> Option<&'static str> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .presets
+        .iter()
+        .find(|preset| {
+            preset.default_provider.eq_ignore_ascii_case(provider)
+                || preset
+                    .provider_aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(provider))
+        })
+        .map(|preset| preset.id.as_str())
 }
 
 pub fn preset_reasoning_seed(preset_id: &str) -> Option<(&'static str, &'static str)> {
@@ -384,6 +531,32 @@ pub fn model_profile(provider: &str, model: &str) -> Option<CatalogModelProfile>
         })
 }
 
+pub fn model_request_policy(provider: &str, model: &str) -> Option<ModelRequestPolicy> {
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+
+    let normalized_model = model.rsplit('/').next().unwrap_or(model);
+
+    active_model_catalog()
+        .data
+        .request_policies
+        .iter()
+        .find(|entry| {
+            entry.provider.eq_ignore_ascii_case(provider)
+                && (entry.model.eq_ignore_ascii_case(model)
+                    || entry.model.eq_ignore_ascii_case(normalized_model))
+        })
+        .map(|entry| ModelRequestPolicy {
+            fixed_temperature: entry.fixed_temperature,
+            reasoning_efforts: entry.reasoning_efforts.clone(),
+            default_reasoning_effort: entry.default_reasoning_effort.clone(),
+            reasoning_effort_aliases: entry.reasoning_effort_aliases.clone(),
+        })
+}
+
 pub fn embedding_profile(
     provider: &str,
     model: &str,
@@ -459,11 +632,11 @@ fn embedding_profile_catalog_key_matches(
         && left.dimensions == right.dimensions
 }
 
-pub fn model_route_aliases() -> Vec<ModelRouteConfig> {
+pub fn route_aliases() -> Vec<ModelRouteConfig> {
     active_model_catalog().data.route_aliases.clone()
 }
 
-pub fn model_route_alias(value: &str) -> Option<ModelRouteConfig> {
+pub fn route_alias(value: &str) -> Option<ModelRouteConfig> {
     let value = value.trim().trim_matches('`');
     if value.is_empty() {
         return None;
@@ -506,7 +679,27 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_preset_has_auxiliary_lanes() {
+    fn default_route_comes_from_catalog_default_preset() {
+        assert_eq!(default_model_preset_id(), Some("chatgpt"));
+        assert_eq!(default_reasoning_seed(), preset_reasoning_seed("chatgpt"));
+        assert_eq!(
+            default_provider(),
+            preset_reasoning_seed("chatgpt").map(|(provider, _)| provider)
+        );
+    }
+
+    #[test]
+    fn preset_aliases_come_from_catalog_data() {
+        assert_eq!(normalize_model_preset_id("codex"), Some("chatgpt"));
+        assert_eq!(
+            recommended_preset_for_provider("openai-codex"),
+            Some("chatgpt")
+        );
+        assert_eq!(recommended_preset_for_provider("llamacpp"), Some("local"));
+    }
+
+    #[test]
+    fn openrouter_preset_has_auxiliary_and_media_lanes() {
         let lanes = preset_extra_lanes("openrouter").expect("preset should exist");
         assert!(lanes
             .iter()
@@ -514,10 +707,22 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::ImageGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::AudioGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::MusicGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
     }
 
     #[test]
-    fn openrouter_catalog_exposes_gemma_standard_profiles_pricing_and_aliases() {
+    fn openrouter_catalog_exposes_standard_media_and_minimax_profiles_pricing_and_aliases() {
         let curated = provider_curated_models("openrouter").expect("provider should exist");
         assert!(curated
             .iter()
@@ -526,6 +731,16 @@ mod tests {
             .iter()
             .any(|(model, _)| model == "google/gemma-4-26b-a4b-it"));
         assert!(curated.iter().any(|(model, _)| model == "x-ai/grok-4.20"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "minimax/minimax-m2.7"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "sourceful/riverflow-v2-fast"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "google/lyria-3-clip-preview"));
+        assert!(curated.iter().any(|(model, _)| model == "google/veo-3.1"));
 
         let pricing = default_pricing_table();
         let price = pricing
@@ -541,6 +756,11 @@ mod tests {
         let price = pricing.get("x-ai/grok-4.20").expect("pricing should exist");
         assert_eq!(price.input, 2.0);
         assert_eq!(price.output, 6.0);
+        let price = pricing
+            .get("minimax/minimax-m2.7")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.30);
+        assert_eq!(price.output, 1.20);
 
         let profile =
             model_profile("openrouter", "google/gemma-4-31b-it").expect("profile should exist");
@@ -579,19 +799,121 @@ mod tests {
             Some(CatalogModelProfileSource::BundledCatalog)
         );
 
-        let aliases = model_route_aliases();
+        let profile =
+            model_profile("openrouter", "minimax/minimax-m2.7").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(204_800));
+        assert_eq!(profile.max_output_tokens, Some(131_072));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert!(!profile.features.contains(&ModelFeature::VideoGeneration));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let profile = model_profile("openrouter", "google/gemini-3.1-flash-image-preview")
+            .expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::ImageGeneration));
+        assert!(profile
+            .features
+            .contains(&ModelFeature::MultimodalUnderstanding));
+
+        let profile = model_profile("openrouter", "sourceful/riverflow-v2-fast")
+            .expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(8_192));
+        assert!(profile.features.contains(&ModelFeature::ImageGeneration));
+
+        let profile =
+            model_profile("openrouter", "openai/gpt-audio-mini").expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::AudioGeneration));
+
+        let profile = model_profile("openrouter", "google/lyria-3-clip-preview")
+            .expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::MusicGeneration));
+
+        let profile = model_profile("openrouter", "google/veo-3.1").expect("profile should exist");
+        assert!(profile.features.contains(&ModelFeature::VideoGeneration));
+
+        let aliases = route_aliases();
         assert!(aliases.iter().any(|route| route.hint == "gemma31b"));
         assert!(aliases.iter().any(|route| route.hint == "gemma26b"));
         assert!(aliases.iter().any(|route| route.hint == "grok420"));
-        let alias = model_route_alias("gemma31b").expect("alias should exist");
+        assert!(aliases.iter().any(|route| route.hint == "minimax"));
+        assert!(aliases.iter().any(|route| route.hint == "media-video"));
+        assert!(aliases
+            .iter()
+            .any(|route| route.hint == "media-image-small"));
+        let alias = route_alias("gemma31b").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "google/gemma-4-31b-it");
-        let alias = model_route_alias("grok-4.20").expect("alias should exist");
+        let alias = route_alias("grok-4.20").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "x-ai/grok-4.20");
-        let alias = model_route_alias("qwen36").expect("alias should exist");
+        let alias = route_alias("minimax").expect("alias should exist");
+        assert_eq!(alias.provider, "openrouter");
+        assert_eq!(alias.model, "minimax/minimax-m2.7");
+        let alias = route_alias("media-video").expect("alias should exist");
+        assert_eq!(alias.capability, Some(CapabilityLane::VideoGeneration));
+        assert_eq!(alias.provider, "openrouter");
+        let alias = route_alias("qwen36").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "qwen/qwen3.6-plus");
+    }
+
+    #[test]
+    fn direct_deepseek_profiles_keep_context_budget_from_falling_back_to_unknown_window() {
+        let pricing = default_pricing_table();
+        let price = pricing.get("deepseek-chat").expect("pricing should exist");
+        assert_eq!(price.input, 0.28);
+        assert_eq!(price.output, 0.42);
+        let price = pricing
+            .get("deepseek-reasoner")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.28);
+        assert_eq!(price.output, 0.42);
+
+        let profile = model_profile("deepseek", "deepseek-chat").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(8_192));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let profile = model_profile("deepseek", "deepseek-reasoner").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(65_536));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+    }
+
+    #[test]
+    fn openai_codex_profiles_keep_primary_route_out_of_unknown_tiny_window() {
+        let profile = model_profile("openai-codex", "gpt-5.4").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(400_000));
+        assert_eq!(profile.max_output_tokens, Some(128_000));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::PromptCaching));
+        assert!(profile.features.contains(&ModelFeature::ServerContinuation));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let mini = model_profile("openai-codex", "gpt-5.4-mini").expect("profile should exist");
+        assert_eq!(mini.context_window_tokens, Some(400_000));
+        assert_eq!(mini.max_output_tokens, Some(128_000));
+
+        let openai = model_profile("openai", "gpt-5.4").expect("profile should exist");
+        assert_eq!(openai.context_window_tokens, Some(400_000));
+        assert!(openai.features.contains(&ModelFeature::PromptCaching));
+        assert!(!openai.features.contains(&ModelFeature::ServerContinuation));
     }
 
     #[test]
@@ -641,6 +963,7 @@ mod tests {
     fn override_catalog_can_replace_provider_defaults() {
         let override_data = parse_model_catalog_data(
             r#"{
+              "default_preset": "openrouter",
               "providers": [
                 {
                   "provider": "openai-codex",
@@ -675,12 +998,22 @@ mod tests {
                   "provider": "openrouter",
                   "model": "google/gemma-4-31b-preview"
                 }
+              ],
+              "request_policies": [
+                {
+                  "provider": "openai-codex",
+                  "model": "gpt-5.4",
+                  "default_reasoning_effort": "high",
+                  "reasoning_efforts": ["low", "medium", "high"],
+                  "reasoning_effort_aliases": { "minimal": "low", "xhigh": "high" }
+                }
               ]
             }"#,
         )
         .expect("override should parse");
 
         let merged = merge_catalog_data(&bundled_model_catalog().data, override_data);
+        assert_eq!(merged.default_preset.as_deref(), Some("openrouter"));
         let openai = merged
             .providers
             .iter()
@@ -712,5 +1045,35 @@ mod tests {
             .find(|route| route.hint == "gemma31b")
             .expect("route alias should merge by hint");
         assert_eq!(alias.model, "google/gemma-4-31b-preview");
+        let policy = merged
+            .request_policies
+            .iter()
+            .find(|policy| policy.provider == "openai-codex" && policy.model == "gpt-5.4")
+            .expect("request policy should merge by provider/model key");
+        assert_eq!(policy.default_reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn request_policy_resolves_temperature_and_reasoning_aliases() {
+        let policy =
+            model_request_policy("openai-codex", "gpt-5.4").expect("policy should resolve");
+        assert_eq!(
+            policy.resolve_reasoning_effort("xhigh"),
+            Some("high".into())
+        );
+        assert_eq!(
+            policy.resolve_reasoning_effort("minimal"),
+            Some("low".into())
+        );
+
+        let policy = model_request_policy("openai", "o3").expect("policy should resolve");
+        assert_eq!(policy.fixed_temperature, Some(1.0));
+
+        let policy =
+            model_request_policy("openrouter", "x-ai/grok-4.20").expect("policy should resolve");
+        assert_eq!(
+            policy.resolve_reasoning_effort("xhigh"),
+            Some("high".into())
+        );
     }
 }

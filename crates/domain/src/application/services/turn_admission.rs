@@ -66,6 +66,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
     let mut route_override = None;
     let mut requires_compaction = false;
     let mut required_lane_unsatisfied = false;
+    let mut tool_support_unsatisfied = false;
 
     let budget_assessment = assess_provider_context_budget(input.provider_context);
     let condensation_plan = provider_context_condensation_plan(&budget_assessment);
@@ -124,7 +125,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         }
     }
 
-    if intent == TurnIntentCategory::ToolHeavy
+    if intent_requires_tool_calling(intent)
         && current_candidate_explicitly_lacks_tool_support(
             input.current_lane,
             input.current_profile,
@@ -144,6 +145,9 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
                     input.catalog,
                 )
             });
+        }
+        if route_override.is_none() {
+            tool_support_unsatisfied = true;
         }
     }
 
@@ -175,7 +179,8 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
     }
 
     let action = if (matches!(pressure_state, ContextPressureState::OverflowRisk)
-        || required_lane_unsatisfied)
+        || required_lane_unsatisfied
+        || tool_support_unsatisfied)
         && route_override.is_none()
     {
         TurnAdmissionAction::Block
@@ -218,9 +223,6 @@ fn derive_recommended_action(
     requires_compaction: bool,
     action: TurnAdmissionAction,
 ) -> Option<AdmissionRepairHint> {
-    if let Some(override_route) = route_override {
-        return Some(AdmissionRepairHint::SwitchToLane(override_route.lane));
-    }
     if reasons.iter().any(|reason| {
         matches!(
             reason,
@@ -228,6 +230,9 @@ fn derive_recommended_action(
         )
     }) {
         return Some(AdmissionRepairHint::SwitchToToolCapableReasoning);
+    }
+    if let Some(override_route) = route_override {
+        return Some(AdmissionRepairHint::SwitchToLane(override_route.lane));
     }
     if let Some(lane) = reasons.iter().find_map(|reason| match reason {
         CandidateAdmissionReason::CapabilityMetadataUnknown(lane)
@@ -448,6 +453,13 @@ fn intent_uses_reasoning_lane(intent: TurnIntentCategory) -> bool {
     )
 }
 
+fn intent_requires_tool_calling(intent: TurnIntentCategory) -> bool {
+    matches!(
+        intent,
+        TurnIntentCategory::Deliver | TurnIntentCategory::Mutate | TurnIntentCategory::ToolHeavy
+    )
+}
+
 fn current_candidate_explicitly_lacks_tool_support(
     current_lane: Option<CapabilityLane>,
     profile: &ResolvedModelProfile,
@@ -459,7 +471,7 @@ fn current_candidate_explicitly_lacks_tool_support(
         return false;
     }
 
-    matches!(
+    let specialized_lane_without_tools = matches!(
         current_lane,
         Some(
             CapabilityLane::Embedding
@@ -468,7 +480,11 @@ fn current_candidate_explicitly_lacks_tool_support(
                 | CapabilityLane::VideoGeneration
                 | CapabilityLane::MusicGeneration
         )
-    )
+    );
+
+    specialized_lane_without_tools
+        || (profile.features_known()
+            && profile.features_confidence() >= ResolvedModelProfileConfidence::Medium)
 }
 
 fn resolve_required_lane_override(
@@ -567,6 +583,24 @@ mod tests {
             description: "send".into(),
             parameters: serde_json::json!({"type": "object"}),
             runtime_role: Some(ToolRuntimeRole::DirectDelivery),
+        }
+    }
+
+    fn external_lookup_spec() -> ToolSpec {
+        ToolSpec {
+            name: "web_fetch".into(),
+            description: "fetch".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            runtime_role: Some(ToolRuntimeRole::ExternalLookup),
+        }
+    }
+
+    fn profile_mutation_spec() -> ToolSpec {
+        ToolSpec {
+            name: "profile_update".into(),
+            description: "profile update".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            runtime_role: Some(ToolRuntimeRole::ProfileMutation),
         }
     }
 
@@ -917,6 +951,222 @@ mod tests {
         });
 
         assert_eq!(decision.snapshot.intent, TurnIntentCategory::Deliver);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Proceed);
+    }
+
+    #[test]
+    fn delivery_turn_blocks_when_candidate_confidently_lacks_tools() {
+        let guidance = ExecutionGuidance {
+            direct_resolution_ready: true,
+            preferred_capabilities: vec![ExecutionCapability::Delivery],
+            recent_failure_hints: Vec::new(),
+            ..ExecutionGuidance::default()
+        };
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Send it there",
+            execution_guidance: Some(&guidance),
+            tool_specs: &[direct_delivery_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::Deliver);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Block);
+        assert_eq!(
+            decision.recommended_action,
+            Some(AdmissionRepairHint::SwitchToToolCapableReasoning)
+        );
+    }
+
+    #[test]
+    fn mutation_turn_blocks_when_candidate_confidently_lacks_tools() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Remember this preference",
+            execution_guidance: None,
+            tool_specs: &[profile_mutation_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::Mutate);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Block);
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::MissingFeature(
+                ModelFeature::ToolCalling
+            )));
+    }
+
+    #[test]
+    fn tool_heavy_turn_reroutes_to_tool_capable_reasoning_candidate() {
+        let mut config = Config::default();
+        config.model_lanes.push(ModelLaneConfig {
+            lane: CapabilityLane::Reasoning,
+            candidates: vec![
+                ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "plain-reasoning".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: Some(64_000),
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::Vision],
+                    },
+                },
+                ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "tool-reasoning".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: Some(64_000),
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::ToolCalling],
+                    },
+                },
+            ],
+        });
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: Some(&config),
+            user_message: "Fetch the current project status",
+            execution_guidance: None,
+            tool_specs: &[external_lookup_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::ToolHeavy);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Reroute);
+        assert_eq!(
+            decision.route_override.expect("override").model,
+            "tool-reasoning"
+        );
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::MissingFeature(
+                ModelFeature::ToolCalling
+            )));
+        assert_eq!(
+            decision.recommended_action,
+            Some(AdmissionRepairHint::SwitchToToolCapableReasoning)
+        );
+    }
+
+    #[test]
+    fn tool_heavy_turn_blocks_when_confident_current_candidate_lacks_tools() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Fetch the current project status",
+            execution_guidance: None,
+            tool_specs: &[external_lookup_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::ToolHeavy);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Block);
+        assert_eq!(
+            decision.recommended_action,
+            Some(AdmissionRepairHint::SwitchToToolCapableReasoning)
+        );
+    }
+
+    #[test]
+    fn tool_heavy_turn_does_not_block_on_unknown_tool_metadata() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Fetch the current project status",
+            execution_guidance: None,
+            tool_specs: &[external_lookup_spec()],
+            current_provider: "local",
+            current_model: "unknown-compatible-model",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile::default(),
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::ToolHeavy);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Proceed);
+        assert!(!decision
+            .reasons
+            .contains(&CandidateAdmissionReason::MissingFeature(
+                ModelFeature::ToolCalling
+            )));
     }
 
     #[test]

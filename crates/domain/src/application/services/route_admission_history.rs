@@ -63,6 +63,7 @@ pub fn latest_route_admission_repair(
 
 fn same_admission_signature(left: &RouteAdmissionState, right: &RouteAdmissionState) -> bool {
     left.snapshot == right.snapshot
+        && left.required_lane == right.required_lane
         && left.reasons == right.reasons
         && left.recommended_action == right.recommended_action
 }
@@ -83,6 +84,7 @@ mod tests {
                 pressure_state: ContextPressureState::Warning,
                 action: TurnAdmissionAction::Reroute,
             },
+            required_lane: None,
             reasons: vec![reason],
             recommended_action: Some(AdmissionRepairHint::CompactSession),
         }

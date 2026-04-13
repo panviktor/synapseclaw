@@ -175,6 +175,44 @@ fn failure_reason(rate_limited: bool, non_retryable: bool) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderAttemptErrorClass {
+    non_retryable_rate_limit: bool,
+    non_retryable: bool,
+    rate_limited: bool,
+    context_window_exceeded: bool,
+    failure_reason: &'static str,
+    error_detail: String,
+}
+
+fn classify_provider_attempt_error(err: &anyhow::Error) -> ProviderAttemptErrorClass {
+    let context_window_exceeded = is_context_window_exceeded(err);
+    let non_retryable_rate_limit = is_non_retryable_rate_limit(err);
+    let non_retryable = is_non_retryable(err) || non_retryable_rate_limit;
+    let rate_limited = is_rate_limited(err);
+    ProviderAttemptErrorClass {
+        non_retryable_rate_limit,
+        non_retryable,
+        rate_limited,
+        context_window_exceeded,
+        failure_reason: failure_reason(rate_limited, non_retryable),
+        error_detail: compact_error_detail(err),
+    }
+}
+
+fn bail_if_context_window_exceeded(
+    error_class: &ProviderAttemptErrorClass,
+    failures: &[String],
+) -> anyhow::Result<()> {
+    if error_class.context_window_exceeded {
+        anyhow::bail!(
+            "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
+}
+
 fn compact_error_detail(err: &anyhow::Error) -> String {
     super::sanitize_api_error(&err.to_string())
         .split_whitespace()
@@ -323,11 +361,7 @@ impl Provider for ReliableProvider {
                             return Ok(resp);
                         }
                         Err(e) => {
-                            let non_retryable_rate_limit = is_non_retryable_rate_limit(&e);
-                            let non_retryable = is_non_retryable(&e) || non_retryable_rate_limit;
-                            let rate_limited = is_rate_limited(&e);
-                            let failure_reason = failure_reason(rate_limited, non_retryable);
-                            let error_detail = compact_error_detail(&e);
+                            let error_class = classify_provider_attempt_error(&e);
 
                             push_failure(
                                 &mut failures,
@@ -335,17 +369,17 @@ impl Provider for ReliableProvider {
                                 current_model,
                                 attempt + 1,
                                 self.max_retries + 1,
-                                failure_reason,
-                                &error_detail,
+                                error_class.failure_reason,
+                                &error_class.error_detail,
                             );
 
                             // Rate-limit with rotatable keys: cycle to the next API key
                             // so the retry hits a different quota bucket.
-                            if rate_limited && !non_retryable_rate_limit {
+                            if error_class.rate_limited && !error_class.non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
                                         provider = provider_name,
-                                        error = %error_detail,
+                                        error = %error_class.error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
                                          Retrying with original key.",
@@ -354,20 +388,15 @@ impl Provider for ReliableProvider {
                                 }
                             }
 
-                            if non_retryable {
+                            if error_class.non_retryable {
                                 tracing::warn!(
                                     provider = provider_name,
                                     model = *current_model,
-                                    error = %error_detail,
+                                    error = %error_class.error_detail,
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -379,8 +408,8 @@ impl Provider for ReliableProvider {
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
-                                    reason = failure_reason,
-                                    error = %error_detail,
+                                    reason = error_class.failure_reason,
+                                    error = %error_class.error_detail,
                                     "Provider call failed, retrying"
                                 );
                                 tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -443,11 +472,7 @@ impl Provider for ReliableProvider {
                             return Ok(resp);
                         }
                         Err(e) => {
-                            let non_retryable_rate_limit = is_non_retryable_rate_limit(&e);
-                            let non_retryable = is_non_retryable(&e) || non_retryable_rate_limit;
-                            let rate_limited = is_rate_limited(&e);
-                            let failure_reason = failure_reason(rate_limited, non_retryable);
-                            let error_detail = compact_error_detail(&e);
+                            let error_class = classify_provider_attempt_error(&e);
 
                             push_failure(
                                 &mut failures,
@@ -455,15 +480,15 @@ impl Provider for ReliableProvider {
                                 current_model,
                                 attempt + 1,
                                 self.max_retries + 1,
-                                failure_reason,
-                                &error_detail,
+                                error_class.failure_reason,
+                                &error_class.error_detail,
                             );
 
-                            if rate_limited && !non_retryable_rate_limit {
+                            if error_class.rate_limited && !error_class.non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
                                         provider = provider_name,
-                                        error = %error_detail,
+                                        error = %error_class.error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
                                          Retrying with original key.",
@@ -472,20 +497,15 @@ impl Provider for ReliableProvider {
                                 }
                             }
 
-                            if non_retryable {
+                            if error_class.non_retryable {
                                 tracing::warn!(
                                     provider = provider_name,
                                     model = *current_model,
-                                    error = %error_detail,
+                                    error = %error_class.error_detail,
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -497,8 +517,8 @@ impl Provider for ReliableProvider {
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
-                                    reason = failure_reason,
-                                    error = %error_detail,
+                                    reason = error_class.failure_reason,
+                                    error = %error_class.error_detail,
                                     "Provider call failed, retrying"
                                 );
                                 tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -567,11 +587,7 @@ impl Provider for ReliableProvider {
                             return Ok(resp);
                         }
                         Err(e) => {
-                            let non_retryable_rate_limit = is_non_retryable_rate_limit(&e);
-                            let non_retryable = is_non_retryable(&e) || non_retryable_rate_limit;
-                            let rate_limited = is_rate_limited(&e);
-                            let failure_reason = failure_reason(rate_limited, non_retryable);
-                            let error_detail = compact_error_detail(&e);
+                            let error_class = classify_provider_attempt_error(&e);
 
                             push_failure(
                                 &mut failures,
@@ -579,15 +595,15 @@ impl Provider for ReliableProvider {
                                 current_model,
                                 attempt + 1,
                                 self.max_retries + 1,
-                                failure_reason,
-                                &error_detail,
+                                error_class.failure_reason,
+                                &error_class.error_detail,
                             );
 
-                            if rate_limited && !non_retryable_rate_limit {
+                            if error_class.rate_limited && !error_class.non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
                                         provider = provider_name,
-                                        error = %error_detail,
+                                        error = %error_class.error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
                                          Retrying with original key.",
@@ -596,20 +612,15 @@ impl Provider for ReliableProvider {
                                 }
                             }
 
-                            if non_retryable {
+                            if error_class.non_retryable {
                                 tracing::warn!(
                                     provider = provider_name,
                                     model = *current_model,
-                                    error = %error_detail,
+                                    error = %error_class.error_detail,
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -621,8 +632,8 @@ impl Provider for ReliableProvider {
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
-                                    reason = failure_reason,
-                                    error = %error_detail,
+                                    reason = error_class.failure_reason,
+                                    error = %error_class.error_detail,
                                     "Provider call failed, retrying"
                                 );
                                 tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -692,11 +703,7 @@ impl Provider for ReliableProvider {
                             return Ok(resp);
                         }
                         Err(e) => {
-                            let non_retryable_rate_limit = is_non_retryable_rate_limit(&e);
-                            let non_retryable = is_non_retryable(&e) || non_retryable_rate_limit;
-                            let rate_limited = is_rate_limited(&e);
-                            let failure_reason = failure_reason(rate_limited, non_retryable);
-                            let error_detail = compact_error_detail(&e);
+                            let error_class = classify_provider_attempt_error(&e);
 
                             push_failure(
                                 &mut failures,
@@ -704,15 +711,15 @@ impl Provider for ReliableProvider {
                                 current_model,
                                 attempt + 1,
                                 self.max_retries + 1,
-                                failure_reason,
-                                &error_detail,
+                                error_class.failure_reason,
+                                &error_class.error_detail,
                             );
 
-                            if rate_limited && !non_retryable_rate_limit {
+                            if error_class.rate_limited && !error_class.non_retryable_rate_limit {
                                 if let Some(new_key) = self.rotate_key() {
                                     tracing::warn!(
                                         provider = provider_name,
-                                        error = %error_detail,
+                                        error = %error_class.error_detail,
                                         "Rate limited; key rotation selected key ending ...{} \
                                          but cannot apply (Provider trait has no set_api_key). \
                                          Retrying with original key.",
@@ -721,20 +728,15 @@ impl Provider for ReliableProvider {
                                 }
                             }
 
-                            if non_retryable {
+                            if error_class.non_retryable {
                                 tracing::warn!(
                                     provider = provider_name,
                                     model = *current_model,
-                                    error = %error_detail,
+                                    error = %error_class.error_detail,
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -746,8 +748,8 @@ impl Provider for ReliableProvider {
                                     model = *current_model,
                                     attempt = attempt + 1,
                                     backoff_ms = wait,
-                                    reason = failure_reason,
-                                    error = %error_detail,
+                                    reason = error_class.failure_reason,
+                                    error = %error_class.error_detail,
                                     "Provider call failed, retrying"
                                 );
                                 tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -1427,6 +1429,36 @@ mod tests {
             !is_non_retryable_rate_limit(&err),
             "generic rate-limit 429 should remain retryable"
         );
+    }
+
+    #[test]
+    fn provider_attempt_error_class_preserves_rate_limit_decision() {
+        let err = anyhow::anyhow!(
+            "{}",
+            "API error (429 Too Many Requests): {\"code\":1113,\"message\":\"insufficient balance\"}"
+        );
+
+        let class = classify_provider_attempt_error(&err);
+
+        assert!(class.rate_limited);
+        assert!(class.non_retryable_rate_limit);
+        assert!(class.non_retryable);
+        assert!(!class.context_window_exceeded);
+        assert_eq!(class.failure_reason, "rate_limited_non_retryable");
+        assert!(class.error_detail.contains("insufficient balance"));
+    }
+
+    #[test]
+    fn provider_attempt_error_class_preserves_context_window_decision() {
+        let err = anyhow::anyhow!(
+            "OpenAI Codex stream error: Your input exceeds the context window of this model."
+        );
+
+        let class = classify_provider_attempt_error(&err);
+
+        assert!(class.context_window_exceeded);
+        assert!(class.non_retryable);
+        assert_eq!(class.failure_reason, "non_retryable");
     }
 
     #[test]

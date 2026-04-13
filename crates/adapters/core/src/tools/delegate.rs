@@ -181,6 +181,7 @@ impl Tool for DelegateTool {
                         "current_defaults": {"type": "array", "items": {"type": "string"}},
                         "anchors": {"type": "array", "items": {"type": "string"}},
                         "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+                        "recent_repairs": {"type": "array", "items": {"type": "string"}},
                         "assumptions": {
                             "type": "array",
                             "items": {
@@ -824,12 +825,16 @@ mod tests {
             current_defaults: vec!["project_alias=Borealis".into()],
             anchors: vec!["memory=early anchor".into()],
             unresolved_questions: Vec::new(),
+            recent_repairs: vec![
+                "tool_repair=message_send:reported_failure->adjust_arguments_or_target".into(),
+            ],
             assumptions: Vec::new(),
         };
 
         let rendered = build_delegate_prompt("finish task", "local context", Some(&packet));
 
         assert!(rendered.starts_with("[session-handoff]"));
+        assert!(rendered.contains("recent_repairs:"));
         assert!(rendered.contains("[/session-handoff]\n\n[Context]\nlocal context"));
         assert!(rendered.contains("[Task]\nfinish task"));
     }

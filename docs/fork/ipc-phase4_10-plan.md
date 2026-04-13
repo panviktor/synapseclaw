@@ -603,6 +603,10 @@ Expected outcome:
     - follow-through: configured AIEOS identity now fails loud when the JSON
       source is missing, invalid, or renders empty instead of silently mixing in
       OpenClaw `IDENTITY.md`
+    - follow-through: dead shared presentation/history cleanup helpers that
+      stripped XML/tool JSON artifacts were removed; shared runtime still flags
+      raw `<tool_call>` output as a defect, with only concrete provider adapters
+      allowed to normalize provider-specific raw envelopes.
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -635,6 +639,9 @@ Expected outcome:
     - `/model` help now resolves effective lanes through the same runtime
       lane resolver, so implicit reasoning fallbacks are visible instead of
       only explicit config lanes
+    - provider request quirks such as fixed temperature and accepted reasoning
+      effort aliases now live in editable model-catalog request policies, not
+      adapter-local Rust match arms
     - status note: this is not a full Slice 10 close; remaining Slice 10 work
       is now mostly registry/profile clean-up, adapter-heuristic shrinkage, and
       keeping lane/candidate-first explanations consistent as Slice 14/18
@@ -694,6 +701,17 @@ Expected outcome:
       `embedding_profiles` instead of adapter-side model-family substring
       inference; unknown embedding models disable embeddings until a catalog
       profile is supplied, rather than receiving a silent generic profile
+    - Azure OpenAI resource/deployment/runtime API-version settings now flow
+      through shared provider runtime options from `model_providers` or env,
+      and the provider factory fails loud instead of inventing `my-resource`
+      or a stale model deployment default
+    - gateway, channel startup, tool delegation setup, and daemon memory
+      consolidation now build provider runtime options through the same helper,
+      so provider profile fields and request controls do not drift by
+      lifecycle path
+    - model-routing config probes can now use the same provider runtime options
+      while still preserving explicit custom `api_url`, avoiding a split
+      between probe-time reachability checks and normal runtime provider setup
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -991,9 +1009,11 @@ Expected outcome:
       domain pressure service/port boundary is stable enough to avoid creating
       a parallel context subsystem
   - reasoning-control follow-through:
-    - promote provider reasoning controls from global runtime override to a
-      capability/lane policy once the model-profile registry exposes support
-      and provider cost tradeoffs consistently
+    - follow-up narrowed: provider request controls now resolve through
+      catalog-owned request policies for OpenAI-compatible, OpenAI Codex, and
+      OpenRouter paths instead of model-name prefix/match arms; remaining work
+      is a fuller lane/cost-aware decision model as provider metadata becomes
+      richer
     - add full `reasoning_details` preservation when the shared provider
       response/history model can carry provider-native reasoning blocks without
       leaking adapter-specific shapes into the core runtime
@@ -1087,7 +1107,8 @@ Expected outcome:
 - current status:
   - agent history compaction, web session summarization, and channel summaries now resolve
     their summarizer lane through one domain service
-  - precedence is explicit `[summary]` config -> `summary_model` -> `cheap` route -> current route
+  - precedence is explicit `[summary]` config -> `summary_model` ->
+    `cheap_reasoning` capability lane -> current route
   - live daemon validation confirmed compaction on a long cheap-route dialogue
     (`history_len_before=54`, `history_len_after=25`)
   - procedural skill count stayed flat during the pure semantic run (`list_skills = 61`)
@@ -1102,6 +1123,10 @@ Expected outcome:
     entered through the automatic context path
   - low-information detection now catches repeated semantic shingles, not only
     exact token chants or contiguous repeated phrases
+  - summary route resolution no longer consumes the legacy route-table cheap
+    hints; the compactor lane must come from explicit/effective capability
+    lanes or explicit summary config, keeping cheap-model condensation on the
+    same routing language as the main runtime
 - remaining quality tail after the hardening:
   - recall ranking is better, but still needs live long-dialogue validation on
     concept-heavy semantic sessions after the hybrid-rerank follow-through
@@ -1228,6 +1253,8 @@ Expected outcome:
   - onboarding starts from simple presets and then populates the richer lane-aware config
   - preset seeds, provider defaults, curated model lists, and default pricing now live in a
     built-in external catalog instead of hardcoded Rust match arms
+  - preset aliases and provider-to-preset recommendations now also resolve from
+    the catalog instead of Rust provider-name match arms
   - users can now materialize and edit a local override catalog next to `config.toml`
     via `synapseclaw models catalog init`; runtime merges that file over the built-in catalog
   - `/model` help and routing config inspection now surface preset/effective-lane information
@@ -1241,13 +1268,50 @@ Expected outcome:
   - provider router now rejects unknown `hint:*` model selectors before
     dispatch instead of executing them on the default provider
   - `model_routing_config` preset operations now participate in typed routing facts
-  - remaining work:
-    - historical note: earlier remaining items about image/audio/video/music
-      first-class turn routing are now mostly owned by Slice 14 and the shared
+  - `model_routing_config` scenario upsert/remove now manages explicit
+    capability-lane candidate lists plus classification rules instead of
+    writing the legacy route-alias table
+  - `resolve_lane_candidates` no longer treats the legacy route-alias table or
+    `embedding_routes` as capability-lane fallbacks; fallback to the default
+    reasoning route now requires both configured provider and configured model,
+    with no provider string invented in code
+  - channel and web `/model` command effects now resolve selectors through
+    effective capability lanes first and catalog aliases second; matched lane
+    candidates preserve `lane + candidate_index` through the shared
+    runtime-command adapter contract
+  - `/model` help no longer renders configured route aliases as a first-class
+    routing surface; it shows effective capability lanes plus catalog aliases
+    so operator UX matches the runtime selector path
+  - query-classifier route overrides now reuse the same lane/catalog selector
+    resolver instead of scanning the old route-table by hint
+  - live web/Agent query classification now uses that same lane/catalog selector
+    resolver and its provider router is seeded from effective lanes plus catalog
+    aliases, not from the configured legacy route-table
+  - the effective-lane/catalog provider-router alias table is now a shared
+    domain helper consumed by live Agent and CLI runtime, avoiding a second
+    legacy route table in adapter code
+  - provider-router aliases include typed `provider:model` keys for explicit
+    non-primary lane candidates, so selector resolution and router dispatch do
+    not diverge on fallback candidates
+  - channel inbound/use-case runtime snapshots no longer carry the legacy route table
+    through the turn path; they pass only model lanes/preset into shared route
+    resolution
+    - config/API/catalog surfaces now expose user-defined provider-router
+      shortcuts as `route_aliases`; the old Rust route-table field and catalog
+      compatibility alias were removed rather than kept as
+      a second public routing language
+    - default provider/model selection now resolves from catalog-owned
+      `default_preset` instead of Rust fallback strings; runtime paths fail loud
+      when neither config nor catalog can supply a provider/model
+    - remaining work:
+      - historical note: earlier remaining items about image/audio/video/music
+        first-class turn routing are now mostly owned by Slice 14 and the shared
       marker/admission path, not by a separate Slice 10 routing fork
     - provider capability metadata is still narrower than the eventual lane matrix
-    - a few provider-local model-family heuristics still remain adapter-side
-      (for example reasoning-effort clamps)
+    - known request-policy cases for fixed temperature and reasoning effort
+      aliases now resolve from `model_catalog.json`; keep auditing future
+      provider request quirks so they enter through catalog policy or
+      adapter-local wire normalization, not broad model-family match arms
     - route state stores lane/candidate identity, and route-switch UX now renders lane
       for lane-aware switches; downstream runtime surfaces should keep moving toward
       lane/candidate-first explanations
@@ -1277,7 +1341,7 @@ Expected outcome:
 - protect against wrong-model execution structurally:
   - a default reasoning candidate is not implicitly allowed for vision, image, audio,
     music, or video turns
-  - unsupported tool-calling candidates are blocked from tool-heavy turns
+  - unsupported tool-calling candidates are blocked from typed tool-required turns
   - candidates with insufficient context window are blocked from current-turn execution
     unless preflight compaction succeeds
 - preserve hexagonal boundaries:
@@ -1306,8 +1370,22 @@ Expected outcome:
       image/audio/video/music, including universal reasoning candidates that
       explicitly advertise generation features; this remains structural and
       does not use natural-language phrase lists
+    - admission block presentation now lives in a shared domain service; channel
+      and live web/Agent use the same typed lane/intent/context-budget response
+      instead of diverging into adapter-local technical error text
+    - typed tool-required admission now reroutes to a tool-capable reasoning
+      candidate or blocks before provider execution for `tool-heavy`,
+      `delivery`, and `mutation` intents when the current candidate
+      confidently lacks `tool_calling`; unknown/low-confidence metadata is not
+      treated as a hard no
+    - route inspection now surfaces admission required-lane state before the
+      broader intent/pressure/action tuple for both latest and recent retained
+      admission records
+    - route admission state now stores `required_lane` explicitly instead of
+      deriving that operator-facing fact back out of reasons or repair hints
   - remaining:
-    - widen intent consumers past the current multimodal + specialized-lane protection
+    - continue auditing intent consumers past the current multimodal,
+      specialized-lane, and typed tool-required protection
   - continue making runtime UX surfaces display admission state explicitly beyond
     `/model` help and lane-aware switch responses
     - settle whether admission snapshots should remain ephemeral or be persisted
@@ -1531,11 +1609,23 @@ Expected outcome:
     - onboarding/provider-catalog parsing now preserves explicit `video` and `music`
       output modalities when a provider catalog surfaces them
     - runtime help/config surfaces render the new lanes/features
+    - preset expansion now auto-seeds missing media-generation lanes from the
+      reasoning seed only when that seed's resolved catalog/profile metadata
+      explicitly advertises the corresponding `ModelFeature`; universal
+      models can therefore supply image/audio/video/music lanes without
+      natural-language phrase detection or Rust model-id match arms
+    - shared runtime command presentation now renders lane-aware model switch
+      outcomes as `lane -> provider:model`; web and channel receive the same
+      lane-first success/block text through the common runtime adapter contract
+    - Bedrock's provider adapter now consumes the shared provider-layer
+      multimodal image-marker parser instead of carrying a second `[IMAGE:]`
+      scanner, keeping marker semantics centralized without moving them into
+      core routing policy
   - remaining:
-    - presets/local catalogs do not yet seed safe built-in video/music candidates by default
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
-    - more route/runtime UX should render lane identity first and `provider/model` second
+    - keep auditing route/runtime UX beyond model-switch outcomes for lane-first
+      wording where the runtime already has a typed lane decision
     - status note: do not reintroduce keyword phrase lists for media detection;
       until typed interpretation exists, structured markers are the accepted
       deterministic interface.
@@ -1646,8 +1736,33 @@ Expected outcome:
     - route-admission context now consumes the bounded recent-admission ledger,
       not only the last admission state; web and channel use the same helper to
       surface distinct recent reasons plus the latest recommended repair action
+    - structured session handoff packets now carry bounded `recent_repairs`
+      derived from typed `ToolRepairTrace` entries, and both live web/agent and
+      channel blocked-turn paths feed that ledger into the same handoff schema
+    - helper-agent handoff schemas for `delegate` and `agents_spawn` now accept
+      the same bounded `recent_repairs` field, so tool self-repair state can
+      survive typed handoff without free-form prompt archaeology
+    - reliable-provider retry/fallback paths now share one adapter-local
+      attempt classification object for rate-limit / non-retryable /
+      context-window decisions instead of duplicating string/error handling
+      branches across chat variants
+    - context-window fail-fast decisions are now carried on that attempt
+      classification object and rendered through a shared adapter helper across
+      all reliable-provider chat variants
+    - channel runtime and web WS now classify provider/runtime failures through
+      the same adapter-core `AgentRuntimeErrorKind` bridge; web context-limit
+      failures get the same typed recovery path and shared presentation with a
+      session-hygiene compaction attempt instead of only persisting a raw
+      sanitized provider error
+    - provider capability failures now carry typed capability requirements
+      (`native_tool_calling`, `vision_input`, or lane) instead of string
+      capability names; tool self-repair maps those typed requirements to lane
+      switches without lowercase/alias parsing in the governor path
+    - `AgentRuntimeErrorKind` and `ToolFailureKind` now project from one shared
+      adapter-core runtime error classifier, so typed IO/JSON/HTTP/provider
+      error handling does not drift between web/channel runtime recovery and
+      tool self-repair traces
   - remaining:
-    - broaden repair-ledger consumers beyond current route/help/operator surfaces
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet
 - expected outcome:
@@ -1771,6 +1886,10 @@ Expected outcome:
     - graph extraction now rejects all concept-to-concept relationships at the
       domain governor layer, so high-confidence generic world-knowledge edges
       cannot bypass memory hygiene just because the extractor sounded certain
+    - explicit domain + extractor regressions cover the previously observed
+      `Children learn_from Parents` graph-noise shape through the generic
+      concept-to-concept stop-line, without adding phrase-specific runtime
+      filters
     - focused cheap-route long-dialogue semantic regression passed after the
       selector fix:
       - session: `phase410-long-semantic-focused-1775951001`
@@ -1888,13 +2007,20 @@ Expected outcome:
       unknown context windows, never raises them
     - web `Agent` and channel `AgentRuntimePort` now record those observations
       through the same `WorkspaceModelProfileCatalog` cache path
+    - `models refresh` now honors configured OpenAI-compatible `api_url`
+      endpoints when building `/models` requests, so native vs aggregator vs
+      local-compatible endpoints do not share stale default-provider discovery
+      assumptions
   - still open after Hermes source audit:
     - no models.dev-style provider-aware registry source yet
-    - no explicit probe-down tier strategy for unknown/local endpoints yet
+    - no active probe-down request ladder for unknown/local endpoints yet; the
+      current explicit strategy is endpoint-aware `/models` refresh first, then
+      typed context-limit observations from failed turns, then operator catalog
+      override for proactive routing
   - status note:
     - treat Slice 18 as partial: catalog/cache/refresh/endpoint-aware lookup are
-      landed, but external registry ingestion and explicit unknown-endpoint
-      probe-down strategy are not complete.
+      landed, but external registry ingestion and active unknown-endpoint
+      probe-down requests are not complete.
 - Hermes-derived model-window resolver follow-through:
   - keep explicit user override first
   - completed: persistent live model cache lookup is now endpoint-aware, so the
@@ -1909,6 +2035,9 @@ Expected outcome:
   - completed: persist failed-turn context-limit observations as typed
     endpoint-aware profile/cache updates when a trustworthy lower window can be
     inferred
+  - completed: configured OpenAI-compatible refresh endpoints are derived from
+    the effective `api_url` instead of silently using the built-in provider
+    default endpoint
   - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,
     they belong in local/bundled catalog data with provenance and freshness
   - consider a probe-down tier strategy only as an explicit adapter fallback
@@ -2270,6 +2399,28 @@ Expected outcome:
 ---
 
 ## Validation
+
+The expanded slice-by-slice closeout matrix is tracked in
+[Phase 4.10 Test Matrix](./ipc-phase4_10-test-matrix.md). Use it as the
+execution checklist before declaring the phase fully validated.
+
+4.10 live validation now also covers model switching and an optional expensive
+context-overflow switch case. OpenRouter MiniMax is tracked as a text/tool route
+(`minimax/minimax-m2.7`) only; audio/video/music generation stays on explicit
+OpenRouter media-capable profiles, while MiniMax direct media models are reserved
+for a future provider/tool adapter.
+
+OpenRouter image-generation validation is no longer admission-only: the
+OpenRouter provider now sends typed `modalities` from the catalog profile and
+maps `message.images` into the existing `[IMAGE:data:image/...]` delivery
+marker. Audio/video/music remain capability-routed but still need
+artifact-specific delivery follow-through before they are treated as fully
+implemented media artifact paths.
+
+The heavy long-dialogue test should not require compaction when the selected
+route has a large healthy context window. Use `REQUIRE_COMPACTION_SIGNAL=1` only
+for a dedicated compaction-pressure scenario; otherwise the heavy test validates
+semantic retention, memory hygiene signals, and context telemetry.
 
 ### Context economy checks
 

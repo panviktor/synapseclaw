@@ -35,22 +35,6 @@ pub(crate) fn normalize_cached_channel_turns(turns: Vec<ChatMessage>) -> Vec<Cha
     normalized
 }
 
-/// Remove stale `<tool_result …>…</tool_result>` blocks from a history entry.
-pub(crate) fn strip_tool_result_content(text: &str) -> String {
-    static TOOL_RESULT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?s)<tool_result[^>]*>.*?</tool_result>").unwrap()
-    });
-
-    let cleaned = TOOL_RESULT_RE.replace_all(text, "");
-    let cleaned = cleaned.trim();
-
-    if cleaned == "[Tool results]" || cleaned.is_empty() {
-        return String::new();
-    }
-
-    cleaned.to_string()
-}
-
 /// Proactively trim conversation turns to the given estimated character budget.
 ///
 /// Drops oldest turns first, but always preserves the current/latest turn.

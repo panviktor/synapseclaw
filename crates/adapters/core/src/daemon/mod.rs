@@ -446,23 +446,36 @@ pub async fn run(
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
         // Wrap with ConsolidatingMemory if provider available.
-        let consolidation_model = config.default_model.clone().unwrap_or_else(|| {
-            synapse_domain::config::model_catalog::provider_default_model(
-                config.default_provider.as_deref().unwrap_or("openrouter"),
-            )
-            .unwrap_or("default")
-            .to_string()
-        });
+        let default_provider = config
+            .default_provider
+            .clone()
+            .or_else(|| {
+                synapse_domain::config::model_catalog::default_provider().map(str::to_string)
+            })
+            .context("no default provider configured and model catalog has no default preset")?;
+        let consolidation_model = config
+            .default_model
+            .clone()
+            .or_else(|| {
+                synapse_domain::config::model_catalog::provider_default_model(
+                    default_provider.as_str(),
+                )
+                .map(str::to_string)
+            })
+            .with_context(|| {
+                format!("no default model configured for provider '{default_provider}'")
+            })?;
         let provider_for_worker: Option<(
             std::sync::Arc<dyn synapse_providers::traits::Provider>,
             String,
         )>;
         let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-            match synapse_providers::create_resilient_provider(
-                config.default_provider.as_deref().unwrap_or("openrouter"),
+            match synapse_providers::create_resilient_provider_with_options(
+                default_provider.as_str(),
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
+                &synapse_providers::provider_runtime_options_from_config(&config),
             ) {
                 Ok(p) => {
                     let prov_arc: std::sync::Arc<dyn synapse_providers::traits::Provider> =

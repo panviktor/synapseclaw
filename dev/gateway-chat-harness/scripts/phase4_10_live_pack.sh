@@ -11,9 +11,13 @@ RUN_MAIN_ROUTE="${RUN_MAIN_ROUTE:-1}"
 RUN_REASONER="${RUN_REASONER:-0}"
 RUN_CJK="${RUN_CJK:-1}"
 RUN_MEDIA="${RUN_MEDIA:-1}"
+RUN_OPENROUTER_MEDIA_GENERATION="${RUN_OPENROUTER_MEDIA_GENERATION:-0}"
+RUN_MODEL_SWITCH="${RUN_MODEL_SWITCH:-1}"
+RUN_CONTEXT_OVERFLOW_SWITCH="${RUN_CONTEXT_OVERFLOW_SWITCH:-0}"
 RUN_HEAVY="${RUN_HEAVY:-0}"
 RUN_DOCTOR_MODELS="${RUN_DOCTOR_MODELS:-0}"
 REQUIRE_EMBEDDING_SIGNAL="${REQUIRE_EMBEDDING_SIGNAL:-0}"
+REQUIRE_COMPACTION_SIGNAL="${REQUIRE_COMPACTION_SIGNAL:-0}"
 STRICT_RECALL_NO_MUTATION="${STRICT_RECALL_NO_MUTATION:-0}"
 STRICT_CONTEXT_BUDGET="${STRICT_CONTEXT_BUDGET:-0}"
 CONTEXT_WARN_MAX_CHARS="${CONTEXT_WARN_MAX_CHARS:-7000}"
@@ -156,6 +160,13 @@ check_no_recall_mutation() {
   fi
 }
 
+is_admission_block_error() {
+  local error="$1"
+  [[ "$error" == *"turn admission blocked provider call"* ]] \
+    || [[ "$error" == *"requires lane"* && "$error" == *"current route cannot satisfy"* ]] \
+    || [[ "$error" == *"Switch to a compatible lane"* ]]
+}
+
 run_provider_smoke() {
   local route="$1"
   local slug
@@ -220,7 +231,7 @@ run_media_admission_smoke() {
       "[GENERATE:${marker}] Phase 4.10 admission test only. Do not fake a media artifact; use the configured lane or fail early."
     local rpc_error
     rpc_error="$(case_field "$REPORT_DIR/${case_name}.json" last_rpc_error)"
-    if [[ "$rpc_error" == *"turn admission blocked provider call"* ]]; then
+    if is_admission_block_error "$rpc_error"; then
       record_pass "$case_name" "blocked before provider call on text route"
     elif [[ -n "$rpc_error" ]]; then
       record_warn "$case_name" "unexpected rpc_error: $rpc_error"
@@ -236,7 +247,7 @@ run_media_admission_smoke() {
     "[IMAGE:${vision_data_uri}] What is the dominant color of this image? Reply with exactly one word."
   local vision_error
   vision_error="$(case_field "$REPORT_DIR/${vision_case}.json" last_rpc_error)"
-  if [[ "$vision_error" == *"turn admission blocked provider call"* ]]; then
+  if is_admission_block_error "$vision_error"; then
     record_pass "$vision_case" "blocked before provider call on non-vision route"
   elif [[ -n "$vision_error" ]]; then
     record_warn "$vision_case" "unexpected rpc_error: $vision_error"
@@ -252,6 +263,69 @@ run_media_admission_smoke() {
       record_fail "$vision_case" "vision-capable route emitted $vision_tool_count tool call(s)"
     fi
   fi
+}
+
+run_openrouter_media_generation_smoke() {
+  local route="${OPENROUTER_MEDIA_GENERATION_ROUTE:-media-image-small}"
+  local slug
+  slug="$(slugify "$route")"
+  local case_name="openrouter_media_generation_${slug}"
+
+  TIMEOUT_SECS="${OPENROUTER_MEDIA_GENERATION_TIMEOUT_SECS:-240}" run_case "$case_name" "$route" "phase410-openrouter-media-${slug}-${RUN_ID}" \
+    "[GENERATE:IMAGE] Phase 4.10 OpenRouter generation smoke. Create a minimal 16x16 black-and-white checkerboard test image. Return the generated image artifact or provider-native image URL; do not describe it as text only."
+
+  local rpc_error
+  rpc_error="$(case_field "$REPORT_DIR/${case_name}.json" last_rpc_error)"
+  if [[ -n "$rpc_error" ]]; then
+    record_fail "$case_name" "unexpected rpc_error: $rpc_error"
+    return
+  fi
+
+  assert_assistant_contains "$case_name" "$REPORT_DIR/${case_name}.json" "[IMAGE:data:image/"
+}
+
+run_model_switch_smoke() {
+  local start_route="${SWITCH_START_ROUTE:-cheap}"
+  local target_route="${SWITCH_TARGET_ROUTE:-minimax}"
+  local start_slug target_slug
+  start_slug="$(slugify "$start_route")"
+  target_slug="$(slugify "$target_route")"
+  local case_name="model_switch_${start_slug}_to_${target_slug}"
+
+  run_case "$case_name" "$start_route" "phase410-switch-${start_slug}-${target_slug}-${RUN_ID}" \
+    "Reply with exactly SWITCH_START_OK." \
+    "/model $target_route" \
+    "Reply with exactly SWITCH_DONE_OK."
+
+  assert_contains "$case_name" "$REPORT_DIR/${case_name}.json" "SWITCH_START_OK"
+  assert_contains "$case_name" "$REPORT_DIR/${case_name}.json" "switched to"
+  assert_assistant_contains "$case_name" "$REPORT_DIR/${case_name}.json" "SWITCH_DONE_OK"
+}
+
+run_context_overflow_switch_smoke() {
+  local start_route="${OVERFLOW_SWITCH_START_ROUTE:-cheap}"
+  local target_route="${OVERFLOW_SWITCH_TARGET_ROUTE:-media-image-small}"
+  local chars="${OVERFLOW_SWITCH_CHARS:-50000}"
+  local start_slug target_slug
+  start_slug="$(slugify "$start_route")"
+  target_slug="$(slugify "$target_route")"
+  local case_name="model_switch_overflow_${start_slug}_to_${target_slug}"
+  local ballast
+  ballast="$(python3 - "$chars" <<'PY'
+import sys
+
+chars = int(sys.argv[1])
+print("x" * chars)
+PY
+)"
+
+  run_case "$case_name" "$start_route" "phase410-overflow-switch-${start_slug}-${target_slug}-${RUN_ID}" \
+    "Keep this route-switch ballast in the current conversation only and reply exactly BALLAST_OK: $ballast" \
+    "/model $target_route"
+
+  assert_contains "$case_name" "$REPORT_DIR/${case_name}.json" "BALLAST_OK"
+  assert_contains "$case_name" "$REPORT_DIR/${case_name}.json" "route switch"
+  assert_contains "$case_name" "$REPORT_DIR/${case_name}.json" "blocked"
 }
 
 run_heavy_dialogue() {
@@ -405,12 +479,21 @@ summarize_embedding_and_compaction() {
     record_warn "embedding_signal" "no embedding signal found; check whether embedding provider is noop: $embedding_log"
   fi
 
+  local compaction_pressure_count=0
+  if [[ -s "$CONTEXT_TSV" ]]; then
+    compaction_pressure_count="$(awk -F '\t' 'NR > 1 && ($3 == "caution" || $3 == "over_budget" || $12 == "true") { count++ } END { print count + 0 }' "$CONTEXT_TSV")"
+  fi
+
   if [[ -s "$compaction_log" ]]; then
     record_pass "compaction_signal" "found compaction/summary signal: $compaction_log"
+  elif [[ "$REQUIRE_COMPACTION_SIGNAL" == "1" ]]; then
+    record_fail "compaction_signal" "required compaction/summary signal not found"
+  elif [[ "$RUN_HEAVY" == "1" && "$compaction_pressure_count" -gt 0 ]]; then
+    record_fail "compaction_signal" "context pressure observed rows=$compaction_pressure_count but no compaction/summary signal found"
   elif [[ "$RUN_HEAVY" == "1" ]]; then
-    record_fail "compaction_signal" "heavy run requested but no compaction/summary signal found"
+    record_pass "compaction_signal" "heavy run stayed within provider window; no compaction required"
   else
-    record_warn "compaction_signal" "no compaction signal in this short run; rerun with RUN_HEAVY=1 for mandatory compaction"
+    record_warn "compaction_signal" "no compaction signal in this short run; set REQUIRE_COMPACTION_SIGNAL=1 for mandatory compaction"
   fi
 
   if [[ -s "$admission_log" ]]; then
@@ -443,6 +526,24 @@ main() {
 
   if [[ "$RUN_MEDIA" == "1" ]]; then
     run_media_admission_smoke
+  fi
+
+  if [[ "$RUN_OPENROUTER_MEDIA_GENERATION" == "1" ]]; then
+    run_openrouter_media_generation_smoke
+  else
+    record_warn "openrouter_media_generation" "skipped; set RUN_OPENROUTER_MEDIA_GENERATION=1 for expensive live OpenRouter image generation"
+  fi
+
+  if [[ "$RUN_MODEL_SWITCH" == "1" ]]; then
+    run_model_switch_smoke
+  else
+    record_warn "model_switch" "skipped; set RUN_MODEL_SWITCH=1 to test live route switching"
+  fi
+
+  if [[ "$RUN_CONTEXT_OVERFLOW_SWITCH" == "1" ]]; then
+    run_context_overflow_switch_smoke
+  else
+    record_warn "model_switch_overflow" "skipped; set RUN_CONTEXT_OVERFLOW_SWITCH=1 for expensive live overflow-switch test"
   fi
 
   if [[ "$RUN_HEAVY" == "1" ]]; then

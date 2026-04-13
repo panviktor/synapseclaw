@@ -15,6 +15,7 @@ use reqwest::{
     Client,
 };
 use serde::{Deserialize, Serialize};
+use synapse_domain::config::model_catalog;
 
 /// A provider that speaks the OpenAI-compatible chat completions API.
 /// Used by provider adapters that expose the standard chat-completions shape.
@@ -39,7 +40,8 @@ pub struct OpenAiCompatibleProvider {
     timeout_secs: u64,
     /// Extra HTTP headers to include in all API requests.
     extra_headers: std::collections::HashMap<String, String>,
-    /// Optional reasoning effort for GPT-5/Codex-compatible backends.
+    /// Optional reasoning effort, sent only when catalog metadata says the
+    /// concrete provider:model accepts this OpenAI-compatible control.
     reasoning_effort: Option<String>,
     /// Custom API path suffix (e.g. "/v2/generate").
     /// When set, overrides the default `/chat/completions` path detection.
@@ -372,11 +374,17 @@ impl OpenAiCompatibleProvider {
     }
 
     fn reasoning_effort_for_model(&self, model: &str) -> Option<String> {
-        let id = model.rsplit('/').next().unwrap_or(model);
-        let supports_reasoning_effort = id.starts_with("gpt-5") || id.contains("codex");
-        supports_reasoning_effort
-            .then(|| self.reasoning_effort.clone())
-            .flatten()
+        let requested = self.reasoning_effort.as_deref()?;
+        let provider = self.catalog_provider_id()?;
+        model_catalog::model_request_policy(&provider, model)
+            .and_then(|policy| policy.resolve_reasoning_effort(requested))
+    }
+
+    fn catalog_provider_id(&self) -> Option<String> {
+        let normalized = self.name.trim().to_ascii_lowercase().replace(' ', "-");
+        model_catalog::provider_default_model(&normalized)
+            .map(|_| normalized)
+            .or_else(|| model_catalog::provider_for_api_base_url(&self.base_url).map(String::from))
     }
 }
 
@@ -2370,19 +2378,26 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_only_applies_to_gpt5_and_codex_models() {
-        let provider = make_provider("test", "https://example.com", None)
+    fn reasoning_effort_uses_catalog_policy_not_model_name_guessing() {
+        let provider = make_provider("OpenAI", "https://api.openai.com/v1", None)
             .with_reasoning_effort(Some("high".to_string()));
 
         assert_eq!(
-            provider.reasoning_effort_for_model("gpt-5.3-codex"),
+            provider.reasoning_effort_for_model("openai/gpt-5.4"),
             Some("high".to_string())
         );
+
+        let unknown = make_provider("test", "https://example.com", None)
+            .with_reasoning_effort(Some("high".to_string()));
+        assert_eq!(unknown.reasoning_effort_for_model("gpt-5.4"), None);
+
+        let codex_named_compatible =
+            make_provider("openai-codex", "https://api.openai.com/v1", None)
+                .with_reasoning_effort(Some("xhigh".to_string()));
         assert_eq!(
-            provider.reasoning_effort_for_model("openai/gpt-5"),
+            codex_named_compatible.reasoning_effort_for_model("gpt-5.4"),
             Some("high".to_string())
         );
-        assert_eq!(provider.reasoning_effort_for_model("llama-3.3-70b"), None);
     }
 
     #[tokio::test]

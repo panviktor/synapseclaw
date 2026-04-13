@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use synapse_domain::config::model_catalog;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OFFICIAL_OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
@@ -1019,36 +1020,6 @@ fn parse_responses_chat_response(response: ResponsesResponse) -> ParsedResponses
     }
 }
 
-fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
-    let id = normalize_model_id(model);
-    if matches!(id, "gpt-5.4" | "gpt-5.4-mini" | "gpt-5-codex") {
-        return match effort {
-            "low" | "medium" | "high" => effort.to_string(),
-            "minimal" => "low".to_string(),
-            _ => "high".to_string(),
-        };
-    }
-    if (id.starts_with("gpt-5.2") || id.starts_with("gpt-5.3") || id.starts_with("gpt-5.4"))
-        && effort == "minimal"
-    {
-        return "low".to_string();
-    }
-    if (id.starts_with("gpt-5.4") || id.starts_with("gpt-5-codex")) && effort == "xhigh" {
-        return "high".to_string();
-    }
-    if id == "gpt-5.1" && effort == "xhigh" {
-        return "high".to_string();
-    }
-    if id == "gpt-5.1-codex-mini" {
-        return if effort == "high" || effort == "xhigh" {
-            "high".to_string()
-        } else {
-            "medium".to_string()
-        };
-    }
-    effort.to_string()
-}
-
 fn resolve_reasoning_effort(model_id: &str, configured: Option<&str>) -> String {
     let raw = configured
         .map(ToString::to_string)
@@ -1056,7 +1027,9 @@ fn resolve_reasoning_effort(model_id: &str, configured: Option<&str>) -> String 
         .and_then(|value| first_nonempty(Some(&value)))
         .unwrap_or_else(|| "xhigh".to_string())
         .to_ascii_lowercase();
-    clamp_reasoning_effort(model_id, &raw)
+    model_catalog::model_request_policy("openai-codex", model_id)
+        .and_then(|policy| policy.resolve_reasoning_effort(&raw))
+        .unwrap_or(raw)
 }
 
 fn nonempty_preserve(text: Option<&str>) -> Option<String> {
@@ -2107,41 +2080,25 @@ mod tests {
     }
 
     #[test]
-    fn clamp_reasoning_effort_adjusts_known_models() {
+    fn resolve_reasoning_effort_uses_catalog_policy() {
         assert_eq!(
-            clamp_reasoning_effort("gpt-5-codex", "xhigh"),
+            resolve_reasoning_effort("gpt-5-codex", Some("xhigh")),
             "high".to_string()
         );
         assert_eq!(
-            clamp_reasoning_effort("gpt-5-codex", "minimal"),
+            resolve_reasoning_effort("gpt-5-codex", Some("minimal")),
             "low".to_string()
         );
         assert_eq!(
-            clamp_reasoning_effort("gpt-5-codex", "medium"),
+            resolve_reasoning_effort("gpt-5.3-codex", Some("xhigh")),
+            "xhigh".to_string()
+        );
+        assert_eq!(
+            resolve_reasoning_effort("gpt-5.1-codex-mini", Some("low")),
             "medium".to_string()
         );
         assert_eq!(
-            clamp_reasoning_effort("gpt-5.3-codex", "minimal"),
-            "low".to_string()
-        );
-        assert_eq!(
-            clamp_reasoning_effort("gpt-5.1", "xhigh"),
-            "high".to_string()
-        );
-        assert_eq!(
-            clamp_reasoning_effort("gpt-5-codex", "xhigh"),
-            "high".to_string()
-        );
-        assert_eq!(
-            clamp_reasoning_effort("gpt-5.1-codex-mini", "low"),
-            "medium".to_string()
-        );
-        assert_eq!(
-            clamp_reasoning_effort("gpt-5.1-codex-mini", "xhigh"),
-            "high".to_string()
-        );
-        assert_eq!(
-            clamp_reasoning_effort("gpt-5.3-codex", "xhigh"),
+            resolve_reasoning_effort("catalog-unknown-model", Some("xhigh")),
             "xhigh".to_string()
         );
     }
@@ -2671,6 +2628,9 @@ data: [DONE]
             extra_headers: std::collections::HashMap::new(),
             api_path: None,
             prompt_caching: false,
+            azure_openai_resource: None,
+            azure_openai_deployment: None,
+            azure_openai_api_version: None,
         };
         let provider =
             OpenAiCodexProvider::new(&options, None).expect("provider should initialize");

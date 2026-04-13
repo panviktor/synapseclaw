@@ -258,22 +258,22 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile> {
         let endpoint = self.endpoint_for_provider(provider);
         let candidates = self.provider_lookup_candidates(provider);
-        candidates
+        let cached = candidates.iter().find_map(|candidate_provider| {
+            load_cached_model_profile(
+                self.workspace_dir.as_path(),
+                candidate_provider,
+                model,
+                endpoint,
+            )
+        });
+        let bundled = candidates
             .iter()
             .find_map(|candidate_provider| {
-                load_cached_model_profile(
-                    self.workspace_dir.as_path(),
-                    candidate_provider,
-                    model,
-                    endpoint,
-                )
+                synapse_domain::config::model_catalog::model_profile(candidate_provider, model)
             })
-            .or_else(|| {
-                candidates.iter().find_map(|candidate_provider| {
-                    synapse_domain::config::model_catalog::model_profile(candidate_provider, model)
-                })
-            })
-            .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
+            .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model));
+
+        merge_cached_and_bundled_profile(cached, bundled)
     }
 
     fn record_context_limit_observation(
@@ -291,9 +291,37 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
     }
 }
 
+fn merge_cached_and_bundled_profile(
+    cached: Option<CatalogModelProfile>,
+    bundled: Option<CatalogModelProfile>,
+) -> Option<CatalogModelProfile> {
+    let Some(mut cached) = cached else {
+        return bundled;
+    };
+    let Some(bundled) = bundled else {
+        return Some(cached);
+    };
+    if cached.context_window_tokens.is_none()
+        && cached.max_output_tokens.is_none()
+        && cached.features.is_empty()
+    {
+        return Some(bundled);
+    }
+
+    if cached.context_window_tokens.is_none() {
+        cached.context_window_tokens = bundled.context_window_tokens;
+    }
+    if cached.max_output_tokens.is_none() {
+        cached.max_output_tokens = bundled.max_output_tokens;
+    }
+    if cached.features.is_empty() {
+        cached.features = bundled.features;
+    }
+    Some(cached)
+}
+
 pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Config) -> String {
     let workspace_dir = config.workspace_dir.as_path();
-    let model_routes = &config.model_routes;
     let mut response = String::new();
     let _ = writeln!(
         response,
@@ -458,25 +486,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
 
-    if !model_routes.is_empty() {
-        response.push_str("\nConfigured model routes:\n");
-        for route in model_routes {
-            let _ = writeln!(
-                response,
-                "  `{}` → {} ({})",
-                route.hint, route.model, route.provider
-            );
-        }
-    }
-
-    let catalog_aliases = synapse_domain::config::model_catalog::model_route_aliases()
-        .into_iter()
-        .filter(|alias| {
-            !model_routes
-                .iter()
-                .any(|route| route.hint.eq_ignore_ascii_case(alias.hint.as_str()))
-        })
-        .collect::<Vec<_>>();
+    let catalog_aliases = synapse_domain::config::model_catalog::route_aliases();
     if !catalog_aliases.is_empty() {
         response.push_str("\nCatalog model aliases:\n");
         for route in catalog_aliases.iter().take(12) {
@@ -686,6 +696,10 @@ fn format_admission_repair_hint(hint: AdmissionRepairHint) -> String {
     }
 }
 
+fn admission_required_lane(admission: &RouteAdmissionState) -> Option<CapabilityLane> {
+    admission.required_lane
+}
+
 fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
     match trace.suggested_action {
         ToolRepairAction::SwitchRouteLane(lane) => format!(
@@ -708,6 +722,13 @@ fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelecti
 
 fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
     if let Some(admission) = current.last_admission.as_ref() {
+        if let Some(lane) = admission_required_lane(admission) {
+            let _ = writeln!(
+                response,
+                "Last admission required lane: `{}`",
+                capability_lane_name(lane)
+            );
+        }
         let _ = writeln!(
             response,
             "Last admission: `{}` / `{}` / `{}`",
@@ -802,6 +823,13 @@ fn write_recent_tool_repairs(response: &mut String, recent_tool_repairs: &[ToolR
 
 fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmissionState]) {
     for admission in recent_admissions.iter().rev().take(3) {
+        if let Some(lane) = admission_required_lane(admission) {
+            let _ = writeln!(
+                response,
+                "Recent admission required lane: `{}`",
+                capability_lane_name(lane)
+            );
+        }
         let _ = writeln!(
             response,
             "Recent admission: {} / {} / {}",
@@ -1060,7 +1088,6 @@ mod tests {
     };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
-        ModelRouteConfig,
     };
     use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
     use synapse_domain::domain::turn_admission::{
@@ -1137,24 +1164,27 @@ mod tests {
     }
 
     #[test]
-    fn models_help_includes_configured_routes() {
+    fn models_help_includes_effective_lanes_and_catalog_aliases() {
         let workspace = tempfile::tempdir().unwrap();
         let mut config = Config::default();
         config.workspace_dir = workspace.path().to_path_buf();
-        config.model_routes = vec![ModelRouteConfig {
-            hint: "cheap".into(),
-            provider: "openrouter".into(),
-            model: "qwen/qwen3.6-plus".into(),
-            api_key: None,
-            capability: None,
-            profile: Default::default(),
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: CapabilityLane::CheapReasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: Default::default(),
+            }],
         }];
         let response = build_models_help_response(
             &RouteSelection {
-                provider: "openrouter".into(),
-                model: "qwen/qwen3.6-plus".into(),
-                lane: None,
-                candidate_index: None,
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                lane: Some(CapabilityLane::CheapReasoning),
+                candidate_index: Some(0),
                 last_admission: None,
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
@@ -1167,7 +1197,7 @@ mod tests {
             },
             &config,
         );
-        assert!(response.contains("`cheap` → qwen/qwen3.6-plus (openrouter)"));
+        assert!(response.contains("`cheap_reasoning` → test-model (test-provider)"));
         assert!(response.contains("Profile sources:"));
         assert!(response.contains("Current route limits:"));
         assert!(response.contains("Catalog model aliases:"));
@@ -1194,6 +1224,7 @@ mod tests {
                         pressure_state: ContextPressureState::Warning,
                         action: TurnAdmissionAction::Reroute,
                     },
+                    required_lane: Some(CapabilityLane::MultimodalUnderstanding),
                     reasons: vec![
                         CandidateAdmissionReason::RequiresLane(
                             CapabilityLane::MultimodalUnderstanding,
@@ -1219,6 +1250,7 @@ mod tests {
         assert!(
             response.contains("Last admission: `multimodal_understanding` / `warning` / `reroute`")
         );
+        assert!(response.contains("Last admission required lane: `multimodal_understanding`"));
         assert!(response.contains(
             "Last admission reasons: requires multimodal_understanding, context warning"
         ));
@@ -1238,6 +1270,7 @@ mod tests {
                 pressure_state: ContextPressureState::Critical,
                 action: TurnAdmissionAction::Compact,
             },
+            required_lane: Some(CapabilityLane::ImageGeneration),
             reasons: vec![
                 CandidateAdmissionReason::RequiresLane(CapabilityLane::ImageGeneration),
                 CandidateAdmissionReason::CandidateWindowNearLimit,
@@ -1265,6 +1298,7 @@ mod tests {
         );
 
         assert!(response.contains("Recent admissions retained: 1"));
+        assert!(response.contains("Recent admission required lane: `image_generation`"));
         assert!(response.contains("Recent admission: image_generation / critical / compact"));
         assert!(response
             .contains("Recent admission reasons: requires image_generation, window near limit"));
@@ -1466,6 +1500,7 @@ mod tests {
                     current_defaults: Vec::new(),
                     anchors: Vec::new(),
                     unresolved_questions: Vec::new(),
+                    recent_repairs: Vec::new(),
                     assumptions: Vec::new(),
                 },
             }],
@@ -1678,6 +1713,45 @@ mod tests {
         assert!(profile
             .features
             .contains(&ModelFeature::MultimodalUnderstanding));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_does_not_let_empty_cache_shadow_bundled_profile() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "deepseek",
+                  "fetched_at_unix": 100,
+                  "models": ["deepseek-reasoner"],
+                  "profiles": [
+                    {
+                      "model": "deepseek-reasoner",
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let catalog = WorkspaceModelProfileCatalog::new(workspace.path());
+
+        let profile = catalog
+            .lookup_model_profile("deepseek", "deepseek-reasoner")
+            .expect("bundled DeepSeek profile should fill empty cache profile");
+
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(65_536));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
     }
 
     #[test]

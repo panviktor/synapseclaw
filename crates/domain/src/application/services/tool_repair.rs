@@ -1,5 +1,5 @@
-use crate::config::schema::CapabilityLane;
 use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
+use crate::ports::provider::ProviderCapabilityRequirement;
 use chrono::Utc;
 
 pub const TOOL_REPAIR_TRACE_TTL_SECS: i64 = 48 * 60 * 60;
@@ -35,10 +35,11 @@ pub fn build_tool_repair_trace_with_action(
 
 pub fn build_tool_repair_trace_for_capability(
     tool_name: &str,
-    capability: &str,
+    capability: &ProviderCapabilityRequirement,
     detail: Option<&str>,
 ) -> ToolRepairTrace {
-    let suggested_action = capability_lane_for_name(capability)
+    let suggested_action = capability
+        .repair_lane()
         .map(ToolRepairAction::SwitchRouteLane)
         .unwrap_or(ToolRepairAction::InspectRuntimeFailure);
     build_tool_repair_trace_with_action(
@@ -97,19 +98,6 @@ fn suggested_action_for_failure(failure_kind: ToolFailureKind) -> ToolRepairActi
     }
 }
 
-fn capability_lane_for_name(capability: &str) -> Option<CapabilityLane> {
-    match capability.trim().to_ascii_lowercase().as_str() {
-        "vision" | "image_input" | "multimodal_understanding" => {
-            Some(CapabilityLane::MultimodalUnderstanding)
-        }
-        "image_generation" | "image" => Some(CapabilityLane::ImageGeneration),
-        "audio_generation" | "audio" => Some(CapabilityLane::AudioGeneration),
-        "video_generation" | "video" => Some(CapabilityLane::VideoGeneration),
-        "music_generation" | "music" => Some(CapabilityLane::MusicGeneration),
-        _ => None,
-    }
-}
-
 fn same_repair_signature(left: &ToolRepairTrace, right: &ToolRepairTrace) -> bool {
     left.tool_name == right.tool_name
         && left.failure_kind == right.failure_kind
@@ -150,6 +138,7 @@ fn trim_tool_repair_history(history: &mut Vec<ToolRepairTrace>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::CapabilityLane;
 
     #[test]
     fn maps_duplicate_invocation_to_duplicate_retry_guard() {
@@ -196,7 +185,7 @@ mod tests {
     fn capability_trace_prefers_switch_route_lane_when_lane_is_known() {
         let trace = build_tool_repair_trace_for_capability(
             "image_info",
-            "vision",
+            &ProviderCapabilityRequirement::VisionInput,
             Some("provider does not support vision"),
         );
 

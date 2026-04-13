@@ -206,9 +206,6 @@ synapseclaw onboard --api-key sk-... --provider openrouter
 # Or preset-first guided wizard
 synapseclaw onboard
 
-# Materialize the editable local model catalog next to config.toml
-synapseclaw models catalog init
-
 # Chat
 synapseclaw agent -m "Hello, SynapseClaw!"
 
@@ -232,35 +229,66 @@ synapseclaw service install
 synapseclaw service status
 ```
 
-`synapseclaw onboard` now starts with simple provider presets (`ChatGPT / Codex`,
-`Claude`, `OpenRouter`, `Local`, `Advanced`) and expands those into richer
-lane-based routing under the hood. Advanced users can still override the
-generated capability lanes later in `config.toml`.
+`synapseclaw onboard` starts with simple provider presets (`ChatGPT / Codex`,
+`Claude`, `OpenRouter`, `Local`, `Advanced`) and expands those into lane-aware
+routing under the hood.
 
-Built-in preset data, provider defaults, curated model lists, curated
-provider:model profiles, default route aliases, and default pricing now come
-from an external catalog. If you want to customize that catalog locally without
-editing repository files, run:
+## Models
+
+### Quick: pick a model
 
 ```bash
-synapseclaw models catalog init
+# Set the default model directly
+synapseclaw models set claude-sonnet-4-6
+
+# Check what's active
+synapseclaw models status
+
+# List cached models for your provider
+synapseclaw models list
+
+# Pull the latest models from the provider API
+synapseclaw models refresh
 ```
 
-This writes `model_catalog.json` next to the active `config.toml`:
+### Editable model catalog (advanced)
 
-- default: `~/.synapseclaw/model_catalog.json`
-- agent instance: `~/.synapseclaw/agents/<name>/model_catalog.json`
-- custom `--config-dir`: `<that-dir>/model_catalog.json`
+SynapseClaw ships with a **built-in catalog** (`model_catalog.json`) containing presets,
+30+ providers, curated model lists, pricing, context-window profiles, embedding profiles,
+and route aliases (`cheap`, `qwen36`, `gemma31b`, …).
 
-At runtime SynapseClaw merges the local file over the built-in catalog on
-startup. This works the same way on Linux, macOS, BSD, and WSL2 because the
-runtime already resolves a single active config directory first.
-Live provider model-cache metadata wins over bundled profile metadata when it
-exists; catalog profiles are the fallback for context windows, max output, and
-feature coverage.
-User `[[model_routes]]` entries win over bundled aliases, so local configs can
-keep stable shortcuts such as `cheap`, `qwen36`, `gemma31b`, or `gemma26b`
-while still overriding them when needed.
+To override anything locally:
+
+```bash
+synapseclaw models catalog init          # writes model_catalog.json next to config.toml
+synapseclaw models catalog init --force  # overwrite if it already exists
+```
+
+The local file is **merged over** the built-in catalog on startup:
+- matching entries (by `id`, `provider`, `model`, or `hint`) **replace** built-in values
+- new entries are **added** — custom providers, presets, aliases
+- missing sections are ignored — include only what you want to change
+
+**Locations** (checked in order):
+
+| Path | Scope |
+|------|-------|
+| `~/.synapseclaw/model_catalog.json` | Global (all agents) |
+| `~/.synapseclaw/agents/<name>/model_catalog.json` | Per-agent override |
+| `<--config-dir>/model_catalog.json` | Custom config directory |
+
+**Full command reference:**
+
+| Command | What it does |
+|---------|-------------|
+| `synapseclaw models catalog init` | Create editable catalog from built-in seed |
+| `synapseclaw models catalog init --force` | Overwrite existing catalog |
+| `synapseclaw models catalog status` | Show path and active/not active |
+| `synapseclaw models catalog path` | Print catalog file path |
+| `synapseclaw models refresh` | Pull latest models from provider APIs |
+| `synapseclaw models list` | List cached provider models |
+| `synapseclaw models set <model>` | Set default model in config |
+| `synapseclaw models status` | Show current model configuration |
 
 > **Dev fallback (no global install):** prefix commands with `cargo run --release --` (example: `cargo run --release -- status`).
 

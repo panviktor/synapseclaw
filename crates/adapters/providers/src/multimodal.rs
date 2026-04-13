@@ -20,6 +20,12 @@ pub struct PreparedMessages {
     pub contains_images: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageMarkerPart {
+    Text(String),
+    ImageRef(String),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum MultimodalError {
     #[error("multimodal image limit exceeded: max_images={max_images}, found={found}")]
@@ -54,15 +60,28 @@ pub enum MultimodalError {
 pub fn parse_image_markers(content: &str) -> (String, Vec<String>) {
     let mut refs = Vec::new();
     let mut cleaned = String::with_capacity(content.len());
+
+    for part in parse_image_marker_parts(content) {
+        match part {
+            ImageMarkerPart::Text(text) => cleaned.push_str(&text),
+            ImageMarkerPart::ImageRef(image_ref) => refs.push(image_ref),
+        }
+    }
+
+    (cleaned.trim().to_string(), refs)
+}
+
+pub fn parse_image_marker_parts(content: &str) -> Vec<ImageMarkerPart> {
+    let mut parts = Vec::new();
     let mut cursor = 0usize;
 
     while let Some(rel_start) = content[cursor..].find(IMAGE_MARKER_PREFIX) {
         let start = cursor + rel_start;
-        cleaned.push_str(&content[cursor..start]);
+        push_text_part(&mut parts, &content[cursor..start]);
 
         let marker_start = start + IMAGE_MARKER_PREFIX.len();
         let Some(rel_end) = content[marker_start..].find(']') else {
-            cleaned.push_str(&content[start..]);
+            push_text_part(&mut parts, &content[start..]);
             cursor = content.len();
             break;
         };
@@ -71,19 +90,25 @@ pub fn parse_image_markers(content: &str) -> (String, Vec<String>) {
         let candidate = content[marker_start..end].trim();
 
         if candidate.is_empty() {
-            cleaned.push_str(&content[start..=end]);
+            push_text_part(&mut parts, &content[start..=end]);
         } else {
-            refs.push(candidate.to_string());
+            parts.push(ImageMarkerPart::ImageRef(candidate.to_string()));
         }
 
         cursor = end + 1;
     }
 
     if cursor < content.len() {
-        cleaned.push_str(&content[cursor..]);
+        push_text_part(&mut parts, &content[cursor..]);
     }
 
-    (cleaned.trim().to_string(), refs)
+    parts
+}
+
+fn push_text_part(parts: &mut Vec<ImageMarkerPart>, text: &str) {
+    if !text.is_empty() {
+        parts.push(ImageMarkerPart::Text(text.to_string()));
+    }
 }
 
 pub fn count_image_markers(messages: &[ChatMessage]) -> usize {
@@ -523,6 +548,23 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0], "/tmp/a.png");
         assert_eq!(refs[1], "https://example.com/b.jpg");
+    }
+
+    #[test]
+    fn parse_image_marker_parts_preserves_interleaved_order() {
+        let input = "left [IMAGE:/tmp/a.png] middle [IMAGE:/tmp/b.png] right";
+        let parts = parse_image_marker_parts(input);
+
+        assert_eq!(
+            parts,
+            vec![
+                ImageMarkerPart::Text("left ".to_string()),
+                ImageMarkerPart::ImageRef("/tmp/a.png".to_string()),
+                ImageMarkerPart::Text(" middle ".to_string()),
+                ImageMarkerPart::ImageRef("/tmp/b.png".to_string()),
+                ImageMarkerPart::Text(" right".to_string()),
+            ]
+        );
     }
 
     #[test]

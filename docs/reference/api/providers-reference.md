@@ -245,15 +245,15 @@ Optional endpoint override:
 
 ## Model Routing (`hint:<name>`)
 
-You can route model calls by hint using `[[model_routes]]`:
+You can route model calls by hint using `[[route_aliases]]`:
 
 ```toml
-[[model_routes]]
+[[route_aliases]]
 hint = "reasoning"
 provider = "openrouter"
 model = "anthropic/claude-opus-4-20250514"
 
-[[model_routes]]
+[[route_aliases]]
 hint = "fast"
 provider = "groq"
 model = "llama-3.3-70b-versatile"
@@ -310,7 +310,7 @@ Use stable hints and update only route targets when providers deprecate model ID
 Recommended workflow:
 
 1. Keep call sites stable (`hint:reasoning`, `hint:semantic`).
-2. Change only the target model under `[[model_routes]]` or `[[embedding_routes]]`.
+2. Change only the target model under `[[route_aliases]]` or `[[embedding_routes]]`.
 3. Run:
    - `synapseclaw doctor`
    - `synapseclaw status`

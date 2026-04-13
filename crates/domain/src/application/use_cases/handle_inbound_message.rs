@@ -16,11 +16,15 @@ use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::application::services::provider_context_budget::provider_context_input_for_history;
+use crate::application::services::runtime_admission_presentation::format_blocked_turn_admission_response;
 use crate::application::services::runtime_assumptions::{
     apply_tool_repair_assumption_challenges, build_runtime_assumptions,
     challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger,
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
+};
+use crate::application::services::runtime_error_presentation::{
+    format_context_limit_recovery_response, format_timeout_recovery_response,
 };
 use crate::application::services::runtime_trace_janitor::{
     append_runtime_handoff_packet, append_runtime_watchdog_alerts,
@@ -30,14 +34,12 @@ use crate::application::services::runtime_watchdog::{
     format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
 };
 use crate::application::services::session_handoff::{
-    build_session_handoff_packet, format_session_handoff_packet, SessionHandoffInput,
-    SessionHandoffPacket,
+    build_session_handoff_packet, SessionHandoffInput,
 };
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
-use crate::config::schema::ModelRouteConfig;
 use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
 use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
@@ -70,7 +72,6 @@ pub struct InboundMessageConfig {
     pub temperature: f64,
     pub max_tool_iterations: usize,
     pub auto_save_memory: bool,
-    pub model_routes: Vec<ModelRouteConfig>,
     pub model_lanes: Vec<crate::config::schema::ModelLaneConfig>,
     pub model_preset: Option<String>,
     pub thread_root_max_chars: usize,
@@ -188,7 +189,8 @@ pub async fn handle(
 
     match classification {
         MessageClassification::Command(cmd) => {
-            let effect = inbound_message_service::command_effect(&cmd, &config.model_routes);
+            let routing_config = build_model_routing_config(config);
+            let effect = inbound_message_service::command_effect(&cmd, &routing_config);
 
             // Apply state changes
             match &effect {
@@ -251,14 +253,13 @@ async fn handle_regular_message(
 
     // ── 3. Resolve route (with query classification override) ─────
     let mut route = ports.routes.get_route(conversation_key);
+    let routing_config = build_model_routing_config(config);
 
     // #4: Query classification override
     if config.query_classifier.is_some() {
         if let Some(hint) = config.query_classifier.as_ref().and_then(|f| f(content)) {
-            if let Some(route_match) = config
-                .model_routes
-                .iter()
-                .find(|route| route.hint.eq_ignore_ascii_case(&hint))
+            if let Some(route_match) =
+                inbound_message_service::resolve_model_command_route(&hint, &routing_config)
             {
                 tracing::info!(
                     target: "query_classification",
@@ -269,14 +270,13 @@ async fn handle_regular_message(
                 );
                 route.provider = route_match.provider.clone();
                 route.model = route_match.model.clone();
-                route.lane = route_match.capability;
-                route.candidate_index = None;
+                route.lane = route_match.lane;
+                route.candidate_index = route_match.candidate_index;
                 route.clear_runtime_diagnostics();
             }
         }
     }
 
-    let routing_config = build_model_routing_config(config);
     let current_route_profile =
         crate::application::services::model_lane_resolution::resolve_route_selection_profile(
             &routing_config,
@@ -627,73 +627,7 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
     routing.default_model = Some(config.default_model.clone());
     routing.model_preset = config.model_preset.clone();
     routing.model_lanes = config.model_lanes.clone();
-    routing.model_routes = config.model_routes.iter().cloned().collect();
     routing
-}
-
-fn format_blocked_turn_admission_response(
-    decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
-    handoff_packet: Option<&SessionHandoffPacket>,
-) -> String {
-    use crate::domain::turn_admission::{
-        AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
-    };
-
-    let base = if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) =
-        decision.recommended_action
-    {
-        format!(
-            "Capability metadata for `{}` is stale or low-confidence on the current route. Refresh model profiles or switch to a compatible lane and try again.",
-            blocked_lane_name(lane)
-        )
-    } else {
-        match (decision.snapshot.intent, decision.snapshot.pressure_state) {
-            (_, ContextPressureState::OverflowRisk) => match decision.recommended_action {
-                Some(AdmissionRepairHint::StartFreshHandoff) => {
-                    "This turn is too large for the current route's safe context budget. Start a fresh handoff or switch to a larger-context model.".into()
-                }
-                _ => {
-                    "This turn is too large for the current route's safe context budget. Compact the session first or switch to a larger-context model.".into()
-                }
-            },
-            (TurnIntentCategory::MultimodalUnderstanding, _) => {
-                "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
-            }
-            (TurnIntentCategory::ImageGeneration, _) => {
-                "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
-            }
-            (TurnIntentCategory::AudioGeneration, _) => {
-                "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
-            }
-            (TurnIntentCategory::VideoGeneration, _) => {
-                "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
-            }
-            (TurnIntentCategory::MusicGeneration, _) => {
-                "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
-            }
-            (_, _) if decision.reasons.iter().any(|reason| {
-                matches!(
-                    reason,
-                    CandidateAdmissionReason::CapabilityMetadataUnknown(_)
-                        | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
-                        | CandidateAdmissionReason::CapabilityMetadataStale(_)
-                )
-            }) => {
-                "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
-            }
-            _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
-        }
-    };
-
-    if let Some(packet) = handoff_packet {
-        format!("{base}\n\n{}", format_session_handoff_packet(packet))
-    } else {
-        base
-    }
-}
-
-fn blocked_lane_name(lane: crate::config::schema::CapabilityLane) -> &'static str {
-    lane.as_str()
 }
 
 /// Execute the agent turn and handle the response.
@@ -819,6 +753,7 @@ async fn execute_agent_turn(
     let admission_state = RouteAdmissionState {
         observed_at_unix,
         snapshot: admission_decision.snapshot.clone(),
+        required_lane: admission_decision.required_lane,
         reasons: admission_decision.reasons.clone(),
         recommended_action: admission_decision.recommended_action,
     };
@@ -862,6 +797,12 @@ async fn execute_agent_turn(
         &runtime_watchdog_digest.alerts,
         observed_at_unix,
     );
+    let mut handoff_tool_repairs = route.recent_tool_repairs.clone();
+    if let Some(last_tool_repair) = route.last_tool_repair.clone() {
+        if !handoff_tool_repairs.contains(&last_tool_repair) {
+            handoff_tool_repairs.push(last_tool_repair);
+        }
+    }
     route.last_tool_repair = None;
     route.recent_tool_repairs.clear();
 
@@ -876,6 +817,7 @@ async fn execute_agent_turn(
             recalled_entries: &[],
             session_matches: &[],
             run_recipes: &[],
+            recent_tool_repairs: &handoff_tool_repairs,
         });
         if let Some(packet) = handoff_packet.as_ref() {
             route.handoff_artifacts =
@@ -1207,11 +1149,7 @@ async fn execute_agent_turn(
                         }
                     }
                 }
-                let msg = if compacted {
-                    "⚠️ Context window exceeded. I compacted history and preserved a summary. Please try again."
-                } else {
-                    "⚠️ Context window exceeded. Try `/new` to start a fresh conversation."
-                };
+                let msg = format_context_limit_recovery_response(compacted);
                 let _ = ports
                     .channel_output
                     .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())
@@ -1228,7 +1166,7 @@ async fn execute_agent_turn(
             // ── #22: Timeout detection ───────────────────────────
             if matches!(e.kind, AgentRuntimeErrorKind::Timeout) {
                 ports.history.rollback_last_turn(conversation_key, content);
-                let msg = "⏱️ Request timed out. Try a simpler question or `/new`.";
+                let msg = format_timeout_recovery_response();
                 let _ = ports
                     .channel_output
                     .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())
@@ -1318,7 +1256,9 @@ fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{ModelCandidateProfileConfig, ModelRouteConfig};
+    use crate::config::schema::{
+        ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
+    };
     use crate::domain::channel::SourceKind;
     use crate::ports::hooks::NoOpHooks;
     use crate::ports::route_selection::RouteSelection;
@@ -1703,7 +1643,6 @@ mod tests {
             temperature: 0.7,
             max_tool_iterations: 5,
             auto_save_memory: false,
-            model_routes: vec![],
             model_lanes: vec![],
             model_preset: None,
             thread_root_max_chars: 500,
@@ -1722,22 +1661,24 @@ mod tests {
     }
 
     fn config_with_route_window(
-        hint: &str,
         provider: &str,
         model: &str,
         context_window_tokens: usize,
     ) -> InboundMessageConfig {
         let mut config = test_config();
-        config.model_routes = vec![ModelRouteConfig {
-            hint: hint.to_string(),
-            capability: None,
-            provider: provider.to_string(),
-            model: model.to_string(),
-            api_key: None,
-            profile: ModelCandidateProfileConfig {
-                context_window_tokens: Some(context_window_tokens),
-                ..Default::default()
-            },
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: crate::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: Some(context_window_tokens),
+                    ..Default::default()
+                },
+            }],
         }];
         config
     }
@@ -1926,7 +1867,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_model_switch_waits_for_adapter_preflight() {
-        let env = test_envelope("/model tiny");
+        let env = test_envelope("/model tiny-model");
         let caps = vec![
             ChannelCapability::SendText,
             ChannelCapability::RuntimeCommands,
@@ -1935,7 +1876,7 @@ mod tests {
         history.append_turn("telegram_user1", ChatMessage::user("x".repeat(20_000)));
         let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
         let ports = test_ports_with_state(history, routes.clone(), "");
-        let config = config_with_route_window("tiny", "openrouter", "tiny-model", 1_000);
+        let config = config_with_route_window("openrouter", "tiny-model", 1_000);
 
         let result = handle(&env, &caps, &config, &ports).await.unwrap();
 
@@ -1946,13 +1887,15 @@ mod tests {
                         model,
                         inferred_provider,
                         lane,
+                        candidate_index,
                         compacted,
                     },
                 ..
             } => {
                 assert_eq!(model, "tiny-model");
                 assert_eq!(inferred_provider, Some("openrouter".to_string()));
-                assert_eq!(lane, None);
+                assert_eq!(lane, Some(crate::config::schema::CapabilityLane::Reasoning));
+                assert_eq!(candidate_index, Some(0));
                 assert!(!compacted);
             }
             other => panic!("expected model switch command, got {other:?}"),
@@ -1963,7 +1906,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_model_switch_defers_safe_downshift_mutation_to_adapter() {
-        let env = test_envelope("/model compact");
+        let env = test_envelope("/model compact-model");
         let caps = vec![
             ChannelCapability::SendText,
             ChannelCapability::RuntimeCommands,
@@ -1977,7 +1920,7 @@ mod tests {
         }
         let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
         let ports = test_ports_with_state(history.clone(), routes.clone(), "");
-        let config = config_with_route_window("compact", "openrouter", "compact-model", 8_000);
+        let config = config_with_route_window("openrouter", "compact-model", 8_000);
 
         let result = handle(&env, &caps, &config, &ports).await.unwrap();
 
@@ -2087,64 +2030,5 @@ mod tests {
     fn truncate_chars_over_limit() {
         let result = truncate_chars("hello world", 5);
         assert_eq!(result, "hello…");
-    }
-
-    #[test]
-    fn blocked_turn_response_mentions_stale_or_low_confidence_metadata() {
-        let response = format_blocked_turn_admission_response(
-            &crate::application::services::turn_admission::CandidateAdmissionDecision {
-                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
-                    intent: crate::domain::turn_admission::TurnIntentCategory::ImageGeneration,
-                    pressure_state: crate::domain::turn_admission::ContextPressureState::Warning,
-                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
-                },
-                required_lane: Some(crate::config::schema::CapabilityLane::ImageGeneration),
-                route_override: None,
-                reasons: vec![
-                    crate::domain::turn_admission::CandidateAdmissionReason::CapabilityMetadataLowConfidence(
-                        crate::config::schema::CapabilityLane::ImageGeneration,
-                    ),
-                ],
-                recommended_action: Some(
-                    crate::domain::turn_admission::AdmissionRepairHint::RefreshCapabilityMetadata(
-                        crate::config::schema::CapabilityLane::ImageGeneration,
-                    ),
-                ),
-                condensation_plan: None,
-                requires_compaction: false,
-            },
-            None,
-        );
-
-        assert!(response.contains("image_generation"));
-        assert!(response.contains("stale or low-confidence"));
-        assert!(response.contains("Refresh model profiles"));
-    }
-
-    #[test]
-    fn blocked_turn_response_mentions_safe_context_budget_on_overflow_risk() {
-        let response = format_blocked_turn_admission_response(
-            &crate::application::services::turn_admission::CandidateAdmissionDecision {
-                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
-                    intent: crate::domain::turn_admission::TurnIntentCategory::Reply,
-                    pressure_state: crate::domain::turn_admission::ContextPressureState::OverflowRisk,
-                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
-                },
-                required_lane: None,
-                route_override: None,
-                reasons: vec![
-                    crate::domain::turn_admission::CandidateAdmissionReason::CandidateWindowExceeded,
-                ],
-                recommended_action: Some(
-                    crate::domain::turn_admission::AdmissionRepairHint::StartFreshHandoff,
-                ),
-                condensation_plan: None,
-                requires_compaction: false,
-            },
-            None,
-        );
-
-        assert!(response.contains("safe context budget"));
-        assert!(response.contains("fresh handoff"));
     }
 }

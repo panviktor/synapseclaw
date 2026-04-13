@@ -1,30 +1,37 @@
 {
+  "default_preset": "chatgpt",
   "presets": [
     {
       "id": "chatgpt",
+      "aliases": ["openai", "openai-codex", "codex"],
       "title": "ChatGPT / Codex",
       "description": "OpenAI-style reasoning lane with minimal defaults.",
       "default_provider": "openai-codex",
       "default_model": "gpt-5.4",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["openai", "openai-codex"],
       "extra_lanes": []
     },
     {
       "id": "claude",
+      "aliases": ["anthropic"],
       "title": "Claude",
       "description": "Anthropic-style reasoning lane with minimal defaults.",
       "default_provider": "anthropic",
       "default_model": "claude-sonnet-4-6",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["anthropic"],
       "extra_lanes": []
     },
     {
       "id": "openrouter",
+      "aliases": [],
       "title": "OpenRouter",
       "description": "Reasoning lane plus cheap Qwen summary and embedding defaults.",
       "default_provider": "openrouter",
       "default_model": "anthropic/claude-sonnet-4-6",
       "seed_multimodal_from_reasoning": false,
+      "provider_aliases": ["openrouter"],
       "extra_lanes": [
         {
           "lane": "cheap_reasoning",
@@ -51,25 +58,77 @@
               }
             }
           ]
+        },
+        {
+          "lane": "image_generation",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "google/gemini-3.1-flash-image-preview"
+            },
+            {
+              "provider": "openrouter",
+              "model": "sourceful/riverflow-v2-fast"
+            }
+          ]
+        },
+        {
+          "lane": "audio_generation",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "openai/gpt-audio-mini"
+            }
+          ]
+        },
+        {
+          "lane": "music_generation",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "google/lyria-3-clip-preview"
+            },
+            {
+              "provider": "openrouter",
+              "model": "google/lyria-3-pro-preview"
+            }
+          ]
+        },
+        {
+          "lane": "video_generation",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "google/veo-3.1"
+            },
+            {
+              "provider": "openrouter",
+              "model": "alibaba/wan-2.6"
+            }
+          ]
         }
       ]
     },
     {
       "id": "gemini",
+      "aliases": ["google"],
       "title": "Gemini",
       "description": "Gemini reasoning lane with room for multimodal expansion.",
       "default_provider": "gemini",
       "default_model": "gemini-3.1-pro",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["gemini"],
       "extra_lanes": []
     },
     {
       "id": "local",
+      "aliases": ["local-ai", "self-hosted", "ollama"],
       "title": "Local / self-hosted",
       "description": "Single local reasoning lane without cloud-only helper lanes.",
       "default_provider": "ollama",
       "default_model": "llama4-scout:latest",
       "seed_multimodal_from_reasoning": false,
+      "provider_aliases": ["ollama", "llamacpp", "sglang", "vllm", "osaurus"],
       "extra_lanes": []
     }
   ],
@@ -87,8 +146,16 @@
         { "id": "google/gemma-4-26b-a4b-it", "label": "Gemma 4 26B A4B IT (paid OpenRouter, efficient multimodal input)" },
         { "id": "qwen/qwen3.6-plus", "label": "Qwen3.6 Plus (frontier, free preview)" },
         { "id": "deepseek/deepseek-v4", "label": "DeepSeek V4 (latest, strong value)" },
+        { "id": "minimax/minimax-m2.7", "label": "MiniMax M2.7 (agentic text, 200K context)" },
         { "id": "x-ai/grok-4.20", "label": "Grok 4.20 (xAI flagship, 2M context)" },
         { "id": "x-ai/grok-4.20-multi-agent", "label": "Grok 4.20 Multi-Agent (OpenRouter experimental)" },
+        { "id": "google/gemini-3.1-flash-image-preview", "label": "Gemini 3.1 Flash Image Preview (image generation)" },
+        { "id": "sourceful/riverflow-v2-fast", "label": "Riverflow V2 Fast (small-window image generation)" },
+        { "id": "openai/gpt-audio-mini", "label": "GPT Audio Mini (audio generation)" },
+        { "id": "google/lyria-3-clip-preview", "label": "Lyria 3 Clip Preview (music generation)" },
+        { "id": "google/lyria-3-pro-preview", "label": "Lyria 3 Pro Preview (music generation)" },
+        { "id": "google/veo-3.1", "label": "Veo 3.1 (video generation)" },
+        { "id": "alibaba/wan-2.6", "label": "Wan 2.6 (video generation)" },
         { "id": "meta-llama/llama-4-maverick", "label": "Llama 4 Maverick (open model)" },
         { "id": "moonshot/kimi-k2.5", "label": "Kimi K2.5 (agentic specialist)" }
       ]
@@ -266,11 +333,17 @@
     },
     {
       "provider": "minimax",
-      "default_model": "MiniMax-M2.5",
+      "default_model": "MiniMax-M2.7",
+      "api_base_urls": ["https://api.minimax.io/v1", "https://api.minimaxi.com/v1"],
       "curated_models": [
+        { "id": "MiniMax-M2.7", "label": "MiniMax M2.7 (latest agentic text)" },
+        { "id": "codex-MiniMax-M2.7", "label": "MiniMax M2.7 Codex-compatible profile" },
         { "id": "MiniMax-M2.5", "label": "MiniMax M2.5 (latest flagship)" },
         { "id": "MiniMax-M2.1", "label": "MiniMax M2.1 (strong coding/reasoning)" },
-        { "id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 High-Speed (fast)" }
+        { "id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 High-Speed (fast)" },
+        { "id": "speech-2.5-hd-preview", "label": "MiniMax Speech 2.5 HD Preview (direct audio API)" },
+        { "id": "MiniMax-Hailuo-2.3-Fast", "label": "MiniMax Hailuo 2.3 Fast (direct video API)" },
+        { "id": "music-01", "label": "MiniMax Music 01 (direct music API)" }
       ]
     },
     {
@@ -442,8 +515,11 @@
     { "model": "google/gemini-3-flash", "input": 0.1, "output": 0.4 },
     { "model": "google/gemma-4-31b-it", "input": 0.14, "output": 0.40 },
     { "model": "google/gemma-4-26b-a4b-it", "input": 0.12, "output": 0.40 },
+    { "model": "deepseek-chat", "input": 0.28, "output": 0.42 },
+    { "model": "deepseek-reasoner", "input": 0.28, "output": 0.42 },
     { "model": "deepseek/deepseek-v4", "input": 0.25, "output": 1.1 },
     { "model": "deepseek/deepseek-r1", "input": 0.55, "output": 2.19 },
+    { "model": "minimax/minimax-m2.7", "input": 0.30, "output": 1.20 },
     { "model": "x-ai/grok-4.20", "input": 2.0, "output": 6.0 },
     { "model": "meta-llama/llama-4-maverick", "input": 0.2, "output": 0.6 },
     { "model": "moonshot/kimi-k2.5", "input": 0.6, "output": 2.5 },
@@ -452,6 +528,93 @@
     { "model": "cohere/command-a", "input": 2.5, "output": 10.0 }
   ],
   "profiles": [
+    {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": ["tool_calling", "vision", "multimodal_understanding", "prompt_caching"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": ["tool_calling", "vision", "multimodal_understanding", "prompt_caching"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-pro",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": ["tool_calling", "vision", "multimodal_understanding", "prompt_caching"]
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": [
+        "tool_calling",
+        "vision",
+        "multimodal_understanding",
+        "prompt_caching",
+        "server_continuation"
+      ]
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4-mini",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": [
+        "tool_calling",
+        "vision",
+        "multimodal_understanding",
+        "prompt_caching",
+        "server_continuation"
+      ]
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.3-codex",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": [
+        "tool_calling",
+        "vision",
+        "multimodal_understanding",
+        "prompt_caching",
+        "server_continuation"
+      ]
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.2-codex",
+      "context_window_tokens": 400000,
+      "max_output_tokens": 128000,
+      "features": [
+        "tool_calling",
+        "vision",
+        "multimodal_understanding",
+        "prompt_caching",
+        "server_continuation"
+      ]
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "context_window_tokens": 128000,
+      "max_output_tokens": 8192,
+      "features": ["tool_calling", "prompt_caching"]
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "context_window_tokens": 128000,
+      "max_output_tokens": 65536,
+      "features": ["tool_calling", "prompt_caching"]
+    },
     {
       "provider": "openrouter",
       "model": "google/gemma-4-31b-it",
@@ -472,6 +635,57 @@
       "context_window_tokens": 2000000,
       "max_output_tokens": 66000,
       "features": ["tool_calling"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "minimax/minimax-m2.7",
+      "context_window_tokens": 204800,
+      "max_output_tokens": 131072,
+      "features": ["tool_calling", "prompt_caching"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "google/gemini-3.1-flash-image-preview",
+      "context_window_tokens": 65536,
+      "max_output_tokens": 65536,
+      "features": ["image_generation", "vision", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "sourceful/riverflow-v2-fast",
+      "context_window_tokens": 8192,
+      "features": ["image_generation"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "openai/gpt-audio-mini",
+      "context_window_tokens": 128000,
+      "max_output_tokens": 16384,
+      "features": ["audio_generation", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "google/lyria-3-clip-preview",
+      "context_window_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": ["music_generation", "audio_generation", "vision", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "google/lyria-3-pro-preview",
+      "context_window_tokens": 1048576,
+      "max_output_tokens": 65536,
+      "features": ["music_generation", "audio_generation", "vision", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "google/veo-3.1",
+      "features": ["video_generation"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "alibaba/wan-2.6",
+      "features": ["video_generation"]
     }
   ],
   "embedding_profiles": [
@@ -583,6 +797,243 @@
       "hint": "grok-4.20",
       "provider": "openrouter",
       "model": "x-ai/grok-4.20"
+    },
+    {
+      "hint": "minimax",
+      "provider": "openrouter",
+      "model": "minimax/minimax-m2.7"
+    },
+    {
+      "hint": "minimax-m2.7",
+      "provider": "openrouter",
+      "model": "minimax/minimax-m2.7"
+    },
+    {
+      "hint": "media-image",
+      "capability": "image_generation",
+      "provider": "openrouter",
+      "model": "google/gemini-3.1-flash-image-preview"
+    },
+    {
+      "hint": "media-image-small",
+      "capability": "image_generation",
+      "provider": "openrouter",
+      "model": "sourceful/riverflow-v2-fast"
+    },
+    {
+      "hint": "media-audio",
+      "capability": "audio_generation",
+      "provider": "openrouter",
+      "model": "openai/gpt-audio-mini"
+    },
+    {
+      "hint": "media-music",
+      "capability": "music_generation",
+      "provider": "openrouter",
+      "model": "google/lyria-3-clip-preview"
+    },
+    {
+      "hint": "media-video",
+      "capability": "video_generation",
+      "provider": "openrouter",
+      "model": "google/veo-3.1"
+    }
+  ],
+  "request_policies": [
+    {
+      "provider": "openai",
+      "model": "gpt-5",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-mini-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-nano",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-nano-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.2-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.3-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "fixed_temperature": 1.0,
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-pro",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o1",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o1-2024-12-17",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-2025-04-16",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-mini-2025-01-31",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini-2025-04-16",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4-mini",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.3-codex",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+      "default_reasoning_effort": "xhigh",
+      "reasoning_effort_aliases": {
+        "minimal": "low"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.2-codex",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+      "default_reasoning_effort": "xhigh",
+      "reasoning_effort_aliases": {
+        "minimal": "low"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.1",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.1-codex-mini",
+      "reasoning_efforts": ["medium", "high"],
+      "default_reasoning_effort": "medium",
+      "reasoning_effort_aliases": {
+        "minimal": "medium",
+        "low": "medium",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "x-ai/grok-4.20",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
     }
   ]
 }

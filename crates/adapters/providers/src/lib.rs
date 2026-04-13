@@ -708,6 +708,14 @@ pub struct ProviderRuntimeOptions {
     pub api_path: Option<String>,
     /// Enable prompt caching (cache_control breakpoints) for Anthropic provider.
     pub prompt_caching: bool,
+    /// Azure OpenAI resource name. Required for the Azure provider unless
+    /// `AZURE_OPENAI_RESOURCE` is set.
+    pub azure_openai_resource: Option<String>,
+    /// Azure OpenAI deployment name. Required for the Azure provider unless
+    /// `AZURE_OPENAI_DEPLOYMENT` is set.
+    pub azure_openai_deployment: Option<String>,
+    /// Azure OpenAI API version override.
+    pub azure_openai_api_version: Option<String>,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -723,6 +731,9 @@ impl Default for ProviderRuntimeOptions {
             extra_headers: std::collections::HashMap::new(),
             api_path: None,
             prompt_caching: false,
+            azure_openai_resource: None,
+            azure_openai_deployment: None,
+            azure_openai_api_version: None,
         }
     }
 }
@@ -730,6 +741,7 @@ impl Default for ProviderRuntimeOptions {
 pub fn provider_runtime_options_from_config(
     config: &synapse_domain::config::schema::Config,
 ) -> ProviderRuntimeOptions {
+    let model_provider = model_provider_config_for_default(config);
     ProviderRuntimeOptions {
         auth_profile_override: None,
         provider_api_url: config.api_url.clone(),
@@ -741,7 +753,53 @@ pub fn provider_runtime_options_from_config(
         extra_headers: config.extra_headers.clone(),
         api_path: config.api_path.clone(),
         prompt_caching: config.agent.prompt_caching,
+        azure_openai_resource: model_provider.and_then(|provider| {
+            provider
+                .azure_openai_resource
+                .as_deref()
+                .map(str::to_string)
+        }),
+        azure_openai_deployment: model_provider.and_then(|provider| {
+            provider
+                .azure_openai_deployment
+                .as_deref()
+                .map(str::to_string)
+        }),
+        azure_openai_api_version: model_provider.and_then(|provider| {
+            provider
+                .azure_openai_api_version
+                .as_deref()
+                .map(str::to_string)
+        }),
     }
+}
+
+fn model_provider_config_for_default(
+    config: &synapse_domain::config::schema::Config,
+) -> Option<&synapse_domain::config::schema::ModelProviderConfig> {
+    let provider = config.default_provider.as_deref()?;
+    config
+        .model_providers
+        .get(provider)
+        .or_else(|| {
+            config
+                .model_providers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(provider))
+                .map(|(_, value)| value)
+        })
+        .or_else(|| {
+            list_providers()
+                .into_iter()
+                .find(|known| {
+                    known.name.eq_ignore_ascii_case(provider)
+                        || known
+                            .aliases
+                            .iter()
+                            .any(|alias| alias.eq_ignore_ascii_case(provider))
+                })
+                .and_then(|known| config.model_providers.get(known.name))
+        })
 }
 
 fn is_secret_char(c: char) -> bool {
@@ -962,6 +1020,42 @@ fn resolve_provider_credential(name: &str, credential_override: Option<&str>) ->
     None
 }
 
+fn resolve_required_provider_setting(
+    configured: Option<&str>,
+    env_key: &str,
+    provider_label: &str,
+    config_key: &str,
+) -> anyhow::Result<String> {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            std::env::var(env_key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{provider_label} requires `{config_key}` or `{env_key}`; refusing to invent a default resource/deployment"
+            )
+        })
+}
+
+fn resolve_optional_provider_setting(configured: Option<&str>, env_key: &str) -> Option<String> {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            std::env::var(env_key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+}
+
 /// Check whether an API key's prefix matches the selected provider.
 ///
 /// Returns `Some("likely_provider")` when the key clearly belongs to a
@@ -1064,7 +1158,7 @@ pub fn create_provider_with_url(
 
 /// Factory: create provider with optional base URL and runtime options.
 #[allow(clippy::too_many_lines)]
-fn create_provider_with_url_and_options(
+pub fn create_provider_with_url_and_options(
     name: &str,
     api_key: Option<&str>,
     api_url: Option<&str>,
@@ -1243,11 +1337,22 @@ fn create_provider_with_url_and_options(
             )
         )),
         "azure_openai" | "azure-openai" | "azure" => {
-            let resource = std::env::var("AZURE_OPENAI_RESOURCE")
-                .unwrap_or_else(|_| "my-resource".to_string());
-            let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT")
-                .unwrap_or_else(|_| "gpt-4o".to_string());
-            let api_version = std::env::var("AZURE_OPENAI_API_VERSION").ok();
+            let resource = resolve_required_provider_setting(
+                options.azure_openai_resource.as_deref(),
+                "AZURE_OPENAI_RESOURCE",
+                "Azure OpenAI",
+                "azure_openai_resource",
+            )?;
+            let deployment = resolve_required_provider_setting(
+                options.azure_openai_deployment.as_deref(),
+                "AZURE_OPENAI_DEPLOYMENT",
+                "Azure OpenAI",
+                "azure_openai_deployment",
+            )?;
+            let api_version = resolve_optional_provider_setting(
+                options.azure_openai_api_version.as_deref(),
+                "AZURE_OPENAI_API_VERSION",
+            );
             Ok(Box::new(azure_openai::AzureOpenAiProvider::new(
                 key,
                 &resource,
@@ -1638,7 +1743,7 @@ pub fn create_resilient_provider_with_options(
     Ok(Box::new(reliable))
 }
 
-/// Create a RouterProvider if model routes are configured, otherwise return a
+/// Create a RouterProvider if route aliases are configured, otherwise return a
 /// standard resilient provider. The router wraps individual providers per route,
 /// each with its own retry/fallback chain.
 pub fn create_routed_provider(
@@ -1646,7 +1751,7 @@ pub fn create_routed_provider(
     api_key: Option<&str>,
     api_url: Option<&str>,
     reliability: &synapse_domain::config::schema::ReliabilityConfig,
-    model_routes: &[synapse_domain::config::schema::ModelRouteConfig],
+    route_aliases: &[synapse_domain::config::schema::ModelRouteConfig],
     default_model: &str,
 ) -> anyhow::Result<Box<dyn Provider>> {
     create_routed_provider_with_options(
@@ -1654,7 +1759,7 @@ pub fn create_routed_provider(
         api_key,
         api_url,
         reliability,
-        model_routes,
+        route_aliases,
         default_model,
         &ProviderRuntimeOptions::default(),
     )
@@ -1666,11 +1771,11 @@ pub fn create_routed_provider_with_options(
     api_key: Option<&str>,
     api_url: Option<&str>,
     reliability: &synapse_domain::config::schema::ReliabilityConfig,
-    model_routes: &[synapse_domain::config::schema::ModelRouteConfig],
+    route_aliases: &[synapse_domain::config::schema::ModelRouteConfig],
     default_model: &str,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
-    if model_routes.is_empty() {
+    if route_aliases.is_empty() {
         return create_resilient_provider_with_options(
             primary_name,
             api_key,
@@ -1682,7 +1787,7 @@ pub fn create_routed_provider_with_options(
 
     // Collect unique provider names needed
     let mut needed: Vec<String> = vec![primary_name.to_string()];
-    for route in model_routes {
+    for route in route_aliases {
         if !needed.iter().any(|n| n == &route.provider) {
             needed.push(route.provider.clone());
         }
@@ -1691,7 +1796,7 @@ pub fn create_routed_provider_with_options(
     // Create each provider (with its own resilience wrapper)
     let mut providers: Vec<(String, Box<dyn Provider>)> = Vec::new();
     for name in &needed {
-        let routed_credential = model_routes
+        let routed_credential = route_aliases
             .iter()
             .find(|r| &r.provider == name)
             .and_then(|r| {
@@ -1726,7 +1831,7 @@ pub fn create_routed_provider_with_options(
     }
 
     // Build route table
-    let routes: Vec<(String, router::Route)> = model_routes
+    let routes: Vec<(String, router::Route)> = route_aliases
         .iter()
         .map(|r| {
             (
@@ -3538,6 +3643,69 @@ mod tests {
         };
         assert_eq!(options.extra_headers.len(), 1);
         assert_eq!(options.extra_headers.get("X-Title").unwrap(), "synapseclaw");
+    }
+
+    #[test]
+    fn provider_runtime_options_resolve_azure_profile_by_alias() {
+        let mut config = synapse_domain::config::schema::Config {
+            default_provider: Some("azure".to_string()),
+            ..synapse_domain::config::schema::Config::default()
+        };
+        config.model_providers.insert(
+            "azure_openai".to_string(),
+            synapse_domain::config::schema::ModelProviderConfig {
+                azure_openai_resource: Some("contoso-ai".to_string()),
+                azure_openai_deployment: Some("deployment-42".to_string()),
+                azure_openai_api_version: Some("2024-06-01".to_string()),
+                ..synapse_domain::config::schema::ModelProviderConfig::default()
+            },
+        );
+
+        let options = provider_runtime_options_from_config(&config);
+
+        assert_eq!(options.azure_openai_resource.as_deref(), Some("contoso-ai"));
+        assert_eq!(
+            options.azure_openai_deployment.as_deref(),
+            Some("deployment-42")
+        );
+        assert_eq!(
+            options.azure_openai_api_version.as_deref(),
+            Some("2024-06-01")
+        );
+    }
+
+    #[test]
+    fn azure_provider_requires_explicit_resource_and_deployment() {
+        let _env_lock = env_lock();
+        let _resource_guard = EnvGuard::set("AZURE_OPENAI_RESOURCE", None);
+        let _deployment_guard = EnvGuard::set("AZURE_OPENAI_DEPLOYMENT", None);
+
+        let err = match create_provider_with_url("azure", Some("azure-test-key"), None) {
+            Ok(_) => panic!("Azure provider should not invent resource/deployment defaults"),
+            Err(error) => error,
+        };
+
+        let message = err.to_string();
+        assert!(message.contains("azure_openai_resource"));
+        assert!(message.contains("AZURE_OPENAI_RESOURCE"));
+    }
+
+    #[test]
+    fn azure_provider_accepts_runtime_options_for_resource_and_deployment() {
+        let _env_lock = env_lock();
+        let _resource_guard = EnvGuard::set("AZURE_OPENAI_RESOURCE", None);
+        let _deployment_guard = EnvGuard::set("AZURE_OPENAI_DEPLOYMENT", None);
+        let options = ProviderRuntimeOptions {
+            azure_openai_resource: Some("contoso-ai".to_string()),
+            azure_openai_deployment: Some("deployment-42".to_string()),
+            azure_openai_api_version: Some("2024-06-01".to_string()),
+            ..ProviderRuntimeOptions::default()
+        };
+
+        let provider =
+            create_provider_with_url_and_options("azure", Some("azure-test-key"), None, &options);
+
+        assert!(provider.is_ok());
     }
 
     #[test]

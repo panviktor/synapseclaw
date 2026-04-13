@@ -11,6 +11,7 @@ use synapse_domain::application::services::model_preset_resolution::{
     preset_title, recommended_model_preset_for_provider,
 };
 use synapse_domain::config::model_catalog::{
+    default_provider as bundled_default_provider,
     provider_curated_models as bundled_provider_curated_models,
     provider_default_model as bundled_provider_default_model,
 };
@@ -172,7 +173,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         scheduler: synapse_domain::config::schema::SchedulerConfig::default(),
         agent: synapse_domain::config::schema::AgentConfig::default(),
         skills: synapse_domain::config::schema::SkillsConfig::default(),
-        model_routes: Vec::new(),
+        route_aliases: Vec::new(),
         model_lanes: Vec::new(),
         model_preset,
         embedding_routes: Vec::new(),
@@ -404,12 +405,8 @@ fn apply_provider_update(
 // ── Quick setup (zero prompts) ───────────────────────────────────
 
 /// Non-interactive setup: generates a sensible default config instantly.
-/// Use `synapseclaw onboard` or `synapseclaw onboard --api-key sk-... --provider openrouter --memory sqlite|lucid`.
+/// Use `synapseclaw onboard` or `synapseclaw onboard --api-key sk-... --provider openrouter`.
 // Phase 4.3: SurrealDB is the only backend — no selection needed.
-fn backend_key_from_choice(_choice: usize) -> &'static str {
-    "surrealdb"
-}
-
 fn memory_config_defaults_for_backend(_backend: &str) -> MemoryConfig {
     MemoryConfig::default()
 }
@@ -486,10 +483,15 @@ async fn run_quick_setup_with_home(
         .await
         .context("Failed to create workspace directory")?;
 
-    let provider_name = provider.unwrap_or("openrouter").to_string();
+    let provider_name = provider
+        .map(str::to_string)
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?
+        .to_string();
     let model = model_override
         .map(str::to_string)
-        .unwrap_or_else(|| default_model_for_provider(&provider_name));
+        .map(Ok)
+        .unwrap_or_else(|| default_model_for_provider(&provider_name))?;
     let memory_backend_name = memory_backend.unwrap_or("surrealdb").to_string();
 
     // Create memory config based on backend choice
@@ -524,7 +526,7 @@ async fn run_quick_setup_with_home(
         scheduler: synapse_domain::config::schema::SchedulerConfig::default(),
         agent: synapse_domain::config::schema::AgentConfig::default(),
         skills: synapse_domain::config::schema::SkillsConfig::default(),
-        model_routes: Vec::new(),
+        route_aliases: Vec::new(),
         model_lanes: Vec::new(),
         model_preset: recommended_model_preset_for_provider(&provider_name).map(str::to_string),
         embedding_routes: Vec::new(),
@@ -723,15 +725,15 @@ fn allows_unauthenticated_model_fetch(provider_name: &str) -> bool {
     )
 }
 
-fn default_model_for_provider(provider: &str) -> String {
-    bundled_provider_default_model(canonical_provider_name(provider))
-        .unwrap_or("default")
-        .to_string()
+fn default_model_for_provider(provider: &str) -> Result<String> {
+    let canonical = canonical_provider_name(provider);
+    bundled_provider_default_model(canonical)
+        .map(str::to_string)
+        .with_context(|| format!("model catalog has no default model for provider '{canonical}'"))
 }
 
 fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
-    bundled_provider_curated_models(canonical_provider_name(provider_name))
-        .unwrap_or_else(|| vec![("default".to_string(), "Default model".to_string())])
+    bundled_provider_curated_models(canonical_provider_name(provider_name)).unwrap_or_default()
 }
 
 fn supports_live_model_fetch(provider_name: &str) -> bool {
@@ -1199,6 +1201,57 @@ fn ollama_uses_remote_endpoint(provider_api_url: Option<&str>) -> bool {
     !ollama_endpoint_is_local(&normalized)
 }
 
+fn provider_prefers_configured_models_endpoint(provider_name: &str) -> bool {
+    matches!(
+        canonical_provider_name(provider_name),
+        "openai"
+            | "openai-codex"
+            | "openrouter"
+            | "groq"
+            | "mistral"
+            | "deepseek"
+            | "xai"
+            | "together-ai"
+            | "fireworks"
+            | "novita"
+            | "cohere"
+            | "moonshot"
+            | "glm"
+            | "zai"
+            | "qwen"
+            | "venice"
+            | "astrai"
+            | "nvidia"
+            | "opencode-go"
+            | "llamacpp"
+            | "sglang"
+            | "vllm"
+            | "osaurus"
+    )
+}
+
+fn models_endpoint_from_api_base_url(raw_url: &str) -> Option<String> {
+    let normalized = raw_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.ends_with("/models") {
+        return Some(normalized.to_string());
+    }
+    if let Some(prefix) = normalized.strip_suffix("/chat/completions") {
+        return Some(format!("{prefix}/models"));
+    }
+
+    let has_api_path = reqwest::Url::parse(normalized)
+        .ok()
+        .is_some_and(|url| !url.path().trim_matches('/').is_empty());
+    if has_api_path {
+        Some(format!("{normalized}/models"))
+    } else {
+        Some(format!("{normalized}/v1/models"))
+    }
+}
+
 fn resolve_live_models_endpoint(
     provider_name: &str,
     provider_api_url: Option<&str>,
@@ -1214,32 +1267,9 @@ fn resolve_live_models_endpoint(
         return Some(format!("{normalized}/models"));
     }
 
-    if matches!(
-        canonical_provider_name(provider_name),
-        "llamacpp" | "sglang" | "vllm" | "osaurus"
-    ) {
-        if let Some(url) = provider_api_url
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let normalized = url.trim_end_matches('/');
-            if normalized.ends_with("/models") {
-                return Some(normalized.to_string());
-            }
-            return Some(format!("{normalized}/models"));
-        }
-    }
-
-    if canonical_provider_name(provider_name) == "openai-codex" {
-        if let Some(url) = provider_api_url
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let normalized = url.trim_end_matches('/');
-            if normalized.ends_with("/models") {
-                return Some(normalized.to_string());
-            }
-            return Some(format!("{normalized}/models"));
+    if provider_prefers_configured_models_endpoint(provider_name) {
+        if let Some(endpoint) = provider_api_url.and_then(models_endpoint_from_api_base_url) {
+            return Some(endpoint);
         }
     }
 
@@ -1632,8 +1662,10 @@ pub async fn run_models_refresh(
     force: bool,
 ) -> Result<()> {
     let provider_name = provider_override
-        .or(config.default_provider.as_deref())
-        .unwrap_or("openrouter")
+        .map(str::to_string)
+        .or_else(|| config.default_provider.clone())
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?
         .trim()
         .to_string();
 
@@ -1734,12 +1766,14 @@ pub async fn run_models_refresh(
 
 pub async fn run_models_list(config: &Config, provider_override: Option<&str>) -> Result<()> {
     let provider_name = provider_override
-        .or(config.default_provider.as_deref())
-        .unwrap_or("openrouter");
+        .map(str::to_string)
+        .or_else(|| config.default_provider.clone())
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?;
 
     let cached = load_any_cached_models_for_provider(
         &config.workspace_dir,
-        provider_name,
+        &provider_name,
         config.api_url.as_deref(),
     )
     .await?;
@@ -1790,11 +1824,15 @@ pub async fn run_models_set(config: &Config, model: &str) -> Result<()> {
 }
 
 pub async fn run_models_status(config: &Config) -> Result<()> {
-    let provider = config.default_provider.as_deref().unwrap_or("openrouter");
+    let provider = config
+        .default_provider
+        .clone()
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?;
     let model = config.default_model.as_deref().unwrap_or("(not set)");
 
     println!();
-    println!("  Provider:  {}", style(provider).cyan());
+    println!("  Provider:  {}", style(provider.as_str()).cyan());
     println!("  Model:     {}", style(model).cyan());
     println!(
         "  Temp:      {}",
@@ -1803,7 +1841,7 @@ pub async fn run_models_status(config: &Config) -> Result<()> {
 
     match load_any_cached_models_for_provider(
         &config.workspace_dir,
-        provider,
+        &provider,
         config.api_url.as_deref(),
     )
     .await?
@@ -2178,8 +2216,11 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
 
         let model: String = Input::new()
             .with_prompt("  Model name (enter any provider model id)")
-            .default("default".into())
             .interact_text()?;
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            anyhow::bail!("Custom provider requires an explicit model id.");
+        }
 
         let provider_name = format!("custom:{base_url}");
 
@@ -2737,7 +2778,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
 
     if model_options.is_empty() {
         model_options.push((
-            default_model_for_provider(provider_name_ref),
+            default_model_for_provider(provider_name_ref)?,
             "Provider default model".to_string(),
         ));
     }
@@ -2762,7 +2803,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
     let model = if selected_model == CUSTOM_MODEL_SENTINEL {
         Input::new()
             .with_prompt("  Enter custom model ID")
-            .default(default_model_for_provider(provider_name_ref))
+            .default(default_model_for_provider(provider_name_ref)?)
             .interact_text()?
     } else {
         selected_model
@@ -5374,7 +5415,11 @@ fn print_summary(config: &Config) {
     println!(
         "    {} Provider:      {}",
         style("🤖").cyan(),
-        config.default_provider.as_deref().unwrap_or("openrouter")
+        config
+            .default_provider
+            .clone()
+            .or_else(|| bundled_default_provider().map(str::to_string))
+            .unwrap_or_else(|| "(not set)".to_string())
     );
     println!(
         "    {} Model:         {}",
@@ -5468,8 +5513,12 @@ fn print_summary(config: &Config) {
 
     let mut step = 1u8;
 
-    let provider = config.default_provider.as_deref().unwrap_or("openrouter");
-    if config.api_key.is_none() && !provider_supports_keyless_local_usage(provider) {
+    let provider = config
+        .default_provider
+        .clone()
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .unwrap_or_else(|| "(not set)".to_string());
+    if config.api_key.is_none() && !provider_supports_keyless_local_usage(&provider) {
         if provider == "openai-codex" {
             println!(
                 "    {} Authenticate OpenAI Codex:",
@@ -5496,7 +5545,7 @@ fn print_summary(config: &Config) {
                 .yellow()
             );
         } else {
-            let env_var = provider_env_var(provider);
+            let env_var = provider_env_var(&provider);
             println!(
                 "    {} Set your API key:",
                 style(format!("{step}.")).cyan().bold()
@@ -5704,7 +5753,7 @@ mod tests {
         .await
         .unwrap();
 
-        let expected = default_model_for_provider("anthropic");
+        let expected = default_model_for_provider("anthropic").unwrap();
         assert_eq!(config.default_provider.as_deref(), Some("anthropic"));
         assert_eq!(config.default_model.as_deref(), Some(expected.as_str()));
     }
@@ -6275,7 +6324,7 @@ mod tests {
         let canonical = canonical_provider_name(provider_name);
         let expected = bundled_provider_default_model(canonical)
             .unwrap_or_else(|| panic!("missing bundled default model for {canonical}"));
-        assert_eq!(default_model_for_provider(provider_name), expected);
+        assert_eq!(default_model_for_provider(provider_name).unwrap(), expected);
         assert!(
             curated_model_ids(provider_name).contains(&expected.to_string()),
             "curated models for {provider_name} should include catalog default {expected}"
@@ -6548,9 +6597,28 @@ mod tests {
         );
         assert_eq!(
             resolve_live_models_endpoint("venice", Some("http://localhost:9999/v1")),
-            Some("https://api.venice.ai/api/v1/models".to_string())
+            Some("http://localhost:9999/v1/models".to_string())
         );
         assert_eq!(resolve_live_models_endpoint("unknown-provider", None), None);
+    }
+
+    #[test]
+    fn resolve_live_models_endpoint_honors_compatible_provider_api_url() {
+        assert_eq!(
+            resolve_live_models_endpoint("deepseek", Some("https://api.deepseek.com/v1")),
+            Some("https://api.deepseek.com/v1/models".to_string())
+        );
+        assert_eq!(
+            resolve_live_models_endpoint(
+                "openai",
+                Some("https://router.example.com/openai/chat/completions")
+            ),
+            Some("https://router.example.com/openai/models".to_string())
+        );
+        assert_eq!(
+            resolve_live_models_endpoint("openrouter", Some("https://router.example.com")),
+            Some("https://router.example.com/v1/models".to_string())
+        );
     }
 
     #[test]
@@ -7000,13 +7068,6 @@ mod tests {
     #[test]
     fn provider_env_var_unknown_falls_back() {
         assert_eq!(provider_env_var("some-new-provider"), "API_KEY");
-    }
-
-    #[test]
-    fn backend_key_from_choice_always_returns_surrealdb() {
-        // Phase 4.3: SurrealDB is the only backend
-        assert_eq!(backend_key_from_choice(0), "surrealdb");
-        assert_eq!(backend_key_from_choice(999), "surrealdb");
     }
 
     // Phase 4.3: old memory backend tests removed (sqlite/lucid/markdown/none gone)

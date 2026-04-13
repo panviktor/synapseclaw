@@ -3438,7 +3438,7 @@ fn normalize_route_field(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn model_route_identity_matches(
+fn route_alias_identity_matches(
     incoming: &synapse_domain::config::schema::ModelRouteConfig,
     current: &synapse_domain::config::schema::ModelRouteConfig,
 ) -> bool {
@@ -3447,7 +3447,7 @@ fn model_route_identity_matches(
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
-fn model_route_provider_model_matches(
+fn route_alias_provider_model_matches(
     incoming: &synapse_domain::config::schema::ModelRouteConfig,
     current: &synapse_domain::config::schema::ModelRouteConfig,
 ) -> bool {
@@ -3472,7 +3472,7 @@ fn embedding_route_provider_model_matches(
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
-fn restore_model_route_api_keys(
+fn restore_route_alias_api_keys(
     incoming: &mut [synapse_domain::config::schema::ModelRouteConfig],
     current: &[synapse_domain::config::schema::ModelRouteConfig],
 ) {
@@ -3490,7 +3490,7 @@ fn restore_model_route_api_keys(
             .iter()
             .enumerate()
             .find(|(idx, current_route)| {
-                !used_current[*idx] && model_route_identity_matches(incoming_route, current_route)
+                !used_current[*idx] && route_alias_identity_matches(incoming_route, current_route)
             })
             .map(|(idx, _)| idx);
 
@@ -3500,7 +3500,7 @@ fn restore_model_route_api_keys(
                 .enumerate()
                 .find(|(idx, current_route)| {
                     !used_current[*idx]
-                        && model_route_provider_model_matches(incoming_route, current_route)
+                        && route_alias_provider_model_matches(incoming_route, current_route)
                 })
                 .map(|(idx, _)| idx)
         });
@@ -3582,7 +3582,7 @@ fn mask_sensitive_fields(
         mask_optional_secret(&mut agent.api_key);
     }
     mask_optional_secret(&mut masked.agents_ipc.broker_token);
-    for route in &mut masked.model_routes {
+    for route in &mut masked.route_aliases {
         mask_optional_secret(&mut route.api_key);
     }
     for route in &mut masked.embedding_routes {
@@ -3707,7 +3707,7 @@ fn restore_masked_sensitive_fields(
             restore_optional_secret(&mut agent.api_key, &current_agent.api_key);
         }
     }
-    restore_model_route_api_keys(&mut incoming.model_routes, &current.model_routes);
+    restore_route_alias_api_keys(&mut incoming.route_aliases, &current.route_aliases);
     restore_embedding_route_api_keys(&mut incoming.embedding_routes, &current.embedding_routes);
 
     if let (Some(incoming_ch), Some(current_ch)) = (
@@ -3898,7 +3898,7 @@ mod tests {
             allowed_senders: vec!["*".to_string()],
             default_subject: "SynapseClaw Message".to_string(),
         });
-        cfg.model_routes = vec![synapse_domain::config::schema::ModelRouteConfig {
+        cfg.route_aliases = vec![synapse_domain::config::schema::ModelRouteConfig {
             hint: "reasoning".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-sonnet-4.6".to_string(),
@@ -3968,7 +3968,7 @@ mod tests {
         );
         assert_eq!(
             parsed
-                .model_routes
+                .route_aliases
                 .first()
                 .and_then(|v| v.api_key.as_deref()),
             Some(MASKED_SECRET)
@@ -4034,7 +4034,7 @@ mod tests {
             allowed_senders: vec!["*".to_string()],
             default_subject: "SynapseClaw Message".to_string(),
         });
-        current.model_routes = vec![
+        current.route_aliases = vec![
             synapse_domain::config::schema::ModelRouteConfig {
                 hint: "reasoning".to_string(),
                 provider: "openrouter".to_string(),
@@ -4095,7 +4095,7 @@ mod tests {
         if let Some(email) = incoming.channels_config.email.as_mut() {
             email.password = MASKED_SECRET.to_string();
         }
-        incoming.model_routes[1].api_key = Some("route-model-key-2-new".to_string());
+        incoming.route_aliases[1].api_key = Some("route-model-key-2-new".to_string());
         incoming.embedding_routes[1].api_key = Some("route-embed-key-2-new".to_string());
 
         let hydrated = hydrate_config_for_save(incoming, &current);
@@ -4161,11 +4161,11 @@ mod tests {
             Some("feishu-verify-new")
         );
         assert_eq!(
-            hydrated.model_routes[0].api_key.as_deref(),
+            hydrated.route_aliases[0].api_key.as_deref(),
             Some("route-model-key-1")
         );
         assert_eq!(
-            hydrated.model_routes[1].api_key.as_deref(),
+            hydrated.route_aliases[1].api_key.as_deref(),
             Some("route-model-key-2-new")
         );
         assert_eq!(
@@ -4189,7 +4189,7 @@ mod tests {
     #[test]
     fn hydrate_config_for_save_restores_route_keys_by_identity_and_clears_unmatched_masks() {
         let mut current = synapse_domain::config::schema::Config::default();
-        current.model_routes = vec![
+        current.route_aliases = vec![
             synapse_domain::config::schema::ModelRouteConfig {
                 hint: "reasoning".to_string(),
                 provider: "openrouter".to_string(),
@@ -4229,10 +4229,10 @@ mod tests {
         ];
 
         let mut incoming = mask_sensitive_fields(&current);
-        incoming.model_routes.swap(0, 1);
+        incoming.route_aliases.swap(0, 1);
         incoming.embedding_routes.swap(0, 1);
         incoming
-            .model_routes
+            .route_aliases
             .push(synapse_domain::config::schema::ModelRouteConfig {
                 hint: "new".to_string(),
                 provider: "openai".to_string(),
@@ -4256,14 +4256,14 @@ mod tests {
         let hydrated = hydrate_config_for_save(incoming, &current);
 
         assert_eq!(
-            hydrated.model_routes[0].api_key.as_deref(),
+            hydrated.route_aliases[0].api_key.as_deref(),
             Some("route-model-key-2")
         );
         assert_eq!(
-            hydrated.model_routes[1].api_key.as_deref(),
+            hydrated.route_aliases[1].api_key.as_deref(),
             Some("route-model-key-1")
         );
-        assert_eq!(hydrated.model_routes[2].api_key, None);
+        assert_eq!(hydrated.route_aliases[2].api_key, None);
         assert_eq!(
             hydrated.embedding_routes[0].api_key.as_deref(),
             Some("route-embed-key-2")
@@ -4274,7 +4274,7 @@ mod tests {
         );
         assert_eq!(hydrated.embedding_routes[2].api_key, None);
         assert!(hydrated
-            .model_routes
+            .route_aliases
             .iter()
             .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
         assert!(hydrated

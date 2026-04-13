@@ -180,7 +180,6 @@ struct ChannelRuntimeContext {
     hooks: Option<Arc<crate::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
-    model_routes: Arc<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
     model_lanes: Arc<Vec<synapse_domain::config::schema::ModelLaneConfig>>,
     model_preset: Option<String>,
     query_classification: synapse_domain::config::schema::QueryClassificationConfig,
@@ -292,31 +291,35 @@ fn parse_runtime_command(
     )
 }
 
-fn resolved_default_provider(config: &Config) -> String {
+fn resolved_default_provider(config: &Config) -> Result<String> {
     config
         .default_provider
         .clone()
-        .unwrap_or_else(|| "openrouter".to_string())
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")
 }
 
-fn resolved_default_model(config: &Config) -> String {
-    let provider = resolved_default_provider(config);
-    config.default_model.clone().unwrap_or_else(|| {
-        synapse_domain::config::model_catalog::provider_default_model(provider.as_str())
-            .unwrap_or("default")
-            .to_string()
-    })
+fn resolved_default_model(config: &Config) -> Result<String> {
+    let provider = resolved_default_provider(config)?;
+    config
+        .default_model
+        .clone()
+        .or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider.as_str())
+                .map(str::to_string)
+        })
+        .with_context(|| format!("no default model configured for provider '{provider}'"))
 }
 
-fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
-    ChannelRuntimeDefaults {
-        default_provider: resolved_default_provider(config),
-        model: resolved_default_model(config),
+fn runtime_defaults_from_config(config: &Config) -> Result<ChannelRuntimeDefaults> {
+    Ok(ChannelRuntimeDefaults {
+        default_provider: resolved_default_provider(config)?,
+        model: resolved_default_model(config)?,
         temperature: config.default_temperature,
         api_key: config.api_key.clone(),
         api_url: config.api_url.clone(),
         reliability: config.reliability.clone(),
-    }
+    })
 }
 
 fn runtime_config_path(ctx: &ChannelRuntimeContext) -> Option<PathBuf> {
@@ -408,7 +411,7 @@ async fn load_runtime_defaults_from_config_file(path: &Path) -> Result<ChannelRu
     }
 
     parsed.apply_env_overrides();
-    Ok(runtime_defaults_from_config(&parsed))
+    runtime_defaults_from_config(&parsed)
 }
 
 fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection {
@@ -483,7 +486,6 @@ fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
     config.workspace_dir = ctx.workspace_dir.as_ref().clone();
     config.default_provider = Some(ctx.default_provider.as_ref().clone());
     config.default_model = Some(ctx.model.as_ref().clone());
-    config.model_routes = ctx.model_routes.as_ref().clone();
     config.model_lanes = ctx.model_lanes.as_ref().clone();
     config.model_preset = ctx.model_preset.clone();
     config
@@ -642,7 +644,6 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     let mut summary_config = synapse_domain::config::schema::Config::default();
     summary_config.summary = ctx.summary_config.as_ref().clone();
     summary_config.summary_model = ctx.summary_model.clone();
-    summary_config.model_routes = ctx.model_routes.as_ref().clone();
     summary_config.model_lanes = ctx.model_lanes.as_ref().clone();
     let summary_route = resolve_summary_route(&summary_config, &ctx.model);
 
@@ -974,7 +975,6 @@ async fn handle_message_via_orchestrator(
         temperature: ctx.temperature,
         max_tool_iterations: ctx.max_tool_iterations,
         auto_save_memory: ctx.auto_save_memory,
-        model_routes: ctx.model_routes.as_ref().clone(),
         model_lanes: ctx.model_lanes.as_ref().clone(),
         model_preset: ctx.model_preset.clone(),
         thread_root_max_chars: 500,
@@ -1305,7 +1305,7 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
         let provider = request.provider.unwrap_or_else(|| self.fallback_provider());
         let model = request
             .model
-            .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
+            .ok_or_else(|| anyhow::anyhow!("runtime route mutation request missing model"))?;
         let mut route = get_route_selection(self.ctx, self.conversation_key);
         route.provider = provider.clone();
         route.model = model;
@@ -2329,19 +2329,8 @@ pub async fn start_channels(
         )
     };
 
-    let provider_name = resolved_default_provider(&config);
-    let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
-        auth_profile_override: None,
-        provider_api_url: config.api_url.clone(),
-        synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
-        secrets_encrypt: config.secrets.encrypt,
-        reasoning_enabled: config.runtime.reasoning_enabled,
-        reasoning_effort: config.runtime.reasoning_effort.clone(),
-        provider_timeout_secs: Some(config.provider_timeout_secs),
-        extra_headers: config.extra_headers.clone(),
-        api_path: config.api_path.clone(),
-        prompt_caching: config.agent.prompt_caching,
-    };
+    let provider_name = resolved_default_provider(&config)?;
+    let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
     let provider: Arc<dyn Provider> = Arc::from(
         create_resilient_provider_nonblocking(
             &provider_name,
@@ -2367,7 +2356,7 @@ pub async fn start_channels(
         store.insert(
             config.config_path.clone(),
             RuntimeConfigState {
-                defaults: runtime_defaults_from_config(&config),
+                defaults: runtime_defaults_from_config(&config)?,
                 last_applied_stamp: initial_stamp,
             },
         );
@@ -2382,7 +2371,7 @@ pub async fn start_channels(
         &config.autonomy,
         &config.workspace_dir,
     ));
-    let model = resolved_default_model(&config);
+    let model = resolved_default_model(&config)?;
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
@@ -2953,7 +2942,6 @@ pub async fn start_channels(
         },
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
         tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
-        model_routes: Arc::new(config.model_routes.clone()),
         model_lanes: Arc::new(config.model_lanes.clone()),
         model_preset: config.model_preset.clone(),
         query_classification: config.query_classification.clone(),
@@ -3030,12 +3018,9 @@ pub async fn start_channels(
 mod tests {
     use super::*;
     use crate::channel_runtime_support::spawn_supervised_listener_with_health_interval;
-    use crate::runtime_history_hygiene::{
-        normalize_cached_channel_turns, proactive_trim_turns, strip_tool_result_content,
-    };
+    use crate::runtime_history_hygiene::{normalize_cached_channel_turns, proactive_trim_turns};
     use crate::runtime_system_prompt::BOOTSTRAP_MAX_CHARS;
-    use crate::runtime_tool_artifacts::strip_isolated_tool_json_artifacts;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
@@ -3154,26 +3139,6 @@ mod tests {
             MIN_CHANNEL_MESSAGE_TIMEOUT_SECS
         );
         assert_eq!(effective_channel_message_timeout_secs(300), 300);
-    }
-
-    #[test]
-    fn strip_tool_result_content_removes_blocks_and_header() {
-        let input = r#"[Tool results]
-<tool_result name="shell">Mon Feb 20</tool_result>
-<tool_result name="http_request">{"status":200}</tool_result>"#;
-        assert_eq!(strip_tool_result_content(input), "");
-
-        let mixed = "Some context\n<tool_result name=\"shell\">ok</tool_result>\nMore text";
-        let cleaned = strip_tool_result_content(mixed);
-        assert!(cleaned.contains("Some context"));
-        assert!(cleaned.contains("More text"));
-        assert!(!cleaned.contains("tool_result"));
-
-        assert_eq!(
-            strip_tool_result_content("no tool results here"),
-            "no tool results here"
-        );
-        assert_eq!(strip_tool_result_content(""), "");
     }
 
     #[test]
@@ -3339,7 +3304,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -3456,16 +3420,19 @@ mod tests {
         );
         ctx.default_provider = Arc::new("openrouter".to_string());
         ctx.model = Arc::new("large-model".to_string());
-        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
-            hint: "tiny".to_string(),
-            capability: None,
-            provider: "openrouter".to_string(),
-            model: "tiny-model".to_string(),
-            api_key: None,
-            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
-                context_window_tokens: Some(1_000),
-                ..Default::default()
-            },
+        ctx.model_lanes = Arc::new(vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                provider: "openrouter".to_string(),
+                model: "tiny-model".to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                    context_window_tokens: Some(1_000),
+                    ..Default::default()
+                },
+            }],
         }]);
         ctx.conversation_histories.lock().unwrap().insert(
             "sender".to_string(),
@@ -3476,7 +3443,8 @@ mod tests {
             &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
                 model: "tiny-model".to_string(),
                 inferred_provider: Some("openrouter".to_string()),
-                lane: None,
+                lane: Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             },
             &ctx,
@@ -3496,16 +3464,19 @@ mod tests {
         );
         ctx.default_provider = Arc::new("openrouter".to_string());
         ctx.model = Arc::new("large-model".to_string());
-        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
-            hint: "compact".to_string(),
-            capability: None,
-            provider: "openrouter".to_string(),
-            model: "compact-model".to_string(),
-            api_key: None,
-            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
-                context_window_tokens: Some(8_000),
-                ..Default::default()
-            },
+        ctx.model_lanes = Arc::new(vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                provider: "openrouter".to_string(),
+                model: "compact-model".to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                    context_window_tokens: Some(8_000),
+                    ..Default::default()
+                },
+            }],
         }]);
         ctx.conversation_histories.lock().unwrap().insert(
             "sender".to_string(),
@@ -3518,7 +3489,8 @@ mod tests {
             &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
                 model: "compact-model".to_string(),
                 inferred_provider: Some("openrouter".to_string()),
-                lane: None,
+                lane: Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             },
             &ctx,
@@ -3531,7 +3503,7 @@ mod tests {
             synapse_domain::application::services::runtime_command_presentation::format_switch_model_success(
                 "compact-model",
                 "openrouter",
-                None,
+                Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
                 true,
                 &synapse_domain::application::services::runtime_command_presentation::RuntimeCommandPresentationOptions::new("openrouter"),
             )
@@ -3545,6 +3517,11 @@ mod tests {
             .expect("route set");
         assert_eq!(route.provider, "openrouter");
         assert_eq!(route.model, "compact-model");
+        assert_eq!(
+            route.lane,
+            Some(synapse_domain::config::schema::CapabilityLane::Reasoning)
+        );
+        assert_eq!(route.candidate_index, Some(0));
         assert_eq!(
             ctx.conversation_histories
                 .lock()
@@ -3838,7 +3815,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -3954,7 +3930,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -4102,7 +4077,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -4213,7 +4187,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -4691,42 +4664,6 @@ mod tests {
         let emitted = rx.try_recv().expect("observer should emit notify message");
         assert!(emitted.contains("`file_write`"));
         assert!(emitted.is_char_boundary(emitted.len()));
-    }
-
-    #[test]
-    fn strip_isolated_tool_json_artifacts_removes_tool_calls_and_results() {
-        let mut known_tools = HashSet::new();
-        known_tools.insert("schedule".to_string());
-
-        let input = r#"{"name":"schedule","arguments":{"action":"create","message":"test"}}
-{"name":"schedule","arguments":{"action":"cancel","task_id":"test"}}
-Let me create the reminder properly:
-{"name":"schedule","arguments":{"action":"create","message":"Go to sleep"}}
-{"result":{"task_id":"abc","status":"scheduled"}}
-Done reminder set for 1:38 AM."#;
-
-        let result = strip_isolated_tool_json_artifacts(input, &known_tools);
-        let normalized = result
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            normalized,
-            "Let me create the reminder properly:\nDone reminder set for 1:38 AM."
-        );
-    }
-
-    #[test]
-    fn strip_isolated_tool_json_artifacts_preserves_non_tool_json() {
-        let mut known_tools = HashSet::new();
-        known_tools.insert("shell".to_string());
-
-        let input = r#"{"name":"profile","arguments":{"display_mode":"compact"}}
-This is an example JSON object for profile settings."#;
-
-        let result = strip_isolated_tool_json_artifacts(input, &known_tools);
-        assert_eq!(result, input);
     }
 
     // ── AIEOS Identity Tests (Issue #168) ─────────────────────────

@@ -7,6 +7,7 @@ use directories::UserDirs;
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use synapse_domain::config::model_catalog;
 use synapse_domain::config::provider_aliases::{is_glm_alias, is_zai_alias};
 use synapse_domain::config::schema::*;
 use synapse_security::DomainMatcher;
@@ -1102,16 +1103,16 @@ impl ConfigIO for Config {
             anyhow::bail!("scheduler.max_tasks must be greater than 0");
         }
 
-        // Model routes
-        for (i, route) in self.model_routes.iter().enumerate() {
+        // Route aliases
+        for (i, route) in self.route_aliases.iter().enumerate() {
             if route.hint.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].hint must not be empty");
+                anyhow::bail!("route_aliases[{i}].hint must not be empty");
             }
             if route.provider.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].provider must not be empty");
+                anyhow::bail!("route_aliases[{i}].provider must not be empty");
             }
             if route.model.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].model must not be empty");
+                anyhow::bail!("route_aliases[{i}].model must not be empty");
             }
         }
 
@@ -1425,7 +1426,12 @@ impl ConfigIO for Config {
             let should_apply_legacy_provider = self
                 .default_provider
                 .as_deref()
-                .is_none_or(|configured| configured.trim().eq_ignore_ascii_case("openrouter"));
+                .map(str::trim)
+                .filter(|configured| !configured.is_empty())
+                .is_none_or(|configured| {
+                    model_catalog::default_provider()
+                        .is_some_and(|default| configured.eq_ignore_ascii_case(default))
+                });
             if should_apply_legacy_provider && !provider.is_empty() {
                 self.default_provider = Some(provider);
             }

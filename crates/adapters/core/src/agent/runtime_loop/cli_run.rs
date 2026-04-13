@@ -3,6 +3,7 @@
 #[allow(unused_imports)]
 use super::tool_execution::{agent_turn, is_tool_loop_cancelled};
 use super::*;
+use anyhow::Context;
 
 #[allow(clippy::too_many_lines)]
 pub async fn run(
@@ -270,26 +271,31 @@ pub async fn run_with_shared_memory(
 
     // ── Resolve provider ─────────────────────────────────────────
     let provider_name = provider_override
-        .as_deref()
-        .or(config.default_provider.as_deref())
-        .unwrap_or("openrouter");
+        .clone()
+        .or_else(|| config.default_provider.clone())
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")?;
 
     let model_name = model_override
         .as_deref()
         .or(config.default_model.as_deref())
-        .unwrap_or_else(|| {
-            synapse_domain::config::model_catalog::provider_default_model(provider_name)
-                .unwrap_or("default")
-        });
+        .or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider_name.as_str())
+        })
+        .with_context(|| format!("no default model configured for provider '{provider_name}'"))?;
 
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
 
     let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
-        provider_name,
+        &provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),
         &config.reliability,
-        &config.model_routes,
+        &router_routes,
         model_name,
         &provider_runtime_options,
     )?;
@@ -477,7 +483,7 @@ pub async fn run_with_shared_memory(
             &mut history,
             &tools_registry,
             observer.as_ref(),
-            provider_name,
+            &provider_name,
             model_name,
             temperature,
             false,
@@ -638,7 +644,7 @@ pub async fn run_with_shared_memory(
                 &mut history,
                 &tools_registry,
                 observer.as_ref(),
-                provider_name,
+                &provider_name,
                 model_name,
                 temperature,
                 false,
@@ -839,19 +845,30 @@ pub async fn process_message(
         }
     }
 
-    let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
-    let model_name = config.default_model.clone().unwrap_or_else(|| {
-        synapse_domain::config::model_catalog::provider_default_model(provider_name)
-            .unwrap_or("default")
-            .to_string()
-    });
+    let provider_name = config
+        .default_provider
+        .clone()
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")?;
+    let model_name = config
+        .default_model
+        .clone()
+        .or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider_name.as_str())
+                .map(str::to_string)
+        })
+        .with_context(|| format!("no default model configured for provider '{provider_name}'"))?;
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
     let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
-        provider_name,
+        &provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),
         &config.reliability,
-        &config.model_routes,
+        &router_routes,
         &model_name,
         &provider_runtime_options,
     )?;
@@ -932,7 +949,7 @@ pub async fn process_message(
         &mut history,
         &tools_registry,
         observer.as_ref(),
-        provider_name,
+        &provider_name,
         &model_name,
         config.default_temperature,
         true,

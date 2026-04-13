@@ -16,10 +16,11 @@ pub struct QueryClassificationConfig {
     pub rules: Vec<ClassificationRule>,
 }
 
-/// A single classification rule mapping message patterns to a model hint.
+/// A single classification rule mapping message patterns to a capability-lane
+/// selector or catalog alias.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct ClassificationRule {
-    /// Must match a `[[model_routes]]` hint value.
+    /// Selector resolved by the shared route resolver.
     pub hint: String,
     /// Case-insensitive substring matches.
     #[serde(default)]

@@ -245,6 +245,10 @@ pub fn format_execution_guidance(guidance: &ExecutionGuidance) -> Option<String>
             "- mutate_state_only_when_user_explicitly_requests_memory_or_profile_change: true"
                 .to_string(),
         );
+        lines.push("- preserve_resolved_scalar_values_verbatim: true".to_string());
+        lines.push(
+            "- do_not_typographically_rewrite_ids_urls_paths_branches_or_codes: true".to_string(),
+        );
     }
     if guidance.direct_resolution_ready
         && guidance
@@ -669,6 +673,29 @@ mod tests {
         assert!(block.contains("message_send_requires_content_only_when_target_is_resolved: true"));
         assert!(block.contains("avoid_delegate_delivery_when_target_is_resolved: true"));
         assert!(block.contains("avoid_workspace_discovery: true"));
+    }
+
+    #[test]
+    fn formats_resolved_state_literal_fidelity_guidance() {
+        let block = format_execution_guidance(&ExecutionGuidance {
+            resolved_from: Some(ResolutionSource::DialogueState),
+            direct_resolution_ready: true,
+            preferred_capabilities: Vec::new(),
+            recent_failure_hints: Vec::new(),
+            recent_admission_hint: None,
+            prefer_answer_from_resolved_state: true,
+            avoid_session_history_lookup: true,
+            avoid_run_recipe_lookup: true,
+            avoid_workspace_discovery: true,
+            avoid_bootstrap_doc_reads: true,
+        })
+        .unwrap();
+
+        assert!(block.contains("prefer_answer_from_resolved_state: true"));
+        assert!(block.contains("preserve_resolved_scalar_values_verbatim: true"));
+        assert!(
+            block.contains("do_not_typographically_rewrite_ids_urls_paths_branches_or_codes: true")
+        );
     }
 
     fn profile_with_facts(facts: &[(&str, serde_json::Value)]) -> UserProfile {
