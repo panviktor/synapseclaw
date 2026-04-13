@@ -7,12 +7,10 @@
 //!
 //! Ref: https://github.com/panviktor/synapseclaw/issues/618 (item 6)
 
-use crate::support::helpers::{
-    build_agent, build_agent_xml, build_recording_agent, text_response, tool_response,
-};
+use crate::support::helpers::{build_agent, build_recording_agent, text_response, tool_response};
 use crate::support::{CountingTool, EchoTool, MockProvider, RecordingProvider};
 use synapseclaw::providers::traits::ChatMessage;
-use synapseclaw::providers::{ChatResponse, ConversationMessage, ToolCall};
+use synapseclaw::providers::{ConversationMessage, ToolCall};
 
 // ═════════════════════════════════════════════════════════════════════════════
 // E2E smoke tests — full agent turn cycle
@@ -76,32 +74,6 @@ async fn e2e_multi_step_tool_chain() {
         "Expected non-empty response after tool chain"
     );
     assert_eq!(*count.lock().unwrap(), 2);
-}
-
-/// Validates that the XML dispatcher path also works end-to-end.
-#[tokio::test]
-async fn e2e_xml_dispatcher_tool_call() {
-    let provider = Box::new(MockProvider::new(vec![
-        ChatResponse {
-            text: Some(
-                r#"<tool_call>
-{"name": "echo", "arguments": {"message": "xml dispatch"}}
-</tool_call>"#
-                    .into(),
-            ),
-            tool_calls: vec![],
-            usage: None,
-            reasoning_content: None,
-        },
-        text_response("XML tool executed"),
-    ]));
-
-    let mut agent = build_agent_xml(provider, vec![Box::new(EchoTool)]);
-    let response = agent.turn("test xml dispatch").await.unwrap();
-    assert!(
-        !response.is_empty(),
-        "Expected non-empty response from XML dispatcher"
-    );
 }
 
 /// Validates that multiple sequential turns maintain conversation coherence.

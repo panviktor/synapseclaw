@@ -1730,6 +1730,7 @@ mod tests {
             wati: None,
             observer: std::sync::Arc::new(synapse_observability::NoopObserver),
             tools_registry: std::sync::Arc::new(Vec::new()),
+            runtime_tools_registry: std::sync::Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
             dialogue_state_store: std::sync::Arc::new(
@@ -1799,6 +1800,15 @@ mod tests {
             ),
             admin_cidrs: std::sync::Arc::new(vec![]),
             chat_sessions: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            web_conversation_histories: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            web_route_overrides: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            provider_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
             chat_db: None,

@@ -35,6 +35,14 @@ pub struct ContextLimitProfileObservation {
     pub requested_context_tokens: Option<usize>,
 }
 
+/// Typed provider:model profile metadata discovered outside the static catalog.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelProfileObservation {
+    pub context_window_tokens: Option<usize>,
+    pub max_output_tokens: Option<usize>,
+    pub features: Vec<ModelFeature>,
+}
+
 /// Port for best-effort provider:model profile lookup.
 ///
 /// Adapters can implement this using cached provider catalogs, live model
@@ -42,6 +50,13 @@ pub struct ContextLimitProfileObservation {
 /// where the metadata came from.
 pub trait ModelProfileCatalogPort: Send + Sync {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile>;
+
+    fn record_model_profile_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ModelProfileObservation,
+    ) -> Result<()>;
 
     fn record_context_limit_observation(
         &self,

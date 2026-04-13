@@ -231,6 +231,7 @@ impl Provider for ClaudeCodeProvider {
             tool_calls: Vec::new(),
             usage: Some(TokenUsage::default()),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 }

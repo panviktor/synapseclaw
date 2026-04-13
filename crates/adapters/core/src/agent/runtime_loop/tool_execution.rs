@@ -13,7 +13,9 @@ use synapse_domain::application::services::model_lane_resolution::ResolvedModelP
 use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
-use synapse_domain::ports::provider::{ProviderCapabilities, ProviderCapabilityRequirement};
+use synapse_domain::ports::provider::{
+    MediaArtifact, ProviderCapabilities, ProviderCapabilityRequirement,
+};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -115,6 +117,7 @@ pub(crate) struct ToolLoopResult {
     pub(crate) tool_facts: Vec<TypedToolFact>,
     pub(crate) last_tool_repair: Option<ToolRepairTrace>,
     pub(crate) tool_repairs: Vec<ToolRepairTrace>,
+    pub(crate) media_artifacts: Vec<MediaArtifact>,
 }
 
 fn collect_tool_facts(
@@ -500,6 +503,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut collected_tool_names = Vec::<String>::new();
     let mut last_tool_repair = None::<ToolRepairTrace>;
     let mut collected_tool_repairs = Vec::<ToolRepairTrace>::new();
+    let mut collected_media_artifacts = Vec::<MediaArtifact>::new();
 
     tracing::info!(
         model,
@@ -622,115 +626,122 @@ pub(crate) async fn run_tool_call_loop(
             chat_future.await
         };
 
-        let (response_text, tool_calls, assistant_history_content, native_tool_calls) =
-            match chat_result {
-                Ok(resp) => {
-                    let (resp_input_tokens, resp_output_tokens) = resp
-                        .usage
-                        .as_ref()
-                        .map(|u| (u.input_tokens, u.output_tokens))
-                        .unwrap_or((None, None));
+        let (
+            response_text,
+            tool_calls,
+            assistant_history_content,
+            native_tool_calls,
+            response_media_artifacts,
+        ) = match chat_result {
+            Ok(resp) => {
+                let (resp_input_tokens, resp_output_tokens) = resp
+                    .usage
+                    .as_ref()
+                    .map(|u| (u.input_tokens, u.output_tokens))
+                    .unwrap_or((None, None));
 
-                    observer.record_event(&ObserverEvent::LlmResponse {
-                        provider: provider_name.to_string(),
-                        model: model.to_string(),
-                        duration: llm_started_at.elapsed(),
-                        success: true,
-                        error_message: None,
-                        input_tokens: resp_input_tokens,
-                        output_tokens: resp_output_tokens,
-                    });
+                observer.record_event(&ObserverEvent::LlmResponse {
+                    provider: provider_name.to_string(),
+                    model: model.to_string(),
+                    duration: llm_started_at.elapsed(),
+                    success: true,
+                    error_message: None,
+                    input_tokens: resp_input_tokens,
+                    output_tokens: resp_output_tokens,
+                });
 
-                    let response_text = resp.text_or_empty().to_string();
-                    let calls = parse_structured_tool_calls(&resp.tool_calls)?;
+                let response_text = resp.text_or_empty().to_string();
+                let calls = parse_structured_tool_calls(&resp.tool_calls)?;
 
-                    if let Some(parse_issue) = detect_tool_call_parse_issue(&response_text, &calls)
-                    {
-                        runtime_trace::record_event(
-                            "tool_call_parse_issue",
-                            Some(channel_name),
-                            Some(provider_name),
-                            Some(model),
-                            Some(&turn_id),
-                            Some(false),
-                            Some(&parse_issue),
-                            serde_json::json!({
-                                "iteration": iteration + 1,
-                                "response_excerpt": truncate_with_ellipsis(
-                                    &scrub_credentials(&response_text),
-                                    600
-                                ),
-                            }),
-                        );
-                    }
-
+                if let Some(parse_issue) = detect_tool_call_parse_issue(&response_text, &calls) {
                     runtime_trace::record_event(
-                        "llm_response",
-                        Some(channel_name),
-                        Some(provider_name),
-                        Some(model),
-                        Some(&turn_id),
-                        Some(true),
-                        None,
-                        serde_json::json!({
-                            "iteration": iteration + 1,
-                            "duration_ms": llm_started_at.elapsed().as_millis(),
-                            "input_tokens": resp_input_tokens,
-                            "output_tokens": resp_output_tokens,
-                            "raw_response": scrub_credentials(&response_text),
-                            "native_tool_calls": resp.tool_calls.len(),
-                            "parsed_tool_calls": calls.len(),
-                        }),
-                    );
-
-                    // Preserve native tool call IDs in assistant history so role=tool
-                    // follow-up messages can reference the exact call id.
-                    let reasoning_content = resp.reasoning_content.clone();
-                    let assistant_history_content = if resp.tool_calls.is_empty() {
-                        response_text.clone()
-                    } else {
-                        build_native_assistant_history(
-                            &response_text,
-                            &resp.tool_calls,
-                            reasoning_content.as_deref(),
-                        )
-                    };
-
-                    let native_calls = resp.tool_calls;
-                    (
-                        response_text,
-                        calls,
-                        assistant_history_content,
-                        native_calls,
-                    )
-                }
-                Err(e) => {
-                    let safe_error = synapse_providers::sanitize_api_error(&e.to_string());
-                    observer.record_event(&ObserverEvent::LlmResponse {
-                        provider: provider_name.to_string(),
-                        model: model.to_string(),
-                        duration: llm_started_at.elapsed(),
-                        success: false,
-                        error_message: Some(safe_error.clone()),
-                        input_tokens: None,
-                        output_tokens: None,
-                    });
-                    runtime_trace::record_event(
-                        "llm_response",
+                        "tool_call_parse_issue",
                         Some(channel_name),
                         Some(provider_name),
                         Some(model),
                         Some(&turn_id),
                         Some(false),
-                        Some(&safe_error),
+                        Some(&parse_issue),
                         serde_json::json!({
                             "iteration": iteration + 1,
-                            "duration_ms": llm_started_at.elapsed().as_millis(),
+                            "response_excerpt": truncate_with_ellipsis(
+                                &scrub_credentials(&response_text),
+                                600
+                            ),
                         }),
                     );
-                    return Err(e);
                 }
-            };
+
+                runtime_trace::record_event(
+                    "llm_response",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(model),
+                    Some(&turn_id),
+                    Some(true),
+                    None,
+                    serde_json::json!({
+                        "iteration": iteration + 1,
+                        "duration_ms": llm_started_at.elapsed().as_millis(),
+                        "input_tokens": resp_input_tokens,
+                        "output_tokens": resp_output_tokens,
+                        "raw_response": scrub_credentials(&response_text),
+                        "native_tool_calls": resp.tool_calls.len(),
+                        "parsed_tool_calls": calls.len(),
+                    }),
+                );
+
+                // Preserve native tool call IDs in assistant history so role=tool
+                // follow-up messages can reference the exact call id.
+                let reasoning_content = resp.reasoning_content.clone();
+                let media_artifacts = resp.media_artifacts.clone();
+                let assistant_history_content = if resp.tool_calls.is_empty() {
+                    response_text.clone()
+                } else {
+                    build_native_assistant_history(
+                        &response_text,
+                        &resp.tool_calls,
+                        reasoning_content.as_deref(),
+                    )
+                };
+
+                let native_calls = resp.tool_calls;
+                (
+                    response_text,
+                    calls,
+                    assistant_history_content,
+                    native_calls,
+                    media_artifacts,
+                )
+            }
+            Err(e) => {
+                let safe_error = synapse_providers::sanitize_api_error(&e.to_string());
+                observer.record_event(&ObserverEvent::LlmResponse {
+                    provider: provider_name.to_string(),
+                    model: model.to_string(),
+                    duration: llm_started_at.elapsed(),
+                    success: false,
+                    error_message: Some(safe_error.clone()),
+                    input_tokens: None,
+                    output_tokens: None,
+                });
+                runtime_trace::record_event(
+                    "llm_response",
+                    Some(channel_name),
+                    Some(provider_name),
+                    Some(model),
+                    Some(&turn_id),
+                    Some(false),
+                    Some(&safe_error),
+                    serde_json::json!({
+                        "iteration": iteration + 1,
+                        "duration_ms": llm_started_at.elapsed().as_millis(),
+                    }),
+                );
+                return Err(e);
+            }
+        };
+        collected_media_artifacts.extend(response_media_artifacts);
 
         let display_text = if tool_calls.is_empty() {
             response_text.clone()
@@ -807,6 +818,7 @@ pub(crate) async fn run_tool_call_loop(
                 tool_facts: collected_tool_facts,
                 last_tool_repair,
                 tool_repairs: collected_tool_repairs,
+                media_artifacts: collected_media_artifacts,
             });
         }
 
@@ -1201,6 +1213,7 @@ pub(crate) async fn run_tool_call_loop(
                     tool_facts: collected_tool_facts,
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
+                    media_artifacts: collected_media_artifacts,
                 });
             }
             LoopAction::ForceStop => {
@@ -1217,6 +1230,7 @@ pub(crate) async fn run_tool_call_loop(
                     tool_facts: collected_tool_facts,
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
+                    media_artifacts: collected_media_artifacts,
                 });
             }
         }

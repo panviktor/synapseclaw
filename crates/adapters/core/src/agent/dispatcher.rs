@@ -113,6 +113,7 @@ impl ToolDispatcher for NativeToolDispatcher {
                     text,
                     tool_calls,
                     reasoning_content,
+                    media_artifacts: _,
                 } => {
                     let mut payload = serde_json::json!({
                         "content": text,
@@ -159,6 +160,7 @@ mod tests {
             }],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
         let dispatcher = NativeToolDispatcher;
         let (_, calls) = dispatcher.parse_response(&response).unwrap();
@@ -194,7 +196,8 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
-        };
+                    media_artifacts: Vec::new(),
+};
         let dispatcher = NativeToolDispatcher;
         let (text, calls) = dispatcher.parse_response(&response).unwrap();
         assert_eq!(
@@ -215,6 +218,7 @@ mod tests {
             }],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
         let dispatcher = NativeToolDispatcher;
 
@@ -312,6 +316,7 @@ mod tests {
                 arguments: "{}".into(),
             }],
             reasoning_content: Some("thinking step".into()),
+            media_artifacts: Vec::new(),
         }];
 
         let messages = dispatcher.to_provider_messages(&history);
@@ -335,6 +340,7 @@ mod tests {
                 arguments: "{}".into(),
             }],
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         }];
 
         let messages = dispatcher.to_provider_messages(&history);

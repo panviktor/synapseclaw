@@ -10,6 +10,7 @@ pub mod channel;
 pub mod channel_output;
 pub mod channel_registry;
 pub mod coding_worker;
+pub mod context_engine;
 pub mod conversation_context;
 pub mod conversation_history;
 pub mod conversation_store;

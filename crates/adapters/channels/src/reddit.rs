@@ -225,6 +225,7 @@ impl RedditChannel {
             channel: "reddit".to_string(),
             timestamp,
             thread_ts: item.parent_id.clone(),
+            media_attachments: Vec::new(),
         })
     }
 }

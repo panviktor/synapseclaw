@@ -472,6 +472,15 @@ mod tests {
             }
             None
         }
+
+        fn record_model_profile_observation(
+            &self,
+            _provider: &str,
+            _model: &str,
+            _observation: crate::ports::model_profile_catalog::ModelProfileObservation,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn base_config() -> Config {

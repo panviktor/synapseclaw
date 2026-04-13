@@ -5,6 +5,7 @@
 //! adapters translate, infrastructure executes.
 
 pub mod approval_service;
+pub mod assistant_output_presentation;
 pub mod bootstrap_core_memory;
 pub mod channel_presentation;
 pub mod clarification_policy;
@@ -78,3 +79,4 @@ pub mod turn_markup;
 pub mod turn_model_routing;
 pub mod turn_tool_narrowing;
 pub mod user_profile_service;
+pub mod media_artifact_delivery;

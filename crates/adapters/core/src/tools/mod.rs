@@ -6,14 +6,14 @@
 //! `execute` method returning a structured [`ToolResult`].
 //!
 //! Tools are assembled into registries by [`default_tools`] (shell, file read/write)
-//! and [`all_tools`] (full set including memory, browser, cron, HTTP, delegation,
-//! and optional integrations). Security policy enforcement is injected via
+//! and [`RuntimeToolRegistryFactory`] (full runtime set including memory, browser,
+//! cron, HTTP, delegation, and optional integrations). Security policy enforcement is injected via
 //! [`SecurityPolicy`](synapse_domain::domain::security_policy::SecurityPolicy) at construction time.
 //!
 //! # Extension
 //!
 //! To add a new tool, implement [`Tool`] in a new submodule and register it in
-//! [`all_tools_with_runtime`]. See `AGENTS.md` §7.3 for the full change playbook.
+//! [`RuntimeToolRegistryFactory`]. See `AGENTS.md` §7.3 for the full change playbook.
 
 // ── Re-exports from synapse_tools crate ──
 pub use synapse_tools::*;
@@ -128,6 +128,80 @@ fn boxed_registry_from_arcs(tools: Vec<Arc<dyn Tool>>) -> Vec<Box<dyn Tool>> {
     tools.into_iter().map(ArcDelegatingTool::boxed).collect()
 }
 
+pub struct McpToolRegistration {
+    pub deferred_section: String,
+    pub activated_tools: Option<Arc<std::sync::Mutex<ActivatedToolSet>>>,
+}
+
+/// Register configured MCP tools into an existing runtime tool registry.
+///
+/// This helper is shared by gateway/web and channel startup so both transports
+/// expose the same provider-facing MCP/tool_search surface.
+pub async fn register_configured_mcp_tools(
+    config: &Config,
+    tools: &mut Vec<Box<dyn Tool>>,
+    delegate_handle: Option<&DelegateParentToolsHandle>,
+) -> McpToolRegistration {
+    let mut registration = McpToolRegistration {
+        deferred_section: String::new(),
+        activated_tools: None,
+    };
+
+    if !config.mcp.enabled || config.mcp.servers.is_empty() {
+        return registration;
+    }
+
+    tracing::info!(
+        "Initializing MCP client — {} server(s) configured",
+        config.mcp.servers.len()
+    );
+    match McpRegistry::connect_all(&config.mcp.servers).await {
+        Ok(registry) => {
+            let registry = Arc::new(registry);
+            if config.mcp.deferred_loading {
+                let deferred_set = DeferredMcpToolSet::from_registry(Arc::clone(&registry)).await;
+                tracing::info!(
+                    "MCP deferred: {} tool stub(s) from {} server(s)",
+                    deferred_set.len(),
+                    registry.server_count()
+                );
+                registration.deferred_section =
+                    synapse_mcp::mcp_deferred::build_deferred_tools_section(&deferred_set);
+                let activated = Arc::new(std::sync::Mutex::new(ActivatedToolSet::new()));
+                tools.push(Box::new(ToolSearchTool::new(
+                    deferred_set,
+                    Arc::clone(&activated),
+                )));
+                registration.activated_tools = Some(activated);
+            } else {
+                let names = registry.tool_names();
+                let mut registered = 0usize;
+                for name in names {
+                    if let Some(def) = registry.get_tool_def(&name).await {
+                        let wrapper: Arc<dyn Tool> =
+                            Arc::new(McpToolWrapper::new(name, def, Arc::clone(&registry)));
+                        if let Some(handle) = delegate_handle {
+                            handle.write().push(Arc::clone(&wrapper));
+                        }
+                        tools.push(Box::new(ArcToolRef(wrapper)));
+                        registered += 1;
+                    }
+                }
+                tracing::info!(
+                    "MCP: {} tool(s) registered from {} server(s)",
+                    registered,
+                    registry.server_count()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!("MCP registry failed to initialize: {e:#}");
+        }
+    }
+
+    registration
+}
+
 /// Create the default tool registry
 pub fn default_tools(security: Arc<SecurityPolicy>) -> Vec<Box<dyn Tool>> {
     default_tools_with_runtime(security, Arc::new(NativeRuntime::new()))
@@ -148,57 +222,83 @@ pub fn default_tools_with_runtime(
     ]
 }
 
-/// Create full tool registry including memory tools and optional Composio
-#[allow(
-    clippy::implicit_hasher,
-    clippy::too_many_arguments,
-    clippy::type_complexity
-)]
-pub fn all_tools(
-    config: Arc<Config>,
-    security: &Arc<SecurityPolicy>,
-    memory: Arc<dyn UnifiedMemoryPort>,
-    composio_key: Option<&str>,
-    composio_entity_id: Option<&str>,
-    browser_config: &synapse_domain::config::schema::BrowserConfig,
-    http_config: &synapse_domain::config::schema::HttpRequestConfig,
-    web_fetch_config: &synapse_domain::config::schema::WebFetchConfig,
-    workspace_dir: &std::path::Path,
-    agents: &HashMap<String, DelegateAgentConfig>,
-    fallback_api_key: Option<&str>,
-    root_config: &synapse_domain::config::schema::Config,
-    shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
-) -> (
-    Vec<Box<dyn Tool>>,
-    Option<DelegateParentToolsHandle>,
-    Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
-) {
-    all_tools_with_runtime(
-        config,
-        security,
-        Arc::new(NativeRuntime::new()),
-        memory,
-        composio_key,
-        composio_entity_id,
-        browser_config,
-        http_config,
-        web_fetch_config,
-        workspace_dir,
-        agents,
-        fallback_api_key,
-        root_config,
-        shared_ipc_client,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+#[derive(Clone, Default)]
+pub struct RuntimeToolPorts {
+    pub shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    pub agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
+    pub cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
+    pub conversation_context:
+        Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
+    pub conversation_store:
+        Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
+    pub channel_registry:
+        Option<Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort>>,
+    pub standing_order_store:
+        Option<Arc<dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort>>,
+    pub user_profile_store:
+        Option<Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>>,
+    pub user_profile_context:
+        Option<Arc<dyn synapse_domain::ports::user_profile_context::UserProfileContextPort>>,
+    pub turn_defaults_context:
+        Option<Arc<dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort>>,
+    pub run_recipe_store:
+        Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
+}
+
+pub struct RuntimeToolRegistryInputs<'a> {
+    pub config: Arc<Config>,
+    pub security: &'a Arc<SecurityPolicy>,
+    pub runtime: Arc<dyn RuntimeAdapter>,
+    pub memory: Arc<dyn UnifiedMemoryPort>,
+    pub composio_key: Option<&'a str>,
+    pub composio_entity_id: Option<&'a str>,
+    pub browser_config: &'a synapse_domain::config::schema::BrowserConfig,
+    pub http_config: &'a synapse_domain::config::schema::HttpRequestConfig,
+    pub web_fetch_config: &'a synapse_domain::config::schema::WebFetchConfig,
+    pub workspace_dir: &'a std::path::Path,
+    pub agents: &'a HashMap<String, DelegateAgentConfig>,
+    pub default_api_key: Option<&'a str>,
+    pub root_config: &'a synapse_domain::config::schema::Config,
+}
+
+pub struct RuntimeToolRegistryFactory;
+
+impl RuntimeToolRegistryFactory {
+    pub fn build(
+        inputs: RuntimeToolRegistryInputs<'_>,
+        ports: RuntimeToolPorts,
+    ) -> (
+        Vec<Box<dyn Tool>>,
+        Option<DelegateParentToolsHandle>,
+        Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    ) {
+        build_runtime_tool_registry(
+            inputs.config,
+            inputs.security,
+            inputs.runtime,
+            inputs.memory,
+            inputs.composio_key,
+            inputs.composio_entity_id,
+            inputs.browser_config,
+            inputs.http_config,
+            inputs.web_fetch_config,
+            inputs.workspace_dir,
+            inputs.agents,
+            inputs.default_api_key,
+            inputs.root_config,
+            ports.shared_ipc_client,
+            ports.agent_runner,
+            ports.cron_db,
+            ports.conversation_context,
+            ports.conversation_store,
+            ports.channel_registry,
+            ports.standing_order_store,
+            ports.user_profile_store,
+            ports.user_profile_context,
+            ports.turn_defaults_context,
+            ports.run_recipe_store,
+        )
+    }
 }
 
 /// Create full tool registry including memory tools and optional Composio.
@@ -207,7 +307,7 @@ pub fn all_tools(
     clippy::too_many_arguments,
     clippy::type_complexity
 )]
-pub fn all_tools_with_runtime(
+fn build_runtime_tool_registry(
     config: Arc<Config>,
     security: &Arc<SecurityPolicy>,
     runtime: Arc<dyn RuntimeAdapter>,
@@ -219,7 +319,7 @@ pub fn all_tools_with_runtime(
     web_fetch_config: &synapse_domain::config::schema::WebFetchConfig,
     workspace_dir: &std::path::Path,
     agents: &HashMap<String, DelegateAgentConfig>,
-    fallback_api_key: Option<&str>,
+    default_api_key: Option<&str>,
     root_config: &synapse_domain::config::schema::Config,
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
@@ -732,7 +832,7 @@ pub fn all_tools_with_runtime(
     }
 
     // Add delegation tool when agents are configured
-    let delegate_fallback_credential = fallback_api_key.and_then(|value| {
+    let delegate_default_credential = default_api_key.and_then(|value| {
         let trimmed_value = value.trim();
         (!trimmed_value.is_empty()).then(|| trimmed_value.to_owned())
     });
@@ -749,7 +849,7 @@ pub fn all_tools_with_runtime(
         let parent_tools = Arc::new(RwLock::new(tool_arcs.clone()));
         let delegate_tool = DelegateTool::new_with_options(
             delegate_agents,
-            delegate_fallback_credential.clone(),
+            delegate_default_credential.clone(),
             security.clone(),
             provider_runtime_options.clone(),
         )
@@ -768,7 +868,7 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(SwarmTool::new(
             root_config.swarms.clone(),
             swarm_agents,
-            delegate_fallback_credential,
+            delegate_default_credential,
             security.clone(),
             provider_runtime_options,
         )));
@@ -854,6 +954,49 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn test_all_tools(
+        config: Arc<Config>,
+        security: &Arc<SecurityPolicy>,
+        memory: Arc<dyn UnifiedMemoryPort>,
+        composio_key: Option<&str>,
+        composio_entity_id: Option<&str>,
+        browser_config: &synapse_domain::config::schema::BrowserConfig,
+        http_config: &synapse_domain::config::schema::HttpRequestConfig,
+        web_fetch_config: &synapse_domain::config::schema::WebFetchConfig,
+        workspace_dir: &std::path::Path,
+        agents: &HashMap<String, DelegateAgentConfig>,
+        default_api_key: Option<&str>,
+        root_config: &synapse_domain::config::schema::Config,
+        shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    ) -> (
+        Vec<Box<dyn Tool>>,
+        Option<DelegateParentToolsHandle>,
+        Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    ) {
+        RuntimeToolRegistryFactory::build(
+            RuntimeToolRegistryInputs {
+                config,
+                security,
+                runtime: Arc::new(NativeRuntime::new()),
+                memory,
+                composio_key,
+                composio_entity_id,
+                browser_config,
+                http_config,
+                web_fetch_config,
+                workspace_dir,
+                agents,
+                default_api_key,
+                root_config,
+            },
+            RuntimeToolPorts {
+                shared_ipc_client,
+                ..RuntimeToolPorts::default()
+            },
+        )
+    }
+
     #[test]
     fn default_tools_has_expected_count() {
         let security = Arc::new(SecurityPolicy::default());
@@ -876,7 +1019,7 @@ mod tests {
         let http = synapse_domain::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
-        let (tools, _, _) = all_tools(
+        let (tools, _, _) = test_all_tools(
             Arc::new(Config::default()),
             &security,
             mem,
@@ -914,7 +1057,7 @@ mod tests {
         let http = synapse_domain::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
-        let (tools, _, _) = all_tools(
+        let (tools, _, _) = test_all_tools(
             Arc::new(Config::default()),
             &security,
             mem,
@@ -1061,7 +1204,7 @@ mod tests {
             },
         );
 
-        let (tools, _, _) = all_tools(
+        let (tools, _, _) = test_all_tools(
             Arc::new(Config::default()),
             &security,
             mem,
@@ -1090,7 +1233,7 @@ mod tests {
         let http = synapse_domain::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
-        let (tools, _, _) = all_tools(
+        let (tools, _, _) = test_all_tools(
             Arc::new(Config::default()),
             &security,
             mem,

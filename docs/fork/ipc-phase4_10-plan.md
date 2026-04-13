@@ -931,8 +931,8 @@ Expected outcome:
     - `/model <hint>` now preserves the matched route's capability lane in
       channel route state instead of collapsing the route to provider/model only
     - web runtime route switching now stores the same active lane/candidate
-      identity on the `Agent`, so `/model` help can render the active lane and
-      route-specific compression cache stats consistently with channel help
+      identity in the web `RouteSelection` override map, so `/model` help can
+      render the active lane without depending on a web-owned live `Agent`
     - `CapabilityLane` now has a shared domain display label, and web/channel
       `/model` switch responses render the active lane when a switch is lane-aware
   - web/channel runtime-command parity follow-through:
@@ -981,6 +981,12 @@ Expected outcome:
     - web model-switch preflight now resolves the target route profile through
       the same config/catalog route-selection profile path as channel, so
       route-local profile metadata is not lost on `/model` switches
+    - web chat `chat.send` now enters the same domain `handle_inbound_message`
+      use-case and adapter-core `ChannelAgentRuntime` as messaging channels;
+      the WebSocket layer is transport/lifecycle only
+    - web runtime history and route state now live in explicit
+      `web_conversation_histories` / `web_route_overrides` stores, while
+      `ChatSession` is only UI/session metadata
     - generic and channel system-prompt builders now have explicit surfaces;
       channel-only transport guidance is no longer injected into generic
       runtime prompts
@@ -1155,6 +1161,8 @@ Expected outcome:
     context before generic workspace/bootstrap discovery
   - cheap route behavior still needs live validation on weaker or more ambiguous
     prompts after the scoped-context block hardening
+  - status note: treat Slice 7 as implemented base / partial closeout, not fully
+    phase-closed, until that cheap-route validation tail is done
 
 ### Slice 8
 
@@ -1793,7 +1801,7 @@ Expected outcome:
   - suppress generic semantic graph junk
   - preserve meaningful early/late anchors through compaction
   - favor typed anchors over low-signal precedent/daily noise
-  - current status:
+- current status:
   - landed first pass:
     - current entity/relationship acceptance rules were lifted into domain-owned
       `memory_quality_governor`
@@ -1905,6 +1913,9 @@ Expected outcome:
     - keep generic world-knowledge relationships and generic consolidation
       `memory_update` outputs as regression cases for memory hygiene, alongside
       pure-dialogue graph extraction bypasses
+  - status note: the governor is already the consolidated policy layer for
+    this slice; the remaining work is regression/live hardening, especially
+    concept-heavy sessions after real compaction
 - expected outcome:
   - better retrieval quality
   - less memory pollution
@@ -2240,6 +2251,9 @@ Expected outcome:
     - typed `Search` and `Delivery` tool facts now emit dedicated
       retrieval/delivery calibration observations in both live Agent and
       channel route state
+  - status note: treat Slice 22 as a landed typed base with follow-through,
+    not as fully phase-closed; remaining work is policy/coverage hardening as
+    the adjacent repair, assumption, and epistemic-state paths evolve
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step
@@ -2271,21 +2285,18 @@ Expected outcome:
     - repeated tool-failure classes, challenged assumptions, critical watchdog
       alerts, and overconfident calibration failures become typed promotion
       candidates behind explicit gates only
-    - `Agent::turn` invokes the janitor through the shared runtime path, so web
-      and channel sessions do not fork cleanup behavior
-    - channel route state now runs the same lazy janitor for tool-repair,
-      assumption, and calibration ledgers before admission/suppression decisions
-    - live web `Agent` state and channel `RouteSelection` now both own bounded
-      watchdog-alert and handoff-artifact histories, and both feed those
+    - web and channel route state now run the same runtime-trace janitor for
+      tool-repair, assumption, calibration, watchdog, and handoff ledgers
+    - web `RouteSelection` overrides and channel `RouteSelection` now both own
+      bounded watchdog-alert and handoff-artifact histories, and both feed those
       histories through the same runtime trace janitor
     - blocked admission handoff packets are retained as short-lived typed
       artifacts instead of being only formatted into the immediate response
     - `/model` and `/providers` diagnostics now surface retained handoff
       artifacts and merge retained watchdog alerts through janitor semantics
   - still open:
-    - there is no independent timer thread yet; cleanup is lazy per turn
-    - watchdog/handoff cleanup now has web/channel storage owners, but still
-      runs lazily rather than through an autonomous background polling loop
+    - there is still no broader autonomous watchdog polling loop; the current
+      closeout is route-state janitor maintenance for active web/channel maps
 - expected outcome:
   - bounded metacognitive state
   - less self-generated noise
@@ -2349,6 +2360,17 @@ Expected outcome:
   - web/channel observers must not reinterpret raw tool events independently
   - shared mapper must not own transport delivery, session lifecycle, or agent
     state mutation
+- implementation status:
+  - shared observer-event interpretation lives in adapter-core
+    `runtime_tool_notifications`
+  - shared observer forwarding lives in adapter-core `runtime_tool_observer`
+  - web JSON and channel text rendering remain transport-specific sinks over
+    the shared notification shape
+  - duplicate signatures, safe preview truncation, and UTF-8-safe argument
+    handling are covered in the mapper tests
+  - status note: Slice 25 is code-closed for the current tool-notification
+    mapper parity target; future SSE/global observability stays outside this
+    slice unless it starts sharing web/channel lifecycle semantics
 - expected outcome:
   - fewer hidden web/channel notification divergences
   - cleaner adapter split between event semantics and transport mechanics
@@ -2384,9 +2406,9 @@ Expected outcome:
   - tool notification event interpretation and observer forwarding are shared;
     web/channel retain only transport-specific JSON/text sinks
   - channel health supervision helpers live outside `channels/mod.rs`
-  - summary/run-lifecycle unification is intentionally left as a typed service
-    follow-up because the current web and channel stores/lifecycles are not the
-    same boundary
+  - web chat run execution now shares the channel inbound/runtime path; web UI
+    persistence and session lifecycle remain adapter-specific transport
+    concerns
   - status note:
     - Slice 24-26 are code-closed for the current extraction/parity target.
     - Any future web/channel run-lifecycle unification should be planned as a

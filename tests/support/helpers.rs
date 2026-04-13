@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use synapseclaw::agent::agent::Agent;
-use synapseclaw::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
+use synapseclaw::agent::dispatcher::NativeToolDispatcher;
 use synapseclaw::memory;
 use synapseclaw::memory::UnifiedMemoryPort;
 use synapseclaw::observability::{NoopObserver, Observer};
@@ -26,6 +26,7 @@ pub fn text_response(text: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -36,6 +37,7 @@ pub fn tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -47,19 +49,6 @@ pub fn build_agent(provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Ag
         .memory(make_memory())
         .observer(make_observer())
         .tool_dispatcher(Box::new(NativeToolDispatcher))
-        .workspace_dir(std::env::temp_dir())
-        .build()
-        .unwrap()
-}
-
-/// Build an agent with `XmlToolDispatcher`.
-pub fn build_agent_xml(provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Agent {
-    Agent::builder()
-        .provider(provider)
-        .tools(tools)
-        .memory(make_memory())
-        .observer(make_observer())
-        .tool_dispatcher(Box::new(XmlToolDispatcher))
         .workspace_dir(std::env::temp_dir())
         .build()
         .unwrap()

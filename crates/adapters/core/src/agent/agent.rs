@@ -1,7 +1,6 @@
 use crate::agent::autosave_memory_key;
 use crate::agent::context_engine::{
-    build_provider_prompt_snapshot, system_message_breakdown, total_message_chars,
-    ProviderPromptSnapshot,
+    system_message_breakdown, total_message_chars, AdapterContextEngine,
 };
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult,
@@ -85,11 +84,17 @@ use synapse_domain::domain::turn_admission::{
     context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
 };
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
+use synapse_domain::ports::context_engine::{
+    ContextEnginePort, ProviderPromptContextStats, ProviderPromptSnapshot,
+    ProviderPromptSnapshotInput,
+};
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort;
 use synapse_domain::ports::provider::ProviderCapabilityRequirement;
-use synapse_domain::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
+use synapse_domain::ports::route_selection::{
+    ContextCacheStats, RouteAdmissionState, RouteSelection,
+};
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::scoped_instruction_context::{
     ScopedInstructionContextPort, ScopedInstructionRequest,
@@ -174,7 +179,7 @@ fn has_noncanonical_string_delivery_target(call: &ParsedToolCall) -> bool {
 }
 
 fn provider_context_budget_input_from_stats(
-    stats: &synapse_observability::ProviderContextStats,
+    stats: &ProviderPromptContextStats,
 ) -> ProviderContextBudgetInput {
     ProviderContextBudgetInput {
         total_chars: stats.total_chars,
@@ -193,10 +198,32 @@ fn provider_context_budget_input_from_stats(
 }
 
 fn provider_context_budget_input_from_stats_for_profile(
-    stats: &synapse_observability::ProviderContextStats,
+    stats: &ProviderPromptContextStats,
     profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
 ) -> ProviderContextBudgetInput {
     provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
+}
+
+fn provider_context_stats_for_observer(
+    stats: &ProviderPromptContextStats,
+) -> synapse_observability::ProviderContextStats {
+    synapse_observability::ProviderContextStats {
+        system_messages: stats.system_messages,
+        system_chars: stats.system_chars,
+        bootstrap_chars: stats.bootstrap_chars,
+        core_memory_chars: stats.core_memory_chars,
+        runtime_interpretation_chars: stats.runtime_interpretation_chars,
+        scoped_context_chars: stats.scoped_context_chars,
+        resolution_chars: stats.resolution_chars,
+        dynamic_system_chars: stats.dynamic_system_chars,
+        stable_system_chars: stats.stable_system_chars,
+        prior_chat_messages: stats.prior_chat_messages,
+        prior_chat_chars: stats.prior_chat_chars,
+        current_turn_messages: stats.current_turn_messages,
+        current_turn_chars: stats.current_turn_chars,
+        total_messages: stats.total_messages,
+        total_chars: stats.total_chars,
+    }
 }
 
 fn route_calibration_signature(
@@ -775,12 +802,12 @@ impl Agent {
         &self,
         target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     ) -> ProviderPromptSnapshot {
-        build_provider_prompt_snapshot(
-            self.tool_dispatcher.as_ref(),
-            &self.history,
-            PROVIDER_CONTEXT_CHAT_MESSAGES,
-            Some(target_profile),
-        )
+        let context_engine = AdapterContextEngine::new(self.tool_dispatcher.as_ref());
+        context_engine.build_provider_prompt_snapshot(ProviderPromptSnapshotInput {
+            history: &self.history,
+            recent_chat_limit: PROVIDER_CONTEXT_CHAT_MESSAGES,
+            target_profile: Some(target_profile),
+        })
     }
 
     fn upsert_scoped_context_block(&mut self, block: Option<String>) {
@@ -929,6 +956,37 @@ impl Agent {
 
     pub fn recent_runtime_handoff_artifacts(&self) -> &[RuntimeHandoffArtifact] {
         &self.recent_runtime_handoff_artifacts
+    }
+
+    pub fn run_runtime_trace_maintenance_tick(&mut self, now_unix: i64) {
+        let context_cache_stats = self.history_compaction_cache_stats_for_route(
+            &self.provider_name,
+            &self.model_name,
+            self.active_lane,
+            None,
+        );
+        let mut route = RouteSelection {
+            provider: self.provider_name.clone(),
+            model: self.model_name.clone(),
+            lane: self.active_lane,
+            candidate_index: self.active_candidate_index,
+            last_admission: self.recent_turn_admissions.last().cloned(),
+            recent_admissions: self.recent_turn_admissions.clone(),
+            last_tool_repair: self.last_turn_tool_repair.clone(),
+            recent_tool_repairs: self.recent_turn_tool_repairs.clone(),
+            context_cache: Some(context_cache_stats),
+            assumptions: self.recent_runtime_assumptions.clone(),
+            calibrations: self.recent_runtime_calibrations.clone(),
+            watchdog_alerts: self.recent_runtime_watchdog_alerts.clone(),
+            handoff_artifacts: self.recent_runtime_handoff_artifacts.clone(),
+        };
+        route.run_runtime_trace_maintenance(now_unix);
+        self.recent_turn_tool_repairs = route.recent_tool_repairs;
+        self.last_turn_tool_repair = route.last_tool_repair;
+        self.recent_runtime_assumptions = route.assumptions;
+        self.recent_runtime_calibrations = route.calibrations;
+        self.recent_runtime_watchdog_alerts = route.watchdog_alerts;
+        self.recent_runtime_handoff_artifacts = route.handoff_artifacts;
     }
 
     fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
@@ -1221,31 +1279,35 @@ impl Agent {
             .clone()
             .unwrap_or_else(|| Arc::new(InMemoryTurnDefaultsContext::new()));
 
-        let (tools, _delegate_handle, _) = tools::all_tools_with_runtime(
-            Arc::new(config.clone()),
-            &security,
-            runtime,
-            memory.clone(),
-            composio_key,
-            composio_entity_id,
-            &config.browser,
-            &config.http_request,
-            &config.web_fetch,
-            &config.workspace_dir,
-            &config.agents,
-            config.api_key.as_deref(),
-            config,
-            None,
-            None,
-            surreal_handle.clone(),
-            runtime_ports.conversation_context.clone(),
-            runtime_ports.conversation_store.clone(),
-            runtime_ports.channel_registry.clone(),
-            None, // standing_order_store
-            Some(Arc::clone(&resolved_user_profile_store)),
-            Some(Arc::clone(&user_profile_context)),
-            Some(Arc::clone(&turn_defaults_context)),
-            runtime_ports.run_recipe_store.clone(),
+        let (tools, _delegate_handle, _) = tools::RuntimeToolRegistryFactory::build(
+            tools::RuntimeToolRegistryInputs {
+                config: Arc::new(config.clone()),
+                security: &security,
+                runtime,
+                memory: memory.clone(),
+                composio_key,
+                composio_entity_id,
+                browser_config: &config.browser,
+                http_config: &config.http_request,
+                web_fetch_config: &config.web_fetch,
+                workspace_dir: &config.workspace_dir,
+                agents: &config.agents,
+                default_api_key: config.api_key.as_deref(),
+                root_config: config,
+            },
+            tools::RuntimeToolPorts {
+                shared_ipc_client: None,
+                agent_runner: None,
+                cron_db: surreal_handle.clone(),
+                conversation_context: runtime_ports.conversation_context.clone(),
+                conversation_store: runtime_ports.conversation_store.clone(),
+                channel_registry: runtime_ports.channel_registry.clone(),
+                standing_order_store: None,
+                user_profile_store: Some(Arc::clone(&resolved_user_profile_store)),
+                user_profile_context: Some(Arc::clone(&user_profile_context)),
+                turn_defaults_context: Some(Arc::clone(&turn_defaults_context)),
+                run_recipe_store: runtime_ports.run_recipe_store.clone(),
+            },
         );
 
         // Bootstrap core memory blocks from workspace files (USER.md → user_knowledge).
@@ -1508,6 +1570,7 @@ impl Agent {
                     text,
                     tool_calls,
                     reasoning_content,
+                    media_artifacts,
                 } => {
                     if let Some(text) = text.as_deref() {
                         let trimmed = text.trim();
@@ -1531,6 +1594,12 @@ impl Agent {
                             call.id, call.name, call.arguments
                         )));
                         original_indices.push(index);
+                    }
+                    for artifact in media_artifacts {
+                        if let Some(marker) = artifact.marker() {
+                            projected.push(ChatMessage::assistant(marker));
+                            original_indices.push(index);
+                        }
                     }
                 }
                 ConversationMessage::ToolResults(results) => {
@@ -2627,7 +2696,7 @@ impl Agent {
                 provider: effective_provider.clone(),
                 model: effective_model.clone(),
                 messages_count: messages.len(),
-                context: Some(request_context),
+                context: Some(provider_context_stats_for_observer(&request_context)),
             });
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
@@ -2917,6 +2986,7 @@ impl Agent {
                 text: response.text.clone(),
                 tool_calls: response.tool_calls.clone(),
                 reasoning_content: response.reasoning_content.clone(),
+                media_artifacts: response.media_artifacts.clone(),
             });
 
             let results = self
@@ -3145,6 +3215,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 });
             }
             Ok(guard.remove(0))
@@ -3182,6 +3253,7 @@ mod tests {
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 });
             }
             Ok(guard.remove(0))
@@ -3234,6 +3306,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             }]),
         });
 
@@ -3262,6 +3335,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             }]),
         });
 
@@ -3304,12 +3378,14 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 },
                 synapse_providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 },
             ]),
         });
@@ -3528,6 +3604,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             }]),
             seen_models: seen_models.clone(),
         });
@@ -3582,6 +3659,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             }]),
             seen_models: seen_models.clone(),
         });

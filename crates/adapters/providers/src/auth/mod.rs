@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use synapse_domain::config::schema::Config;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
 
 const OPENAI_CODEX_PROVIDER: &str = "openai-codex";
 const ANTHROPIC_PROVIDER: &str = "anthropic";
@@ -23,6 +25,8 @@ const OPENAI_REFRESH_SKEW_SECS: u64 = 90;
 const OPENAI_REFRESH_FAILURE_BACKOFF_SECS: u64 = 10;
 const OAUTH_REFRESH_MAX_ATTEMPTS: usize = 3;
 const OAUTH_REFRESH_RETRY_BASE_DELAY_MS: u64 = 350;
+const OAUTH_REFRESH_FILE_LOCK_WAIT_MS: u64 = 50;
+const OAUTH_REFRESH_FILE_LOCK_TIMEOUT_MS: u64 = 60_000;
 static REFRESH_BACKOFFS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 #[derive(Clone)]
@@ -187,8 +191,10 @@ impl AuthService {
 
         let refresh_lock = refresh_lock_for_profile(&profile_id);
         let _guard = refresh_lock.lock().await;
+        let _file_guard = acquire_profile_refresh_file_lock(self.store.path(), &profile_id).await?;
 
-        // Re-load after waiting for lock to avoid duplicate refreshes.
+        // Re-load after waiting for process-local and cross-process locks to avoid duplicate
+        // refresh-token rotation across the deployed agent fleet.
         let data = self.store.load().await?;
         let Some(latest_profile) = data.profiles.get(&profile_id) else {
             return Ok(None);
@@ -276,8 +282,10 @@ impl AuthService {
 
         let refresh_lock = refresh_lock_for_profile(&profile_id);
         let _guard = refresh_lock.lock().await;
+        let _file_guard = acquire_profile_refresh_file_lock(self.store.path(), &profile_id).await?;
 
-        // Re-load after waiting for lock to avoid duplicate refreshes.
+        // Re-load after waiting for process-local and cross-process locks to avoid duplicate
+        // refresh-token rotation across the deployed agent fleet.
         let data = self.store.load().await?;
         let Some(latest_profile) = data.profiles.get(&profile_id) else {
             return Ok(None);
@@ -359,10 +367,26 @@ pub fn normalize_provider(provider: &str) -> Result<String> {
 }
 
 pub fn state_dir_from_config(config: &Config) -> PathBuf {
-    config
+    let config_dir = config
         .config_path
         .parent()
-        .map_or_else(|| PathBuf::from("."), PathBuf::from)
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+
+    if config_dir
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "agents")
+    {
+        if let Some(root_dir) = config_dir
+            .parent()
+            .and_then(|agents_dir| agents_dir.parent())
+        {
+            return root_dir.to_path_buf();
+        }
+    }
+
+    config_dir
 }
 
 pub fn default_profile_id(provider: &str) -> String {
@@ -505,6 +529,91 @@ fn clear_refresh_backoff(profile_id: &str) {
     let map = REFRESH_BACKOFFS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut guard) = map.lock() {
         guard.remove(profile_id);
+    }
+}
+
+async fn acquire_profile_refresh_file_lock(
+    store_path: &Path,
+    profile_id: &str,
+) -> Result<ProfileRefreshFileLockGuard> {
+    let lock_path = profile_refresh_lock_path(store_path, profile_id);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let mut waited = 0_u64;
+    loop {
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_path)
+            .await
+        {
+            Ok(mut file) => {
+                if let Err(err) = file
+                    .write_all(format!("pid={}\n", std::process::id()).as_bytes())
+                    .await
+                {
+                    let _ = fs::remove_file(&lock_path).await;
+                    return Err(anyhow::anyhow!(
+                        "Failed to write OAuth refresh lock at {}: {err}",
+                        lock_path.display()
+                    ));
+                }
+                return Ok(ProfileRefreshFileLockGuard { lock_path });
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if waited >= OAUTH_REFRESH_FILE_LOCK_TIMEOUT_MS {
+                    anyhow::bail!(
+                        "Timed out waiting for OAuth refresh lock at {}",
+                        lock_path.display()
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(OAUTH_REFRESH_FILE_LOCK_WAIT_MS)).await;
+                waited = waited.saturating_add(OAUTH_REFRESH_FILE_LOCK_WAIT_MS);
+            }
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to create OAuth refresh lock at {}: {err}",
+                    lock_path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn profile_refresh_lock_path(store_path: &Path, profile_id: &str) -> PathBuf {
+    let base = store_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("auth-profiles.json");
+    store_path.with_file_name(format!(
+        "{}.{}.refresh.lock",
+        base,
+        sanitize_lock_segment(profile_id)
+    ))
+}
+
+fn sanitize_lock_segment(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+struct ProfileRefreshFileLockGuard {
+    lock_path: PathBuf,
+}
+
+impl Drop for ProfileRefreshFileLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
     }
 }
 

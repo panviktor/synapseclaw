@@ -1015,6 +1015,7 @@ fn parse_responses_chat_response(response: ResponsesResponse) -> ParsedResponses
             tool_calls: extract_responses_tool_calls(&response),
             usage,
             reasoning_content: extract_responses_reasoning(&response),
+            media_artifacts: Vec::new(),
         }),
         response_id: response.id,
     }
@@ -1534,23 +1535,12 @@ async fn decode_responses_body(response: reqwest::Response) -> anyhow::Result<St
 impl OpenAiCodexProvider {
     async fn send_request(&self, request: &ResponsesRequest) -> anyhow::Result<reqwest::Response> {
         let use_gateway_api_key_auth = self.use_gateway_api_key_auth();
-        let external_auth = resolve_external_access_token(&self.client).await?;
-        if external_auth.is_some() {
-            tracing::info!("using external OpenAI Codex auth source");
-        }
         let profile = match self
             .auth
             .get_profile("openai-codex", self.auth_profile_override.as_deref())
             .await
         {
             Ok(profile) => profile,
-            Err(err) if external_auth.is_some() => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to load OpenAI Codex profile; continuing with external auth mode"
-                );
-                None
-            }
             Err(err) if use_gateway_api_key_auth => {
                 tracing::warn!(
                     error = %err,
@@ -1560,19 +1550,13 @@ impl OpenAiCodexProvider {
             }
             Err(err) => return Err(err),
         };
+
         let oauth_access_token = match self
             .auth
             .get_valid_openai_access_token(self.auth_profile_override.as_deref())
             .await
         {
             Ok(token) => token,
-            Err(err) if external_auth.is_some() => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to refresh OpenAI token from auth store; continuing with external auth mode"
-                );
-                None
-            }
             Err(err) if use_gateway_api_key_auth => {
                 tracing::warn!(
                     error = %err,
@@ -1581,6 +1565,26 @@ impl OpenAiCodexProvider {
                 None
             }
             Err(err) => return Err(err),
+        };
+
+        let external_auth = if oauth_access_token.is_none() || use_gateway_api_key_auth {
+            match resolve_external_access_token(&self.client).await {
+                Ok(auth) => {
+                    if auth.is_some() {
+                        tracing::info!("using external OpenAI Codex auth source");
+                    }
+                    auth
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to resolve external OpenAI Codex auth source; ignoring adapter-local fallback"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
         };
 
         let external_access_token = external_auth.as_ref().map(|(token, _)| token.clone());
@@ -2226,7 +2230,8 @@ data: [DONE]
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
-        };
+                    media_artifacts: Vec::new(),
+};
 
         let normalized = normalize_text_tool_call_fallback(response);
         assert_eq!(normalized.text.as_deref(), Some("Checking"));
@@ -2246,7 +2251,8 @@ data: [DONE]
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
-        };
+                    media_artifacts: Vec::new(),
+};
 
         let normalized = normalize_text_tool_call_fallback(response);
         assert_eq!(normalized.text, None);

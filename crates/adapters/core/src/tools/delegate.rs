@@ -692,6 +692,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 })
             } else {
                 Ok(ChatResponse {
@@ -703,6 +704,7 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 })
             }
         }
@@ -744,6 +746,7 @@ mod tests {
                 }],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             })
         }
     }
@@ -1290,6 +1293,7 @@ mod tests {
                     tool_calls: Vec::new(),
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 })
             } else {
                 Ok(ChatResponse {
@@ -1301,6 +1305,7 @@ mod tests {
                     }],
                     usage: None,
                     reasoning_content: None,
+                    media_artifacts: Vec::new(),
                 })
             }
         }

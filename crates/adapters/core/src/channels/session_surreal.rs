@@ -1,7 +1,6 @@
 //! SurrealDB-backed session persistence for channel conversations.
 //!
-//! Phase 4.5: migrated from SQLite (`session_sqlite.rs`) to the shared
-//! SurrealDB instance.  Tables: `channel_session`, `channel_session_meta`,
+//! Tables: `channel_session`, `channel_session_meta`,
 //! `channel_session_summary` (schema in `surrealdb_schema.surql`).
 
 use async_trait::async_trait;
@@ -38,6 +37,42 @@ fn json_str(v: &serde_json::Value, key: &str) -> String {
 
 fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
     v.get(key).and_then(|val| val.as_i64()).unwrap_or(0)
+}
+
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|val| val.as_str())
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+}
+
+#[allow(clippy::cast_sign_loss)]
+fn json_u64(v: &serde_json::Value, key: &str) -> u64 {
+    json_i64(v, key).max(0) as u64
+}
+
+impl SurrealSessionBackend {
+    async fn ensure_metadata_row(&self, session_key: &str, now: &str) -> std::io::Result<()> {
+        self.db
+            .query(
+                "IF (SELECT count() FROM channel_session_meta \
+                   WHERE session_key = $key GROUP ALL)[0].count = 0 \
+                 { \
+                     CREATE channel_session_meta SET \
+                         session_key = $key, \
+                         created_at = $now, \
+                         last_activity = $now, \
+                         message_count = 0, \
+                         input_tokens = 0, \
+                         output_tokens = 0; \
+                 };",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("now", now.to_string()))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
 }
 
 // ── SessionBackend impl ─────────────────────────────────────────────────
@@ -100,7 +135,9 @@ impl SessionBackend for SurrealSessionBackend {
                          session_key = $key, \
                          created_at = $now, \
                          last_activity = $now, \
-                         message_count = 1; \
+                         message_count = 1, \
+                         input_tokens = 0, \
+                         output_tokens = 0; \
                  };",
             )
             .bind(("key", session_key.to_string()))
@@ -202,7 +239,9 @@ impl SessionBackend for SurrealSessionBackend {
                              session_key = $key, \
                              created_at = $now, \
                              last_activity = $now, \
-                             message_count = $mcount; \
+                             message_count = $mcount, \
+                             input_tokens = 0, \
+                             output_tokens = 0; \
                      };",
                 )
                 .bind(("key", session_key.to_string()))
@@ -238,7 +277,8 @@ impl SessionBackend for SurrealSessionBackend {
         let mut resp = match self
             .db
             .query(
-                "SELECT session_key, created_at, last_activity, message_count \
+                "SELECT session_key, label, current_goal, created_at, last_activity, message_count, \
+                        input_tokens, output_tokens \
                  FROM channel_session_meta ORDER BY last_activity DESC",
             )
             .await
@@ -261,12 +301,124 @@ impl SessionBackend for SurrealSessionBackend {
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 SessionMetadata {
                     key: json_str(v, "session_key"),
+                    label: json_opt_str(v, "label"),
+                    current_goal: json_opt_str(v, "current_goal"),
                     created_at: created,
                     last_activity: activity,
                     message_count: json_i64(v, "message_count") as usize,
+                    input_tokens: json_u64(v, "input_tokens"),
+                    output_tokens: json_u64(v, "output_tokens"),
                 }
             })
             .collect()
+    }
+
+    async fn touch_session(&self, session_key: &str) -> std::io::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.ensure_metadata_row(session_key, &now).await?;
+        self.db
+            .query("UPDATE channel_session_meta SET last_activity = $now WHERE session_key = $key")
+            .bind(("key", session_key.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    async fn update_label(&self, session_key: &str, label: &str) -> std::io::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.ensure_metadata_row(session_key, &now).await?;
+        self.db
+            .query(
+                "UPDATE channel_session_meta SET \
+                    label = $label, last_activity = $now \
+                 WHERE session_key = $key",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("label", label.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    async fn update_goal(&self, session_key: &str, goal: &str) -> std::io::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.ensure_metadata_row(session_key, &now).await?;
+        self.db
+            .query(
+                "UPDATE channel_session_meta SET \
+                    current_goal = $goal, last_activity = $now \
+                 WHERE session_key = $key",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("goal", goal.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    async fn increment_message_count(&self, session_key: &str) -> std::io::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.ensure_metadata_row(session_key, &now).await?;
+        self.db
+            .query(
+                "UPDATE channel_session_meta SET \
+                    message_count = message_count + 1, last_activity = $now \
+                 WHERE session_key = $key",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
+    async fn add_token_usage(
+        &self,
+        session_key: &str,
+        input: i64,
+        output: i64,
+    ) -> std::io::Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.ensure_metadata_row(session_key, &now).await?;
+        let mut existing = self
+            .db
+            .query(
+                "SELECT input_tokens, output_tokens \
+                 FROM channel_session_meta WHERE session_key = $key LIMIT 1",
+            )
+            .bind(("key", session_key.to_string()))
+            .await
+            .map_err(std::io::Error::other)?;
+        let rows: Vec<serde_json::Value> = existing.take(0).unwrap_or_default();
+        let current = rows.first();
+        let input_tokens = current
+            .map(|row| json_i64(row, "input_tokens"))
+            .unwrap_or(0)
+            .saturating_add(input)
+            .max(0);
+        let output_tokens = current
+            .map(|row| json_i64(row, "output_tokens"))
+            .unwrap_or(0)
+            .saturating_add(output)
+            .max(0);
+        self.db
+            .query(
+                "UPDATE channel_session_meta SET \
+                    input_tokens = $input_tokens, \
+                    output_tokens = $output_tokens, \
+                    last_activity = $now \
+                 WHERE session_key = $key",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("input_tokens", input_tokens))
+            .bind(("output_tokens", output_tokens))
+            .bind(("now", now))
+            .await
+            .map_err(std::io::Error::other)?;
+        Ok(())
     }
 
     async fn cleanup_stale(&self, ttl_hours: u32) -> std::io::Result<usize> {
@@ -342,7 +494,8 @@ impl SessionBackend for SurrealSessionBackend {
             let mut meta_resp = match self
                 .db
                 .query(
-                    "SELECT created_at, last_activity, message_count \
+                    "SELECT label, current_goal, created_at, last_activity, message_count, \
+                            input_tokens, output_tokens \
                      FROM channel_session_meta WHERE session_key = $key",
                 )
                 .bind(("key", key.clone()))
@@ -362,9 +515,13 @@ impl SessionBackend for SurrealSessionBackend {
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 results.push(SessionMetadata {
                     key: key.clone(),
+                    label: json_opt_str(v, "label"),
+                    current_goal: json_opt_str(v, "current_goal"),
                     created_at: created,
                     last_activity: activity,
                     message_count: json_i64(v, "message_count") as usize,
+                    input_tokens: json_u64(v, "input_tokens"),
+                    output_tokens: json_u64(v, "output_tokens"),
                 });
             }
         }

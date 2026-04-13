@@ -98,6 +98,7 @@ impl Provider for ScriptedProvider {
                 tool_calls: vec![],
                 usage: None,
                 reasoning_content: None,
+                media_artifacts: Vec::new(),
             });
         }
         Ok(guard.remove(0))
@@ -374,6 +375,7 @@ fn tool_response(calls: Vec<ToolCall>) -> ChatResponse {
         tool_calls: calls,
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -384,6 +386,7 @@ fn text_response(text: &str) -> ChatResponse {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }
 }
 
@@ -770,6 +773,7 @@ async fn turn_handles_empty_text_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }]));
 
     let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
@@ -785,6 +789,7 @@ async fn turn_handles_none_text_response() {
         tool_calls: vec![],
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     }]));
 
     let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
@@ -810,6 +815,7 @@ async fn turn_preserves_text_alongside_tool_calls() {
             }],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         },
         text_response("Here are the results"),
     ]));
@@ -1048,6 +1054,7 @@ async fn native_dispatcher_handles_stringified_arguments() {
         }],
         usage: None,
         reasoning_content: None,
+        media_artifacts: Vec::new(),
     };
 
     let (_, calls) = dispatcher.parse_response(&response).unwrap();
@@ -1076,6 +1083,7 @@ fn conversation_message_serialization_roundtrip() {
                 arguments: "{}".into(),
             }],
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         },
         ConversationMessage::ToolResults(vec![ToolResultMessage {
             tool_call_id: "tc1".into(),

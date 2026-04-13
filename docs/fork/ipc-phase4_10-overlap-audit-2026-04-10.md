@@ -161,7 +161,9 @@ Current code baseline:
 Audit verdict:
 
 - `Slice 15` and `Slice 22` are **not invented from zero**
-- but the current code still lacks a proper bounded typed repair/calibration ledger
+- the current code now has first-pass bounded typed repair and calibration
+  ledgers; remaining work is policy depth, opaque provider/tool error coverage,
+  and calibration behavior as adjacent epistemic/assumption paths harden
 
 Research-driven upgrade required:
 
@@ -198,9 +200,10 @@ Current status:
 Current weakness:
 
 - no models.dev-style provider-aware registry source yet
-- no adapter-local context-limit-error parser that feeds typed profile/cache
-  updates yet
-- no explicit probe-down tier strategy for unknown/local endpoints yet
+- no external provider-aware registry ingestion yet
+- no active probe-down tier strategy for unknown/local endpoints yet; the current
+  path is endpoint-aware `/models` refresh plus typed context-limit observations
+  from failed turns and operator catalog overrides
 
 Implication:
 
@@ -292,10 +295,10 @@ Implication:
 | 12 `ResolvedModelProfile` registry | capability-driven channels, current `4.10` routing groundwork | yes | medium | provenance/confidence, endpoint-scoped live cache, and catalog-driven URL inference landed; next upgrade is provider-aware registry/error feedback |
 | 13 context-pressure manager | `4.10` compaction + `4.6` continuation/state bridge | yes | yes | artifact/window-aware pressure plus Hermes-style hygiene/tool-result pruning landed; defer pluggable context-engine layer |
 | 14 modality routing | capability routing already present in channels + `4.10` lanes | yes | medium | finish matrix, do not add a second router |
-| 15 explainable self-repair | reflections/failure memory in `4.3/4.9` | partial | yes | bounded typed repair ledger should replace ad hoc failure traces |
-| 16 memory-quality governor | `4.9` memory quality + foundation plan | yes | yes | current retrieval/entity filters should be unified under one policy |
+| 15 explainable self-repair | reflections/failure memory in `4.3/4.9` | partial | yes | first-pass typed repair ledger landed; continue opaque-error and policy hardening |
+| 16 memory-quality governor | `4.9` memory quality + foundation plan | yes | yes | governor policy layer landed; continue regression/live hardening for concept-heavy sessions and real-compaction ranking |
 | 17 typed handoff packets | `4.1` typed handoffs + `4.6` continuation policy | partial | yes | make handoff a first-class typed bridge |
-| 18 background capability probe | current catalog/profile groundwork | partial | medium | endpoint-scoped cache and catalog-driven URL inference landed; add context-limit error parsing and optional probe-down fallback |
+| 18 background capability probe | current catalog/profile groundwork | partial | medium | endpoint-scoped cache, catalog-driven URL inference, and typed context-limit observations landed; add external registry ingestion and optional probe-down fallback |
 | 19 assumption tracker | `4.6` dialogue state and referential resolution | partial | yes | promote implicit defaults into explicit assumptions |
 | 20 epistemic state | `4.3` fact confidence + foundation conflict rules | partial | yes | upgrade confidence/conflict into proper knowledge-state categories |
 | 21 watchdog + digest | `4.1` resilient execution and existing health checks | partial | medium | strong systems pattern, less prior direct code |
@@ -328,7 +331,9 @@ Non-paper systems references also remain directly relevant:
   - post-compaction tool-pair sanitizer
   - endpoint-aware context-window cache
   - catalog-driven provider URL inference
-  - still open: context-limit feedback
+  - typed context-limit feedback into endpoint-aware cache repair landed
+  - still open: external provider-aware registry ingestion and optional active
+    probe-down for unknown/local endpoints
 - OpenClaw context engine and modality-specific model slots
 - LangGraph durable execution / checkpointing
 

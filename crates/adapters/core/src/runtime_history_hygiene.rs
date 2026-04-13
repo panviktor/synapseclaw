@@ -2,6 +2,17 @@
 
 use synapse_providers::ChatMessage;
 
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
+use synapse_domain::application::services::route_switch_preflight::{
+    assess_route_switch_preflight_for_history, RouteSwitchPreflightResolution,
+};
+use synapse_domain::config::schema::{
+    ContextCompressionConfig, ContextCompressionRouteOverrideConfig,
+};
+use synapse_domain::ports::conversation_history::ConversationHistoryPort;
+use synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort;
+use synapse_domain::ports::route_selection::{ContextCacheStats, RouteSelection};
+
 pub(crate) fn normalize_cached_channel_turns(turns: Vec<ChatMessage>) -> Vec<ChatMessage> {
     let mut normalized = Vec::with_capacity(turns.len());
     let mut expecting_user = true;
@@ -56,4 +67,50 @@ pub(crate) fn proactive_trim_turns(turns: &mut Vec<ChatMessage>, budget: usize) 
         turns.drain(..drop_count);
     }
     drop_count
+}
+
+pub(crate) fn resolve_route_switch_preflight_for_history_port(
+    history: &dyn ConversationHistoryPort,
+    conversation_key: &str,
+    target_profile: &ResolvedModelProfile,
+    keep_non_system_turns: usize,
+) -> RouteSwitchPreflightResolution {
+    let current_history = history.get_history(conversation_key);
+    let mut resolution = RouteSwitchPreflightResolution::new(
+        assess_route_switch_preflight_for_history(&current_history, target_profile),
+    );
+
+    while resolution.should_attempt_compaction() {
+        if !history.compact_history(conversation_key, keep_non_system_turns) {
+            break;
+        }
+        let compacted_history = history.get_history(conversation_key);
+        resolution.record_compaction_pass(assess_route_switch_preflight_for_history(
+            &compacted_history,
+            target_profile,
+        ));
+    }
+
+    resolution
+}
+
+pub(crate) async fn route_effective_context_cache_stats(
+    compression: &ContextCompressionConfig,
+    compression_overrides: &[ContextCompressionRouteOverrideConfig],
+    history_compaction_cache: &dyn HistoryCompactionCachePort,
+    route: &RouteSelection,
+) -> ContextCacheStats {
+    let compression =
+        synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
+            compression,
+            compression_overrides,
+            route.provider.as_str(),
+            route.model.as_str(),
+            route.lane,
+            None,
+        );
+    if let Err(error) = history_compaction_cache.load(&compression).await {
+        tracing::debug!(%error, "Failed to load visible history compaction cache");
+    }
+    history_compaction_cache.stats(&compression)
 }

@@ -11,30 +11,22 @@ use std::fmt;
 pub struct RoutingTable {
     /// Ordered list of routes (lower priority number = higher precedence).
     pub routes: Vec<Route>,
-    /// Agent ID for messages that match no route.
-    pub fallback: String,
 }
 
 impl RoutingTable {
-    /// Evaluate all routes against an input, return the target agent_id.
-    /// Returns the fallback if no route matches.
-    pub fn resolve(&self, input: &RoutingInput) -> RoutingResult {
+    /// Evaluate all routes against an input.
+    /// Returns `None` when no explicit route matches.
+    pub fn resolve(&self, input: &RoutingInput) -> Option<RoutingResult> {
         for route in &self.routes {
             if route.rule.matches(input) {
-                return RoutingResult {
+                return Some(RoutingResult {
                     target: route.target.clone(),
                     pipeline: route.pipeline.clone(),
                     matched_rule: Some(route.name.clone()),
-                    is_fallback: false,
-                };
+                });
             }
         }
-        RoutingResult {
-            target: self.fallback.clone(),
-            pipeline: None,
-            matched_rule: None,
-            is_fallback: true,
-        }
+        None
     }
 }
 
@@ -62,10 +54,8 @@ pub struct RoutingResult {
     pub target: String,
     /// Pipeline name (if this route triggers a pipeline).
     pub pipeline: Option<String>,
-    /// Name of the matched rule (None if fallback).
+    /// Name of the matched rule.
     pub matched_rule: Option<String>,
-    /// Whether the fallback was used.
-    pub is_fallback: bool,
 }
 
 /// Input data for route matching.
@@ -149,7 +139,6 @@ impl fmt::Display for RoutingRule {
 pub struct RoutingToml {
     #[serde(default)]
     pub routes: Vec<Route>,
-    pub fallback: String,
 }
 
 impl RoutingToml {
@@ -158,7 +147,6 @@ impl RoutingToml {
         self.routes.sort_by_key(|r| r.priority);
         RoutingTable {
             routes: self.routes,
-            fallback: self.fallback,
         }
     }
 }
@@ -264,21 +252,18 @@ mod tests {
                     priority: 100,
                 },
             ],
-            fallback: "marketing-lead".into(),
         };
 
-        let r1 = table.resolve(&input("/research AI"));
+        let r1 = table.resolve(&input("/research AI")).unwrap();
         assert_eq!(r1.target, "news-reader");
         assert_eq!(r1.matched_rule, Some("research".into()));
-        assert!(!r1.is_fallback);
 
-        let r2 = table.resolve(&input("hello"));
+        let r2 = table.resolve(&input("hello")).unwrap();
         assert_eq!(r2.target, "general"); // catch-all, not fallback
-        assert!(!r2.is_fallback);
     }
 
     #[test]
-    fn routing_table_fallback() {
+    fn routing_table_no_match_returns_none() {
         let table = RoutingTable {
             routes: vec![Route {
                 name: "commands".into(),
@@ -287,19 +272,14 @@ mod tests {
                 pipeline: None,
                 priority: 10,
             }],
-            fallback: "default-agent".into(),
         };
 
-        let r = table.resolve(&input("random message"));
-        assert_eq!(r.target, "default-agent");
-        assert!(r.is_fallback);
+        assert!(table.resolve(&input("random message")).is_none());
     }
 
     #[test]
     fn toml_parsing() {
         let toml_str = r#"
-fallback = "marketing-lead"
-
 [[routes]]
 name = "research-cmd"
 target = "news-reader"
@@ -327,13 +307,12 @@ source_kind = "cron"
         let parsed: RoutingToml = toml::from_str(toml_str).unwrap();
         let table = parsed.into_table();
 
-        assert_eq!(table.fallback, "marketing-lead");
         assert_eq!(table.routes.len(), 3);
         assert_eq!(table.routes[0].name, "research-cmd"); // priority 10
         assert_eq!(table.routes[1].name, "deploy-keywords"); // priority 20
         assert_eq!(table.routes[2].name, "cron-jobs"); // priority 30
 
-        let r = table.resolve(&input("/research trends"));
+        let r = table.resolve(&input("/research trends")).unwrap();
         assert_eq!(r.target, "news-reader");
     }
 
@@ -363,7 +342,6 @@ source_kind = "cron"
                     priority: 50,
                 },
             ],
-            fallback: "x".into(),
         };
         let table = toml.into_table();
         assert_eq!(table.routes[0].target, "a");

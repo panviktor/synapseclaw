@@ -24,6 +24,7 @@ use crate::domain::tool_repair::{
 use std::collections::BTreeMap;
 
 pub const RUNTIME_TRACE_JANITOR_TTL_SECS: i64 = TOOL_REPAIR_TRACE_TTL_SECS;
+pub const RUNTIME_TRACE_MAINTENANCE_INTERVAL_SECS: u64 = 300;
 const MAX_WATCHDOG_ALERT_HISTORY: usize = 12;
 const MAX_HANDOFF_ARTIFACTS: usize = 4;
 const MAX_PROMOTION_CANDIDATES: usize = 8;

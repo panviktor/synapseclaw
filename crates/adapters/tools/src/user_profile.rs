@@ -390,7 +390,7 @@ mod tests {
         let conversation_context = Arc::new(TestConversationContext::default());
         conversation_context.set_current(Some(CurrentConversationContext {
             source_adapter: "matrix".into(),
-            conversation_ref: "matrix_room".into(),
+            conversation_id: "matrix_room".into(),
             reply_ref: "!room:example.com".into(),
             thread_ref: Some("$thread".into()),
             actor_id: "alice".into(),

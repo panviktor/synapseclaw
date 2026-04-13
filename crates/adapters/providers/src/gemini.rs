@@ -1272,6 +1272,7 @@ impl Provider for GeminiProvider {
             tool_calls: Vec::new(),
             usage,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 

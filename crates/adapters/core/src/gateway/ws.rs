@@ -10,36 +10,41 @@
 //! RPC methods: chat.send, chat.history, chat.abort,
 //!              sessions.list, sessions.new, sessions.rename, sessions.delete, sessions.reset
 
-use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
+use crate::runtime::agent_runtime_adapter::ChannelAgentRuntime;
 use crate::runtime::runtime_error_classification::classify_agent_runtime_error;
 use crate::runtime_adapter_contract::{
-    execute_runtime_command_effect, RuntimeCommandHost, RuntimeModelHelpSnapshot,
+    execute_runtime_command_output, RuntimeCommandHost, RuntimeModelHelpSnapshot,
     RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
     WebRuntimeAdapterContract,
 };
 use crate::runtime_routes::WorkspaceModelProfileCatalog;
 use crate::runtime_tool_notifications::RuntimeToolNotification;
 use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
+use synapse_domain::application::services::assistant_output_presentation::PresentedOutput;
 use synapse_domain::application::services::route_switch_preflight::{
     RouteSwitchPreflight, RouteSwitchStatus,
 };
 use synapse_domain::application::services::runtime_error_presentation::format_context_limit_recovery_response;
-use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::application::use_cases::handle_inbound_message::{
+    self as web_inbound, HandleResult,
+};
 use synapse_domain::config::schema::CapabilityLane;
-use synapse_domain::domain::channel::ChannelCapability;
+use synapse_domain::domain::channel::{
+    InboundEnvelope, InboundMediaAttachment, InboundMediaKind, SourceKind,
+};
 use synapse_domain::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
-use synapse_domain::domain::conversation_target::CurrentConversationContext;
 // Run types no longer needed directly — lifecycle managed by conversation_service
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Query, State, WebSocketUpgrade,
+        Multipart, Query, State, WebSocketUpgrade,
     },
-    http::{header, HeaderMap},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
+    Json,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -47,7 +52,10 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use synapse_domain::ports::agent_runtime::AgentRuntimeErrorKind;
+use synapse_domain::ports::channel_registry::ChannelRegistryPort;
+use synapse_domain::ports::hooks::NoOpHooks;
 use synapse_domain::ports::route_selection::RouteSelection;
+use synapse_infra::approval::ApprovalManager;
 
 /// The sub-protocol we support for the chat WebSocket.
 const WS_PROTOCOL: &str = "synapseclaw.v1";
@@ -60,20 +68,7 @@ const MAX_MEMORY_SESSIONS: usize = 50;
 
 /// Auto-label truncation length.
 const AUTO_LABEL_MAX_LEN: usize = 40;
-
-fn web_runtime_ports(state: &AppState) -> crate::agent::AgentRuntimePorts {
-    crate::agent::AgentRuntimePorts {
-        conversation_store: state.conversation_store.clone(),
-        conversation_context: Some(Arc::clone(&state.conversation_context)),
-        user_profile_store: Some(Arc::clone(&state.user_profile_store)),
-        user_profile_context: Some(Arc::clone(&state.user_profile_context)),
-        turn_defaults_context: Some(Arc::clone(&state.turn_defaults_context)),
-        scoped_instruction_context: Some(Arc::clone(&state.scoped_instruction_context)),
-        channel_registry: state.channel_registry.clone(),
-        run_recipe_store: Some(Arc::clone(&state.run_recipe_store)),
-        history_compaction_cache: None,
-    }
-}
+const MAX_WEB_MEDIA_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -136,6 +131,111 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn canonical_web_conversation_key(
+    agent_id: &str,
+    session_key: &str,
+    token_prefix: &str,
+    thread_ref: Option<String>,
+) -> String {
+    let envelope = InboundEnvelope {
+        source_kind: SourceKind::Web,
+        source_adapter: "web".to_string(),
+        actor_id: format!("web:{token_prefix}"),
+        conversation_id: session_key.to_string(),
+        event_ref: None,
+        reply_ref: session_key.to_string(),
+        thread_ref,
+        media_attachments: Vec::new(),
+        content: String::new(),
+        received_at: 0,
+    };
+    synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+        &envelope, agent_id,
+    )
+}
+
+fn canonical_web_conversation_scope_prefix(agent_id: &str, session_key: &str) -> String {
+    let envelope = InboundEnvelope {
+        source_kind: SourceKind::Web,
+        source_adapter: "web".to_string(),
+        actor_id: String::new(),
+        conversation_id: session_key.to_string(),
+        event_ref: None,
+        reply_ref: session_key.to_string(),
+        thread_ref: None,
+        media_attachments: Vec::new(),
+        content: String::new(),
+        received_at: 0,
+    };
+    synapse_domain::application::services::inbound_message_service::conversation_scope_key_prefix_for_agent(
+        &envelope, agent_id,
+    )
+}
+
+fn canonical_web_conversation_key_for_state(
+    state: &AppState,
+    session_key: &str,
+    token_prefix: &str,
+    thread_ref: Option<String>,
+) -> anyhow::Result<String> {
+    let config_snapshot = state.config.lock().clone();
+    let inbound_config = build_web_inbound_config(state, &config_snapshot)?;
+    Ok(canonical_web_conversation_key(
+        &inbound_config.agent_id,
+        session_key,
+        token_prefix,
+        thread_ref,
+    ))
+}
+
+fn canonical_web_conversation_scope_prefix_for_state(
+    state: &AppState,
+    session_key: &str,
+) -> anyhow::Result<String> {
+    let config_snapshot = state.config.lock().clone();
+    let inbound_config = build_web_inbound_config(state, &config_snapshot)?;
+    Ok(canonical_web_conversation_scope_prefix(
+        &inbound_config.agent_id,
+        session_key,
+    ))
+}
+
+fn default_web_provider(config: &synapse_domain::config::schema::Config) -> String {
+    config
+        .default_provider
+        .clone()
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn default_web_model(state: &AppState, config: &synapse_domain::config::schema::Config) -> String {
+    config
+        .default_model
+        .clone()
+        .unwrap_or_else(|| state.model.clone())
+}
+
+fn default_web_route_selection(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+) -> RouteSelection {
+    RouteSelection {
+        provider: default_web_provider(config),
+        model: default_web_model(state, config),
+        lane: None,
+        candidate_index: None,
+        last_admission: None,
+        recent_admissions: Vec::new(),
+        last_tool_repair: None,
+        recent_tool_repairs: Vec::new(),
+        context_cache: None,
+        assumptions: Vec::new(),
+        calibrations: Vec::new(),
+        watchdog_alerts: Vec::new(),
+        handoff_artifacts: Vec::new(),
+    }
 }
 
 /// Query params for the proxy WebSocket.
@@ -375,7 +475,7 @@ async fn handle_socket(
     };
 
     // Ensure session exists in memory (create agent if needed)
-    if let Err(e) = ensure_session(&state, &session_key).await {
+    if let Err(e) = ensure_session(&state, &session_key, &token_prefix).await {
         let mut sender = sender;
         let err = serde_json::json!({"type": "error", "message": format!("Failed to initialise session: {e}")});
         let _ = sender.send(Message::Text(err.to_string().into())).await;
@@ -496,8 +596,12 @@ async fn handle_socket(
     // WS disconnect: agent stays alive in AppState (not dropped)
 }
 
-/// Ensure a session exists in memory. If not, create from DB or fresh.
-async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
+/// Ensure a session exists in memory. If not, resume it from the shared conversation store or create fresh.
+async fn ensure_session(
+    state: &AppState,
+    session_key: &str,
+    token_prefix: &str,
+) -> anyhow::Result<()> {
     {
         let sessions = state
             .chat_sessions
@@ -508,116 +612,65 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         }
     }
 
-    // Try resuming via synapse_domain use case (ConversationStorePort path)
-    // or fall back to legacy ChatDb path.
-    let db_session;
-    let config = state.config.lock().clone();
-    let mut agent = crate::agent::Agent::from_config_with_runtime_context(
-        &config,
-        Some(state.mem.clone()),
-        web_runtime_ports(state),
-    )
-    .await?;
-    agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
-    agent.set_conversation_store(state.conversation_store.clone());
-    agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
-    agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
-    agent.set_channel_registry(state.channel_registry.clone());
-
+    let store = state
+        .conversation_store
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("web conversation_store is required"))?;
+    let runtime_conversation_key =
+        canonical_web_conversation_key_for_state(state, session_key, token_prefix, None)?;
     let now = Instant::now();
-    let _now_secs_val = now_secs();
+    let mut web_runtime_history = Vec::<synapse_providers::ChatMessage>::new();
 
-    let (label, msg_count, input_tok, output_tok, current_goal, session_summary) =
-        if let Some(store) = state.conversation_store.as_ref() {
-            // Phase 4.0 path: use ResumeConversation use case
-            match synapse_domain::application::use_cases::resume_conversation::execute(
-                store.as_ref(),
-                session_key,
-            )
-            .await
-            {
-                Ok(resumed) => {
-                    // Replay transcript into agent
-                    for turn in &resumed.transcript {
-                        agent.push_history(synapse_providers::ConversationMessage::Chat(
-                            synapse_providers::ChatMessage {
-                                role: turn.role.clone(),
-                                content: turn.content.clone(),
-                            },
-                        ));
-                    }
-                    db_session = Some(resumed.session.clone());
-                    (
-                        resumed.session.label,
-                        resumed.session.message_count,
-                        resumed.session.input_tokens,
-                        resumed.session.output_tokens,
-                        resumed.session.current_goal,
-                        resumed.session.summary,
-                    )
+    let (
+        label,
+        msg_count,
+        input_tok,
+        output_tok,
+        current_goal,
+        session_summary,
+        last_summary_count,
+    ) = match synapse_domain::application::use_cases::resume_conversation::execute(
+        store.as_ref(),
+        session_key,
+    )
+    .await
+    {
+        Ok(resumed) => {
+            web_runtime_history.extend(resumed.transcript.iter().map(|turn| {
+                synapse_providers::ChatMessage {
+                    role: turn.role.clone(),
+                    content: turn.content.clone(),
                 }
-                Err(_) => {
-                    // Session not found — will create fresh
-                    db_session = None;
-                    (None, 0, 0, 0, None, None)
-                }
-            }
-        } else {
-            // Legacy ChatDb fallback
-            db_session = if let Some(db) = state.chat_db.as_ref() {
-                db.get_session(session_key)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|r| ConversationSession {
-                        key: r.key,
-                        kind: ConversationKind::Web,
-                        label: r.label,
-                        summary: r.session_summary,
-                        current_goal: r.current_goal,
-                        #[allow(clippy::cast_sign_loss)]
-                        created_at: r.created_at as u64,
-                        #[allow(clippy::cast_sign_loss)]
-                        last_active: r.last_active as u64,
-                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                        message_count: r.message_count as u32,
-                        #[allow(clippy::cast_sign_loss)]
-                        input_tokens: r.input_tokens as u64,
-                        #[allow(clippy::cast_sign_loss)]
-                        output_tokens: r.output_tokens as u64,
-                    })
+            }));
+            let last_summary_count = if resumed.session.summary.is_some() {
+                resumed.session.message_count
             } else {
-                None
+                0
             };
-            if let Some(ref session) = db_session {
-                if let Some(db) = state.chat_db.as_ref() {
-                    let messages = db.get_messages(session_key, 200).await?;
-                    replay_messages_into_agent(&mut agent, &messages)?;
-                }
-                (
-                    session.label.clone(),
-                    session.message_count,
-                    session.input_tokens,
-                    session.output_tokens,
-                    session.current_goal.clone(),
-                    session.summary.clone(),
-                )
-            } else {
-                (None, 0, 0, 0, None, None)
-            }
-        };
+            (
+                resumed.session.label,
+                resumed.session.message_count,
+                resumed.session.input_tokens,
+                resumed.session.output_tokens,
+                resumed.session.current_goal,
+                resumed.session.summary,
+                last_summary_count,
+            )
+        }
+        Err(_) => (None, 0, 0, 0, None, None, 0),
+    };
 
-    // Bind memory recall to this web session (episodic recall is session-scoped).
-    agent.set_memory_session_id(Some(session_key.to_string()));
-    if agent.compact_for_session_hygiene().await {
+    if synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene(
+        &mut web_runtime_history,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+    ) {
         tracing::info!(
             session_key = %session_key,
-            "Compacted resumed web session before agent execution"
+            "Compacted resumed web session before runtime execution"
         );
     }
 
     let session = ChatSession {
-        agent,
         created_at: now,
         last_active: now,
         label,
@@ -628,10 +681,10 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         output_tokens: output_tok,
         run_id: None,
         abort_tx: None,
-        last_summary_count: 0,
+        last_summary_count,
     };
 
-    let _need_persist = {
+    {
         let mut sessions = state
             .chat_sessions
             .lock()
@@ -645,59 +698,33 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
                 .map(|(k, _)| k.clone());
             if let Some(key) = oldest {
                 sessions.remove(&key);
+                let runtime_scope_prefix =
+                    canonical_web_conversation_scope_prefix_for_state(state, &key)?;
+                if let Ok(mut histories) = state.web_conversation_histories.lock() {
+                    histories
+                        .retain(|runtime_key, _| !runtime_key.starts_with(&runtime_scope_prefix));
+                }
+                if let Ok(mut routes) = state.web_route_overrides.lock() {
+                    routes.retain(|runtime_key, _| !runtime_key.starts_with(&runtime_scope_prefix));
+                }
             }
         }
 
         sessions.insert(session_key.to_string(), session);
-        db_session.is_none()
     }; // MutexGuard dropped here
+
+    if !web_runtime_history.is_empty() {
+        state
+            .web_conversation_histories
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .insert(runtime_conversation_key, web_runtime_history);
+    }
 
     // Don't persist empty sessions on WS connect — only persist when
     // the first message is sent (in handle_chat_send_rpc).
     // This prevents phantom empty sessions from appearing on every page visit.
 
-    Ok(())
-}
-
-/// Replay persisted messages into an Agent instance (user/assistant/system only).
-fn replay_messages_into_agent(
-    agent: &mut crate::agent::Agent,
-    messages: &[ChatMessageRow],
-) -> anyhow::Result<()> {
-    use synapse_providers::{ChatMessage, ConversationMessage};
-
-    for msg in messages {
-        let conv_msg = match msg.kind.as_str() {
-            "user" => ConversationMessage::Chat(ChatMessage::user(msg.content.clone())),
-            "assistant" => ConversationMessage::Chat(ChatMessage::assistant(msg.content.clone())),
-            "system" => ConversationMessage::Chat(ChatMessage::system(msg.content.clone())),
-            _ => continue, // tool_call, tool_result, error, interrupted — UI-only
-        };
-        agent.push_history(conv_msg);
-    }
-    Ok(())
-}
-
-/// Replay ConversationEvents into an Agent (Phase 4.0 path).
-fn replay_events_into_agent(
-    agent: &mut crate::agent::Agent,
-    events: &[ConversationEvent],
-) -> anyhow::Result<()> {
-    use synapse_providers::{ChatMessage, ConversationMessage};
-
-    for event in events {
-        let conv_msg = match event.event_type {
-            EventType::User => ConversationMessage::Chat(ChatMessage::user(event.content.clone())),
-            EventType::Assistant => {
-                ConversationMessage::Chat(ChatMessage::assistant(event.content.clone()))
-            }
-            EventType::System => {
-                ConversationMessage::Chat(ChatMessage::system(event.content.clone()))
-            }
-            _ => continue, // ToolCall, ToolResult, Error, Interrupted — UI-only
-        };
-        agent.push_history(conv_msg);
-    }
     Ok(())
 }
 
@@ -757,41 +784,14 @@ async fn handle_chat_history(
     }
 
     // Ensure web session is loaded
-    ensure_session(state, &session_key).await?;
+    ensure_session(state, &session_key, token_prefix).await?;
 
-    let events = if let Some(store) = state.conversation_store.as_ref() {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        store.get_events(&session_key, limit as usize).await
-    } else if let Some(db) = state.chat_db.as_ref() {
-        db.get_messages(&session_key, limit)
-            .await
-            .unwrap_or_default()
-            .iter()
-            .map(|m| ConversationEvent {
-                event_type: match m.kind.as_str() {
-                    "user" => EventType::User,
-                    "assistant" => EventType::Assistant,
-                    "tool_call" => EventType::ToolCall,
-                    "tool_result" => EventType::ToolResult,
-                    "error" => EventType::Error,
-                    "interrupted" => EventType::Interrupted,
-                    _ => EventType::System,
-                },
-                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
-                content: m.content.clone(),
-                tool_name: m.tool_name.clone(),
-                run_id: m.run_id.clone(),
-                #[allow(clippy::cast_sign_loss)]
-                input_tokens: m.input_tokens.map(|t| t as u64),
-                #[allow(clippy::cast_sign_loss)]
-                output_tokens: m.output_tokens.map(|t| t as u64),
-                #[allow(clippy::cast_sign_loss)]
-                timestamp: m.timestamp as u64,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let store = state
+        .conversation_store
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("web conversation_store is required"))?;
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let events = store.get_events(&session_key, limit as usize).await;
 
     let (label, session_summary, current_goal) = {
         let sessions = state
@@ -843,40 +843,34 @@ async fn handle_channel_history(
     session_key: &str,
     limit: i64,
 ) -> anyhow::Result<serde_json::Value> {
-    let surreal = state
-        .surreal
+    let backend = state
+        .channel_session_backend
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("SurrealDB not available"))?;
+        .ok_or_else(|| anyhow::anyhow!("channel session backend is required"))?;
 
-    // Load messages
-    let mut resp = surreal
-        .query(
-            "SELECT role, content, created_at FROM channel_session
-             WHERE session_key = $key ORDER BY created_at ASC LIMIT $limit",
-        )
-        .bind(("key", session_key.to_string()))
-        .bind(("limit", limit))
-        .await
-        .map_err(|e| anyhow::anyhow!("channel history: {e}"))?;
-
-    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
-
-    let messages: Vec<serde_json::Value> = rows
+    let messages = backend.load(session_key).await;
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let limit = limit.max(0) as usize;
+    let start = if limit == 0 {
+        messages.len()
+    } else {
+        messages.len().saturating_sub(limit)
+    };
+    let messages: Vec<serde_json::Value> = messages[start..]
         .iter()
         .enumerate()
-        .map(|(i, row)| {
-            let role = row.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-            let content = row.get("content").and_then(|v| v.as_str()).unwrap_or("");
-            let event_type = if role == "assistant" {
-                "assistant"
-            } else {
-                "user"
+        .map(|(i, message)| {
+            let event_type = match message.role.as_str() {
+                "assistant" => "assistant",
+                "tool" => "tool_result",
+                "system" => "system",
+                _ => "user",
             };
             serde_json::json!({
                 "id": i + 1,
                 "event_type": event_type,
-                "role": role,
-                "content": content,
+                "role": message.role,
+                "content": message.content,
                 "tool_name": null,
                 "run_id": null,
                 "timestamp": 0,
@@ -886,37 +880,26 @@ async fn handle_channel_history(
         })
         .collect();
 
-    // Load summary if available
-    let summary = match surreal
-        .query(
-            "SELECT summary FROM channel_session_summary
-             WHERE session_key = $key LIMIT 1",
-        )
-        .bind(("key", session_key.to_string()))
+    let summary = backend.load_summary(session_key).await.map(|summary| summary.summary);
+    let metadata = backend
+        .list_sessions_with_metadata()
         .await
-    {
-        Ok(mut sr) => {
-            let srows: Vec<serde_json::Value> = sr.take(0).unwrap_or_default();
-            srows
-                .first()
-                .and_then(|v| v.get("summary"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        }
-        Err(_) => None,
-    };
-
-    // Parse channel + sender from key
+        .into_iter()
+        .find(|session| session.key == session_key);
     let (channel, sender) = session_key
         .split_once('_')
-        .unwrap_or(("unknown", session_key));
+        .unwrap_or(("channel", session_key));
 
     Ok(serde_json::json!({
         "messages": messages,
         "session_key": session_key,
-        "label": format!("{} · {}", channel, sender),
+        "channel": channel,
+        "sender": sender,
+        "label": metadata.as_ref().and_then(|session| session.label.clone()),
         "session_summary": summary,
-        "current_goal": null,
+        "current_goal": metadata.as_ref().and_then(|session| session.current_goal.clone()),
+        "input_tokens": metadata.as_ref().map(|session| session.input_tokens),
+        "output_tokens": metadata.as_ref().map(|session| session.output_tokens),
     }))
 }
 
@@ -934,18 +917,18 @@ async fn handle_chat_send_rpc(
         .unwrap_or(default_session)
         .to_string();
     check_session_ownership(&session_key, token_prefix)?;
-    ensure_session(state, &session_key).await?;
+    ensure_session(state, &session_key, token_prefix).await?;
     let message = params["message"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'message' param"))?
         .to_string();
-
-    if let Some(result) =
-        handle_runtime_command_if_needed(state, &session_key, &message, token_prefix, out_tx)
-            .await?
-    {
-        return Ok(result);
-    }
+    let thread_ref = web_thread_ref(params);
+    let media_attachments = web_media_attachments(params)?;
+    let provider_facing_message =
+        synapse_domain::application::services::inbound_message_service::provider_facing_content(
+            &message,
+            &media_attachments,
+        );
 
     // Phase 4.0 Slice 3: run lifecycle via conversation_service
     let run_id = if let Some(store) = state.run_store.as_ref() {
@@ -971,8 +954,6 @@ async fn handle_chat_send_rpc(
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(&session_key) {
-            s.agent
-                .set_user_profile_key(Some(format!("web:{token_prefix}")));
             s.run_id = Some(run_id.clone());
             s.abort_tx = Some(abort_tx);
             s.last_active = Instant::now();
@@ -1000,110 +981,50 @@ async fn handle_chat_send_rpc(
         &session_key,
         "user",
         Some("user"),
-        &message,
+        &provider_facing_message,
         None,
         None,
     )
     .await;
     auto_label_if_needed(state, &session_key, &message).await;
 
-    // Record history length before turn (for extracting tool events after)
-    let history_len_before = {
-        let sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        sessions
-            .get(&session_key)
-            .map_or(0, |s| s.agent.history().len())
-    };
-
-    // Run agent turn with abort support + real-time tool event push
-    let result = run_agent_turn_with_abort(
+    // Run through the same inbound use case used by channels; WebSocket is only transport.
+    let result = run_web_inbound_turn_with_abort(
         state,
         &session_key,
         token_prefix,
         &message,
+        thread_ref.clone(),
+        media_attachments,
         abort_rx,
         out_tx,
     )
     .await;
 
-    // Clear run_id + abort_tx, extract usage + collect tool history for async persist
-    let (usage, tool_history, tool_facts, user_profile_key) = {
+    // Clear run_id + abort_tx. Usage/tool learning is owned by the shared inbound runtime path.
+    {
         let mut sessions = state
             .chat_sessions
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let history_snapshot = if let Some(s) = sessions.get_mut(&session_key) {
+        if let Some(s) = sessions.get_mut(&session_key) {
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
-            // Tool events already pushed in real-time via RuntimeToolNotifyObserver.
-            // Snapshot history for async persist (after lock release)
-            let history = s.agent.history();
-            if history_len_before <= history.len() {
-                history[history_len_before..].to_vec()
-            } else {
-                let fallback_start = history
-                    .iter()
-                    .rposition(|entry| {
-                        matches!(
-                            entry,
-                            synapse_providers::ConversationMessage::Chat(chat)
-                                if chat.role == "user" && chat.content == message
-                        )
-                    })
-                    .unwrap_or(history.len());
-                tracing::warn!(
-                    session_key = %session_key,
-                    history_len_before,
-                    history_len_after = history.len(),
-                    fallback_start,
-                    "Agent history shrank during turn; reconstructing delta from latest user message"
-                );
-                history[fallback_start..].to_vec()
-            }
-        } else {
-            Vec::new()
-        };
-        let u = sessions
-            .get(&session_key)
-            .and_then(|s| s.agent.last_turn_usage().cloned());
-        let facts = sessions
-            .get(&session_key)
-            .map(|s| s.agent.last_turn_tool_facts().to_vec())
-            .unwrap_or_default();
-        let profile_key = sessions
-            .get(&session_key)
-            .and_then(|s| s.agent.user_profile_key().map(str::to_string));
-        (u, history_snapshot, facts, profile_key)
-    };
+        }
+    }
     match result {
         Ok(response) => {
             // Push assistant message via the same out_tx channel as tool events.
             // This guarantees FIFO order: tool_call → tool_result → assistant.
             // The RPC response only carries metadata (run_id), not the message.
-            let _ = out_tx.send(
-                serde_json::json!({
-                    "type": "assistant",
-                    "session_key": session_key,
-                    "content": response,
-                    "timestamp": now_secs(),
-                })
-                .to_string(),
-            );
+            let _ = out_tx.send(web_presented_output_json(&response, &session_key).to_string());
             let state_bg = state.clone();
             let session_key_bg = session_key.clone();
             let run_id_bg = run_id.clone();
             let message_bg = message.clone();
-            let response_bg = response.clone();
-            let tool_history_bg = tool_history.clone();
-            let tool_facts_bg = tool_facts.clone();
-            let user_profile_key_bg = user_profile_key.clone();
-            let usage_bg = usage.clone();
+            let response_bg = response.text.clone();
             tokio::spawn(async move {
-                persist_tool_events(&state_bg, &session_key_bg, &tool_history_bg).await;
                 persist_message(
                     &state_bg,
                     &session_key_bg,
@@ -1114,18 +1035,16 @@ async fn handle_chat_send_rpc(
                     None,
                 )
                 .await;
-                let input = usage_bg.as_ref().and_then(|u| u.input_tokens).unwrap_or(0) as i64;
-                let output = usage_bg.as_ref().and_then(|u| u.output_tokens).unwrap_or(0) as i64;
                 if let (Some(cs), Some(rs)) = (
                     state_bg.conversation_store.as_ref(),
                     state_bg.run_store.as_ref(),
                 ) {
                     let _ = synapse_domain::application::use_cases::start_conversation_run::finalize_success(
-                        cs.as_ref(), rs.as_ref(), &session_key_bg, &run_id_bg, input, output,
+                        cs.as_ref(), rs.as_ref(), &session_key_bg, &run_id_bg, 0, 0,
                     ).await;
                 }
                 sync_memory_count(&state_bg, &session_key_bg, 2);
-                persist_usage_memory(&state_bg, &session_key_bg, usage_bg.as_ref());
+                persist_usage_memory(&state_bg, &session_key_bg, None);
                 update_session_goal(&state_bg, &session_key_bg, &message_bg).await;
                 emit_session_event(&state_bg, "session.updated", &session_key_bg);
                 emit_run_event(
@@ -1135,26 +1054,6 @@ async fn handle_chat_send_rpc(
                     &run_id_bg,
                 );
                 summarize_session_if_needed(&state_bg, &session_key_bg).await;
-
-                let mem = state_bg.mem.clone();
-                let input =
-                    synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
-                        agent_id: state_bg.agent_id.clone(),
-                        user_message: message_bg,
-                        assistant_response: response_bg,
-                        tools_used: extract_tool_names(&tool_history_bg),
-                        tool_facts: tool_facts_bg,
-                        run_recipe_store: Some(state_bg.run_recipe_store.clone()),
-                        user_profile_store: Some(state_bg.user_profile_store.clone()),
-                        user_profile_key: user_profile_key_bg,
-                        auto_save_enabled: state_bg.auto_save,
-                        event_tx: Some(state_bg.event_tx.clone()),
-                    };
-                synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
-                    mem.as_ref(),
-                    input,
-                )
-                .await;
             });
 
             // RPC response: metadata only (assistant message already pushed above)
@@ -1165,7 +1064,6 @@ async fn handle_chat_send_rpc(
         Err(e) => {
             let msg = e.to_string();
             if msg == "aborted" {
-                persist_tool_events(state, &session_key, &tool_history).await;
                 persist_message(
                     state,
                     &session_key,
@@ -1196,18 +1094,25 @@ async fn handle_chat_send_rpc(
                 runtime_error.kind,
                 AgentRuntimeErrorKind::ContextLimitExceeded
             ) {
-                let compacted = compact_web_session_after_context_limit(state, &session_key)
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::debug!(
-                            session_key = %session_key,
-                            error = %error,
-                            "Web session context-limit recovery compaction failed"
-                        );
-                        false
-                    });
+                let runtime_conversation_key = canonical_web_conversation_key_for_state(
+                    state,
+                    &session_key,
+                    token_prefix,
+                    thread_ref.clone(),
+                )
+                .unwrap_or_else(|_| session_key.clone());
+                let compacted =
+                    compact_web_session_after_context_limit(state, &runtime_conversation_key)
+                        .await
+                        .unwrap_or_else(|error| {
+                            tracing::debug!(
+                                session_key = %session_key,
+                                error = %error,
+                                "Web session context-limit recovery compaction failed"
+                            );
+                            false
+                        });
                 let recovery_message = format_context_limit_recovery_response(compacted);
-                persist_tool_events(state, &session_key, &tool_history).await;
                 persist_message(
                     state,
                     &session_key,
@@ -1249,7 +1154,6 @@ async fn handle_chat_send_rpc(
             }
 
             let sanitized = synapse_providers::sanitize_api_error(&runtime_error.to_string());
-            persist_tool_events(state, &session_key, &tool_history).await;
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             // Phase 4.0 Slice 3: finalize failed
             if let (Some(cs), Some(rs)) =
@@ -1271,110 +1175,474 @@ async fn handle_chat_send_rpc(
     }
 }
 
-async fn handle_runtime_command_if_needed(
+fn build_web_system_prompt(
     state: &AppState,
-    session_key: &str,
-    message: &str,
-    token_prefix: &str,
-    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
-) -> anyhow::Result<Option<serde_json::Value>> {
-    let caps = vec![ChannelCapability::RuntimeCommands];
-    let Some(command) =
-        synapse_domain::application::services::inbound_message_service::parse_runtime_command(
-            message, &caps,
-        )
-    else {
-        return Ok(None);
-    };
-
-    let config_snapshot = state.config.lock().clone();
-    let effect = synapse_domain::application::services::inbound_message_service::command_effect(
-        &command,
-        &config_snapshot,
-    );
-    let default_provider = config_snapshot.default_provider.clone().unwrap_or_else(|| {
-        current_web_route_selection(state, session_key)
-            .ok()
-            .map(|route| route.provider)
-            .unwrap_or_default()
-    });
-    let adapter_contract = WebRuntimeAdapterContract;
-    let mut command_host = WebRuntimeCommandHost {
-        state,
-        session_key,
-        config: &config_snapshot,
-        default_provider: default_provider.as_str(),
-        token_prefix,
-    };
-    let response = execute_runtime_command_effect(
-        &adapter_contract,
-        &mut command_host,
-        &effect,
-        default_provider.as_str(),
-    )
-    .await?;
-
-    let _ = out_tx.send(
-        serde_json::json!({
-            "type": "assistant",
-            "session_key": session_key,
-            "content": response,
-            "timestamp": now_secs(),
-        })
-        .to_string(),
-    );
-
-    if let Some(store) = state.conversation_store.as_ref() {
-        let session = synapse_domain::application::services::conversation_service::new_web_session(
-            session_key,
-            None,
+    config: &synapse_domain::config::schema::Config,
+) -> anyhow::Result<String> {
+    let tool_descs: Vec<(&str, &str)> = state
+        .tools_registry
+        .iter()
+        .map(|spec| (spec.name.as_str(), spec.description.as_str()))
+        .collect();
+    let skills = crate::skills::load_skills_with_config(&config.workspace_dir, config);
+    let bootstrap_max_chars = config.agent.compact_context.then_some(6000);
+    let native_tools = state.provider.supports_native_tools();
+    if !native_tools && !state.runtime_tools_registry.is_empty() {
+        anyhow::bail!(
+            "provider {} does not support native tool calling; prompt-guided tool fallback has been removed",
+            default_web_provider(config)
         );
-        let _ = store.upsert_session(&session).await;
     }
 
-    Ok(Some(serde_json::json!({
-        "command": true,
-    })))
+    crate::runtime_system_prompt::build_system_prompt_with_mode(
+        &config.workspace_dir,
+        default_web_model(state, config).as_str(),
+        &tool_descs,
+        &skills,
+        Some(&config.identity),
+        bootstrap_max_chars,
+        native_tools,
+        config.skills.prompt_injection_mode,
+    )
+}
+
+fn build_web_inbound_config(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+) -> anyhow::Result<web_inbound::InboundMessageConfig> {
+    Ok(crate::inbound_runtime_config::InboundRuntimeConfigFactory::build(
+        crate::inbound_runtime_config::InboundRuntimeConfigInput {
+            system_prompt: build_web_system_prompt(state, config)?,
+            default_provider: default_web_provider(config),
+            default_model: default_web_model(state, config),
+            temperature: state.temperature,
+            max_tool_iterations: config.agent.max_tool_iterations,
+            auto_save_memory: state.auto_save,
+            model_lanes: config.model_lanes.clone(),
+            model_preset: config.model_preset.clone(),
+            query_classification: config.query_classification.clone(),
+            message_timeout_secs: config.channels_config.message_timeout_secs,
+            min_relevance_score: config.memory.min_relevance_score,
+            ack_reactions: false,
+            agent_id: state.agent_id.clone(),
+            prompt_budget_config: config.memory.prompt_budget.clone(),
+            presentation_mode: synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(true),
+        },
+    ))
+}
+
+fn build_web_agent_runtime(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+    observer: Arc<dyn synapse_observability::Observer>,
+) -> ChannelAgentRuntime {
+    let default_provider = default_web_provider(config);
+    crate::agent_runtime_factory::ChannelAgentRuntimeFactory::build(
+        crate::agent_runtime_factory::ChannelAgentRuntimeInput {
+            provider: Arc::clone(&state.provider),
+            default_provider_name: default_provider,
+            default_api_key: config.api_key.clone(),
+            default_api_url: config.api_url.clone(),
+            provider_cache: Arc::clone(&state.provider_cache),
+            reliability: config.reliability.clone(),
+            provider_runtime_options: synapse_providers::provider_runtime_options_from_config(
+                config,
+            ),
+            workspace_dir: config.workspace_dir.clone(),
+            tools_registry: Arc::clone(&state.runtime_tools_registry),
+            observer,
+            approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
+            channel_name: "web".to_string(),
+            multimodal: config.multimodal.clone(),
+            excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
+            dedup_exempt_tools: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
+            hooks: None,
+            activated_tools: state.runtime_mcp_activated_tools.clone(),
+            message_timeout_secs: config.channels_config.message_timeout_secs,
+            max_tool_iterations: config.agent.max_tool_iterations,
+        },
+    )
+}
+
+fn web_presented_output_json(output: &PresentedOutput, session_key: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "assistant",
+        "session_key": session_key,
+        "content": output.text,
+        "media_artifacts": output.media_artifacts,
+        "thread_ref": output.delivery_hints.thread_ref,
+        "timestamp": now_secs(),
+    })
+}
+
+fn web_thread_ref(params: &serde_json::Value) -> Option<String> {
+    ["thread_ref", "thread_id", "reply_to"]
+        .iter()
+        .find_map(|key| params.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn web_media_attachments(
+    params: &serde_json::Value,
+) -> anyhow::Result<Vec<InboundMediaAttachment>> {
+    let Some(items) = params
+        .get("media_attachments")
+        .or_else(|| params.get("attachments"))
+    else {
+        return Ok(Vec::new());
+    };
+    let items = items
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("media_attachments must be an array"))?;
+    items
+        .iter()
+        .map(web_media_attachment)
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn web_media_attachment(value: &serde_json::Value) -> anyhow::Result<InboundMediaAttachment> {
+    let kind = value
+        .get("kind")
+        .or_else(|| value.get("type"))
+        .and_then(|value| value.as_str())
+        .map(web_media_kind)
+        .transpose()?
+        .unwrap_or(InboundMediaKind::File);
+    let uri = value
+        .get("uri")
+        .or_else(|| value.get("url"))
+        .or_else(|| value.get("path"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("media attachment requires uri/url/path"))?;
+    Ok(InboundMediaAttachment {
+        kind,
+        uri: uri.to_string(),
+        mime_type: value
+            .get("mime_type")
+            .or_else(|| value.get("mime"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        label: value
+            .get("label")
+            .or_else(|| value.get("name"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+    })
+}
+
+fn web_media_kind(value: &str) -> anyhow::Result<InboundMediaKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "image" => Ok(InboundMediaKind::Image),
+        "audio" | "voice" | "music" | "song" => Ok(InboundMediaKind::Audio),
+        "video" => Ok(InboundMediaKind::Video),
+        "file" | "document" | "attachment" => Ok(InboundMediaKind::File),
+        other => Err(anyhow::anyhow!(
+            "unsupported media attachment kind: {other}"
+        )),
+    }
+}
+
+pub async fn handle_api_chat_media_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    match store_web_chat_media(&state, &mut multipart).await {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn store_web_chat_media(
+    state: &AppState,
+    multipart: &mut Multipart,
+) -> anyhow::Result<serde_json::Value> {
+    let workspace_dir = state.config.lock().workspace_dir.clone();
+    let upload_dir = workspace_dir.join("web-media").join("chat");
+    tokio::fs::create_dir_all(&upload_dir).await?;
+
+    let mut requested_kind: Option<InboundMediaKind> = None;
+    while let Some(field) = multipart.next_field().await? {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name == "kind" || field_name == "type" {
+            requested_kind = Some(web_media_kind(field.text().await?.trim())?);
+            continue;
+        }
+        if field_name != "file" && field.file_name().is_none() {
+            continue;
+        }
+
+        let original_name = sanitize_web_media_filename(field.file_name().unwrap_or("upload.bin"));
+        let mime_type = field.content_type().map(str::to_string);
+        let bytes = field.bytes().await?;
+        if bytes.len() > MAX_WEB_MEDIA_UPLOAD_BYTES {
+            anyhow::bail!(
+                "media upload too large: {} bytes > {} bytes",
+                bytes.len(),
+                MAX_WEB_MEDIA_UPLOAD_BYTES
+            );
+        }
+        let kind =
+            requested_kind.unwrap_or_else(|| infer_web_media_kind(&original_name, &mime_type));
+        let stored_name = format!("{}-{original_name}", uuid::Uuid::new_v4());
+        let path = upload_dir.join(stored_name);
+        tokio::fs::write(&path, &bytes).await?;
+        let uri = path.to_string_lossy().to_string();
+        let attachment = serde_json::json!({
+            "kind": web_media_kind_label(kind),
+            "uri": uri,
+            "mime_type": mime_type,
+            "label": original_name,
+        });
+        return Ok(serde_json::json!({
+            "attachment": attachment,
+            "media_attachments": [attachment],
+        }));
+    }
+
+    anyhow::bail!("multipart upload requires a file field")
+}
+
+fn sanitize_web_media_filename(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('.');
+    if sanitized.is_empty() {
+        "upload.bin".to_string()
+    } else {
+        sanitized.to_string()
+    }
+}
+
+fn infer_web_media_kind(file_name: &str, mime_type: &Option<String>) -> InboundMediaKind {
+    if let Some(mime) = mime_type.as_deref() {
+        if mime.starts_with("image/") {
+            return InboundMediaKind::Image;
+        }
+        if mime.starts_with("audio/") {
+            return InboundMediaKind::Audio;
+        }
+        if mime.starts_with("video/") {
+            return InboundMediaKind::Video;
+        }
+    }
+    match file_name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png" | "jpg" | "jpeg" | "webp" | "gif") => InboundMediaKind::Image,
+        Some("mp3" | "wav" | "ogg" | "oga" | "opus" | "m4a" | "flac") => InboundMediaKind::Audio,
+        Some("mp4" | "mov" | "mkv" | "webm") => InboundMediaKind::Video,
+        _ => InboundMediaKind::File,
+    }
+}
+
+fn web_media_kind_label(kind: InboundMediaKind) -> &'static str {
+    match kind {
+        InboundMediaKind::Image => "image",
+        InboundMediaKind::Audio => "audio",
+        InboundMediaKind::Video => "video",
+        InboundMediaKind::File => "file",
+    }
+}
+
+async fn run_web_inbound_turn_with_abort(
+    state: &AppState,
+    session_key: &str,
+    token_prefix: &str,
+    message: &str,
+    thread_ref: Option<String>,
+    media_attachments: Vec<InboundMediaAttachment>,
+    mut abort_rx: tokio::sync::watch::Receiver<bool>,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+) -> anyhow::Result<PresentedOutput> {
+    let config_snapshot = state.config.lock().clone();
+    let inbound_config = build_web_inbound_config(state, &config_snapshot)?;
+    let runtime_conversation_key = canonical_web_conversation_key(
+        &inbound_config.agent_id,
+        session_key,
+        token_prefix,
+        thread_ref.clone(),
+    );
+    let default_provider = inbound_config.default_provider.clone();
+    let observer_for_runtime: Arc<dyn synapse_observability::Observer> =
+        Arc::new(RuntimeToolNotifyObserver::new(
+            Arc::clone(&state.observer),
+            WsToolNotificationHandler {
+                tx: out_tx.clone(),
+                session_key: session_key.to_string(),
+                seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
+                seen_tool_results: std::sync::Mutex::new(std::collections::HashSet::new()),
+            },
+            "web-runtime-tool-notify",
+        ));
+    let history = crate::inbound_runtime_ports::InboundRuntimeStoreFactory::history(
+        Arc::clone(&state.web_conversation_histories),
+        None,
+    );
+    let routes = crate::inbound_runtime_ports::InboundRuntimeStoreFactory::routes(
+        Arc::clone(&state.web_route_overrides),
+        inbound_config.default_provider.clone(),
+        inbound_config.default_model.clone(),
+    );
+    let hooks: Arc<dyn synapse_domain::ports::hooks::HooksPort> = Arc::new(NoOpHooks);
+    let channel_output = Arc::new(WebChannelOutput {
+        tx: out_tx.clone(),
+        session_key: session_key.to_string(),
+    });
+    let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> = Arc::new(
+        build_web_agent_runtime(state, &config_snapshot, observer_for_runtime),
+    );
+    let channel_registry: Arc<dyn ChannelRegistryPort> = state
+        .channel_registry
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("web channel_registry is required"))?;
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            state.channel_session_backend.clone(),
+        );
+    let retrieval_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::composite_conversation_store(
+            vec![state.conversation_store.clone(), channel_conversation_store],
+        );
+    let ports = crate::inbound_runtime_ports::InboundRuntimePortsFactory::build(crate::inbound_runtime_ports::InboundRuntimePortsInput {
+        history,
+        routes,
+        hooks,
+        channel_output,
+        agent_runtime,
+        channel_registry: Arc::clone(&channel_registry),
+        session_summary: crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_summary_for_key(
+            state.conversation_store.clone(),
+            session_key.to_string(),
+        ),
+        memory: Some(Arc::clone(&state.mem)),
+        event_tx: Some(state.event_tx.clone()),
+        conversation_context: Some(Arc::clone(&state.conversation_context)),
+        model_profile_catalog: Some(Arc::new(
+            WorkspaceModelProfileCatalog::with_provider_endpoint(
+                config_snapshot.workspace_dir.clone(),
+                Some(default_provider.as_str()),
+                config_snapshot.api_url.as_deref(),
+            ),
+        )),
+        turn_defaults_context: Some(Arc::clone(&state.turn_defaults_context)),
+        scoped_instruction_context: Some(Arc::clone(&state.scoped_instruction_context)),
+        conversation_store: retrieval_conversation_store,
+        dialogue_state_store: Some(Arc::clone(&state.dialogue_state_store)),
+        run_recipe_store: Some(Arc::clone(&state.run_recipe_store)),
+        user_profile_store: Some(Arc::clone(&state.user_profile_store)),
+    });
+    let envelope = InboundEnvelope {
+        source_kind: SourceKind::Web,
+        source_adapter: "web".to_string(),
+        actor_id: format!("web:{token_prefix}"),
+        conversation_id: session_key.to_string(),
+        event_ref: None,
+        reply_ref: session_key.to_string(),
+        thread_ref: thread_ref.clone(),
+        media_attachments,
+        content: message.to_string(),
+        received_at: now_secs() as u64,
+    };
+    let caps = channel_registry.capabilities("web");
+    if let Some(output) = crate::message_routing_service::route_explicit_message(
+        &envelope,
+        crate::message_routing_service::MessageRoutingPorts {
+            router: state.message_router.clone(),
+            pipeline_store: state.pipeline_store.clone(),
+            pipeline_executor: state.pipeline_executor.clone(),
+            run_store: state.run_store.clone(),
+            dead_letter: state.dead_letter.clone(),
+        },
+        synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+            reply_ref: Some(session_key.to_string()),
+            thread_ref: thread_ref.clone(),
+            already_delivered: false,
+        },
+    )
+    .await
+    {
+        return Ok(output);
+    }
+
+    let handled = tokio::select! {
+        biased;
+        _ = abort_rx.wait_for(|v| *v) => {
+            return Err(anyhow::anyhow!("aborted"));
+        }
+        result = web_inbound::handle(&envelope, &caps, &inbound_config, &ports) => result?,
+    };
+
+    match handled {
+        HandleResult::Response { output, .. } => Ok(output),
+        HandleResult::Cancelled { reason } => Err(anyhow::anyhow!(reason)),
+        HandleResult::Command { effect, .. } => {
+            let adapter_contract = WebRuntimeAdapterContract;
+            let mut command_host = WebRuntimeCommandHost {
+                state,
+                ui_session_key: session_key,
+                conversation_key: &runtime_conversation_key,
+                config: &config_snapshot,
+                default_provider: default_provider.as_str(),
+                token_prefix,
+            };
+            execute_runtime_command_output(
+                &adapter_contract,
+                &mut command_host,
+                &effect,
+                default_provider.as_str(),
+                synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+                    reply_ref: Some(session_key.to_string()),
+                    thread_ref: thread_ref.clone(),
+                    already_delivered: false,
+                },
+            )
+            .await
+        }
+        HandleResult::CommandNoChannel => {
+            Err(anyhow::anyhow!("runtime command channel unavailable"))
+        }
+    }
 }
 
 fn current_web_route_selection(
     state: &AppState,
     session_key: &str,
 ) -> anyhow::Result<RouteSelection> {
-    let sessions = state
-        .chat_sessions
+    if let Some(route) = state
+        .web_route_overrides
         .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let session = sessions
+        .map_err(|e| anyhow::anyhow!("{e}"))?
         .get(session_key)
-        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-    let provider = session.agent.provider_name_str().to_string();
-    let model = session.agent.model_name_str().to_string();
-    Ok(RouteSelection {
-        provider: provider.clone(),
-        model: model.clone(),
-        lane: session.agent.active_lane(),
-        candidate_index: session.agent.active_candidate_index(),
-        last_admission: session.agent.recent_turn_admissions().last().cloned(),
-        recent_admissions: session.agent.recent_turn_admissions().to_vec(),
-        last_tool_repair: session.agent.last_turn_tool_repair().cloned(),
-        recent_tool_repairs: session.agent.recent_turn_tool_repairs().to_vec(),
-        context_cache: Some(session.agent.history_compaction_cache_stats_for_route(
-            &provider,
-            &model,
-            session.agent.active_lane(),
-            None,
-        )),
-        assumptions: session.agent.recent_runtime_assumptions().to_vec(),
-        calibrations: session.agent.recent_runtime_calibrations().to_vec(),
-        watchdog_alerts: session.agent.recent_runtime_watchdog_alerts().to_vec(),
-        handoff_artifacts: session.agent.recent_runtime_handoff_artifacts().to_vec(),
-    })
+        .cloned()
+    {
+        return Ok(route);
+    }
+    let config_snapshot = state.config.lock().clone();
+    Ok(default_web_route_selection(state, &config_snapshot))
 }
 
 struct WebRuntimeCommandHost<'a> {
     state: &'a AppState,
-    session_key: &'a str,
+    ui_session_key: &'a str,
+    conversation_key: &'a str,
     config: &'a synapse_domain::config::schema::Config,
     default_provider: &'a str,
     token_prefix: &'a str,
@@ -1382,20 +1650,26 @@ struct WebRuntimeCommandHost<'a> {
 
 #[async_trait::async_trait]
 impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
-    fn fallback_provider(&self) -> String {
-        current_web_route_selection(self.state, self.session_key)
+    fn current_provider(&self) -> String {
+        current_web_route_selection(self.state, self.conversation_key)
             .ok()
             .map(|route| route.provider)
             .unwrap_or_else(|| self.default_provider.to_string())
     }
 
     async fn provider_help_route(&mut self) -> anyhow::Result<RouteSelection> {
-        current_web_route_selection(self.state, self.session_key)
+        current_web_route_selection(self.state, self.conversation_key)
     }
 
     async fn model_help_snapshot(&mut self) -> anyhow::Result<RuntimeModelHelpSnapshot> {
+        let mut route = current_web_route_selection(self.state, self.conversation_key)?;
+        if route.context_cache.is_none() {
+            route.context_cache = Some(
+                web_route_effective_context_cache_stats(self.state, self.config, &route).await,
+            );
+        }
         Ok(RuntimeModelHelpSnapshot {
-            route: current_web_route_selection(self.state, self.session_key)?,
+            route,
             config: self.config.clone(),
         })
     }
@@ -1409,7 +1683,8 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
             .ok_or_else(|| anyhow::anyhow!("provider route mutation request missing provider"))?;
         apply_web_runtime_route(
             self.state,
-            self.session_key,
+            self.ui_session_key,
+            self.conversation_key,
             self.config,
             Some(provider.as_str()),
             None,
@@ -1433,7 +1708,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         let provider = request
             .provider
             .clone()
-            .unwrap_or_else(|| self.fallback_provider());
+            .unwrap_or_else(|| self.current_provider());
         let model = request
             .model
             .clone()
@@ -1460,7 +1735,8 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         );
         let outcome = apply_web_runtime_route(
             self.state,
-            self.session_key,
+            self.ui_session_key,
+            self.conversation_key,
             self.config,
             Some(provider.as_str()),
             Some(model.as_str()),
@@ -1489,7 +1765,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
     }
 
     async fn clear_session(&mut self) -> anyhow::Result<()> {
-        clear_web_session_runtime_state(self.state, self.session_key)
+        clear_web_session_runtime_state(self.state, self.ui_session_key)
     }
 }
 
@@ -1501,97 +1777,78 @@ struct WebRuntimeRouteApplyOutcome {
 
 async fn apply_web_runtime_route(
     state: &AppState,
-    session_key: &str,
+    ui_session_key: &str,
+    conversation_key: &str,
     config: &synapse_domain::config::schema::Config,
     provider_override: Option<&str>,
     model_override: Option<&str>,
     route_lane: Option<CapabilityLane>,
     route_candidate_index: Option<usize>,
     target_context_window_tokens: Option<usize>,
-    token_prefix: &str,
+    _token_prefix: &str,
 ) -> anyhow::Result<WebRuntimeRouteApplyOutcome> {
-    let placeholder = crate::agent::Agent::from_config_with_runtime_context(
-        config,
-        Some(state.mem.clone()),
-        web_runtime_ports(state),
-    )
-    .await?;
+    if let Some(provider) = provider_override {
+        build_web_agent_runtime(state, config, Arc::clone(&state.observer))
+            .get_or_create_provider(provider)
+            .await?;
+    }
 
-    let mut agent = {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let session = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        std::mem::replace(&mut session.agent, placeholder)
-    };
-
-    let mut compacted = false;
-
-    if let Some(target_context_window_tokens) = target_context_window_tokens {
-        let preflight = agent
-            .prepare_for_target_context_window(target_context_window_tokens)
-            .await;
-        compacted = preflight.compacted;
-        if preflight.preflight.status == RouteSwitchStatus::TooLarge {
-            let blocked_preflight = preflight.into_preflight();
-            let mut sessions = state
-                .chat_sessions
-                .lock()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let session = sessions
-                .get_mut(session_key)
-                .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-            session.agent = agent;
-            return Ok(WebRuntimeRouteApplyOutcome {
-                compacted,
-                blocked_preflight: Some(blocked_preflight),
-            });
+    let mut route = current_web_route_selection(state, conversation_key)
+        .unwrap_or_else(|_| default_web_route_selection(state, config));
+    if let Some(provider) = provider_override {
+        route.provider = provider.to_string();
+        if model_override.is_none() {
+            route.lane = None;
+            route.candidate_index = None;
         }
     }
-
-    if let Err(error) = agent
-        .switch_runtime_route(
-            config,
-            provider_override,
-            model_override,
-            route_lane,
-            route_candidate_index,
-            state.mem.clone(),
-            web_runtime_ports(state),
-        )
-        .await
-    {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let session = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        session.agent = agent;
-        return Err(error);
+    if let Some(model) = model_override {
+        route.model = model.to_string();
+        route.lane = route_lane;
+        route.candidate_index = route_candidate_index;
     }
-    agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
-    agent.set_conversation_store(state.conversation_store.clone());
-    agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
-    agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
-    agent.set_channel_registry(state.channel_registry.clone());
-    agent.set_memory_session_id(Some(session_key.to_string()));
-    agent.set_user_profile_key(Some(format!("web:{token_prefix}")));
+    route.clear_runtime_diagnostics();
+
+    let mut target_profile =
+        synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+            config,
+            &route,
+            Some(&WorkspaceModelProfileCatalog::with_provider_endpoint(
+                config.workspace_dir.clone(),
+                Some(default_web_provider(config).as_str()),
+                config.api_url.as_deref(),
+            )),
+        );
+    if let Some(tokens) = target_context_window_tokens {
+        target_profile.context_window_tokens = Some(tokens);
+    }
+
+    let preflight =
+        resolve_web_runtime_route_switch_preflight(state, conversation_key, &target_profile);
+    if preflight.preflight.status == RouteSwitchStatus::TooLarge {
+        return Ok(WebRuntimeRouteApplyOutcome {
+            compacted: preflight.compacted,
+            blocked_preflight: Some(preflight.into_preflight()),
+        });
+    }
+    let compacted = preflight.compacted;
 
     {
-        let mut sessions = state
-            .chat_sessions
+        let default_route = default_web_route_selection(state, config);
+        let mut routes = state
+            .web_route_overrides
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let session = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        session.agent = agent;
-        session.last_active = Instant::now();
+        if route == default_route {
+            routes.remove(conversation_key);
+        } else {
+            routes.insert(conversation_key.to_string(), route);
+        }
+    }
+    if let Ok(mut sessions) = state.chat_sessions.lock() {
+        if let Some(session) = sessions.get_mut(ui_session_key) {
+            session.last_active = Instant::now();
+        }
     }
 
     Ok(WebRuntimeRouteApplyOutcome {
@@ -1600,155 +1857,79 @@ async fn apply_web_runtime_route(
     })
 }
 
-fn clear_web_session_runtime_state(state: &AppState, session_key: &str) -> anyhow::Result<()> {
-    let mut sessions = state
-        .chat_sessions
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let session = sessions
-        .get_mut(session_key)
-        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-    session.agent.clear_history();
-    session.message_count = 0;
-    session.input_tokens = 0;
-    session.output_tokens = 0;
-    session.current_goal = None;
-    session.session_summary = None;
-    Ok(())
+fn web_history_port(
+    state: &AppState,
+) -> Arc<dyn synapse_domain::ports::conversation_history::ConversationHistoryPort> {
+    crate::inbound_runtime_ports::InboundRuntimeStoreFactory::history(
+        Arc::clone(&state.web_conversation_histories),
+        None,
+    )
 }
 
-/// Execute agent.turn() with abort support.
-/// Swaps the agent out of sessions lock, runs turn, puts it back.
-async fn run_agent_turn_with_abort(
+fn resolve_web_runtime_route_switch_preflight(
     state: &AppState,
-    session_key: &str,
-    token_prefix: &str,
-    message: &str,
-    mut abort_rx: tokio::sync::watch::Receiver<bool>,
-    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
-) -> anyhow::Result<String> {
-    struct ConversationContextGuard {
-        port: Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>,
-    }
-
-    impl Drop for ConversationContextGuard {
-        fn drop(&mut self) {
-            self.port.set_current(None);
-        }
-    }
-
-    // Clone config before await to avoid holding MutexGuard across await.
-    let config_snapshot = state.config.lock().clone();
-    let replacement_agent = crate::agent::Agent::from_config_with_runtime_context(
-        &config_snapshot,
-        Some(state.mem.clone()),
-        web_runtime_ports(state),
+    conversation_key: &str,
+    target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+) -> synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflightResolution {
+    let history = web_history_port(state);
+    crate::runtime_history_hygiene::resolve_route_switch_preflight_for_history_port(
+        history.as_ref(),
+        conversation_key,
+        target_profile,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
     )
-    .await?;
-    let mut replacement_agent = replacement_agent;
-    replacement_agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
-    replacement_agent.set_conversation_store(state.conversation_store.clone());
-    replacement_agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
-    replacement_agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
-    replacement_agent.set_channel_registry(state.channel_registry.clone());
+}
+
+async fn web_route_effective_context_cache_stats(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+    route: &RouteSelection,
+) -> synapse_domain::ports::route_selection::ContextCacheStats {
+    let history_compaction_cache =
+        crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+            &config.workspace_dir,
+            &state.agent_id,
+        );
+    crate::runtime_history_hygiene::route_effective_context_cache_stats(
+        &config.compression,
+        config.compression_overrides.as_slice(),
+        history_compaction_cache.as_ref(),
+        route,
+    )
+    .await
+}
+
+fn clear_web_session_runtime_state(state: &AppState, ui_session_key: &str) -> anyhow::Result<()> {
+    let runtime_scope_prefix =
+        canonical_web_conversation_scope_prefix_for_state(state, ui_session_key)?;
+    if let Ok(mut histories) = state.web_conversation_histories.lock() {
+        histories.retain(|runtime_key, _| !runtime_key.starts_with(&runtime_scope_prefix));
+    }
     state
-        .conversation_context
-        .set_current(Some(CurrentConversationContext {
-            source_adapter: "web".to_string(),
-            conversation_ref: session_key.to_string(),
-            reply_ref: session_key.to_string(),
-            thread_ref: None,
-            actor_id: format!("web:{token_prefix}"),
-        }));
-    let _conversation_context_guard = ConversationContextGuard {
-        port: Arc::clone(&state.conversation_context),
-    };
-    let mut agent = {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let session = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        std::mem::replace(&mut session.agent, replacement_agent)
-    };
-
-    // Wrap the agent's observer to push real-time tool events through WS.
-    let base_observer = agent.observer_arc();
-    let ws_observer: std::sync::Arc<dyn synapse_observability::Observer> =
-        std::sync::Arc::new(RuntimeToolNotifyObserver::new(
-            Arc::clone(&base_observer),
-            WsToolNotificationHandler {
-                tx: out_tx.clone(),
-                session_key: session_key.to_string(),
-                seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
-                seen_tool_results: std::sync::Mutex::new(std::collections::HashSet::new()),
-            },
-            "ws-tool-notify",
-        ));
-    agent.set_observer(ws_observer);
-
-    // Race: agent.turn vs abort signal
-    let result = tokio::select! {
-        biased;
-        _ = abort_rx.wait_for(|v| *v) => {
-            Err(anyhow::anyhow!("aborted"))
-        }
-        r = agent.turn(message) => r,
-    };
-
-    // Put agent back
-    agent.set_observer(base_observer);
-    {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(session) = sessions.get_mut(session_key) {
-            session.agent = agent;
+        .web_route_overrides
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .retain(|runtime_key, _| !runtime_key.starts_with(&runtime_scope_prefix));
+    if let Ok(mut sessions) = state.chat_sessions.lock() {
+        if let Some(session) = sessions.get_mut(ui_session_key) {
+            session.message_count = 0;
+            session.input_tokens = 0;
+            session.output_tokens = 0;
+            session.current_goal = None;
+            session.session_summary = None;
         }
     }
-
-    result
+    Ok(())
 }
 
 async fn compact_web_session_after_context_limit(
     state: &AppState,
     session_key: &str,
 ) -> anyhow::Result<bool> {
-    let config_snapshot = state.config.lock().clone();
-    let placeholder_agent = crate::agent::Agent::from_config_with_runtime_context(
-        &config_snapshot,
-        Some(state.mem.clone()),
-        web_runtime_ports(state),
-    )
-    .await?;
-
-    let mut agent = {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let session = sessions
-            .get_mut(session_key)
-            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        std::mem::replace(&mut session.agent, placeholder_agent)
-    };
-
-    let compacted = agent.compact_for_session_hygiene().await;
-
-    {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(session) = sessions.get_mut(session_key) {
-            session.agent = agent;
-        }
-    }
-
-    Ok(compacted)
+    Ok(web_history_port(state).compact_history(
+        session_key,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+    ))
 }
 
 // ── RPC: chat.abort ─────────────────────────────────────────────────────────
@@ -1791,82 +1972,39 @@ async fn handle_sessions_list(
     _token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     // List ALL sessions (web, channel, ipc) — single-user dashboard shows everything.
-    let store_sessions = if let Some(store) = state.conversation_store.as_ref() {
-        store.list_sessions(None).await
-    } else if let Some(db) = state.chat_db.as_ref() {
-        db.list_sessions("")
-            .await
-            .unwrap_or_default()
-            .iter()
-            .map(|r| ConversationSession {
-                key: r.key.clone(),
-                kind: ConversationKind::Web,
-                label: r.label.clone(),
-                summary: r.session_summary.clone(),
-                current_goal: r.current_goal.clone(),
-                #[allow(clippy::cast_sign_loss)]
-                created_at: r.created_at as u64,
-                #[allow(clippy::cast_sign_loss)]
-                last_active: r.last_active as u64,
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                message_count: r.message_count as u32,
-                #[allow(clippy::cast_sign_loss)]
-                input_tokens: r.input_tokens as u64,
-                #[allow(clippy::cast_sign_loss)]
-                output_tokens: r.output_tokens as u64,
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    // Also include channel sessions (Matrix, Telegram, etc.) from channel_session_meta.
+    let store = state
+        .conversation_store
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("web conversation_store is required"))?;
+    let store_sessions = store.list_sessions(None).await;
     let mut all_sessions = store_sessions;
-    if let Some(surreal) = state.surreal.as_ref() {
-        if let Ok(mut resp) = surreal
-            .query(
-                "SELECT session_key, message_count, created_at, last_activity
-                 FROM channel_session_meta ORDER BY last_activity DESC LIMIT 50",
-            )
-            .await
-        {
-            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
-            for row in &rows {
-                let key = row
-                    .get("session_key")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                if key.is_empty() {
-                    continue;
-                }
-                let msg_count = row
-                    .get("message_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                // Parse ISO datetime strings to epoch seconds
-                let parse_ts = |field: &str| -> u64 {
-                    row.get(field)
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .map(|dt| dt.timestamp() as u64)
-                        .unwrap_or(0)
-                };
-                let created = parse_ts("created_at");
-                let last_active = parse_ts("last_activity");
-                all_sessions.push(ConversationSession {
-                    key: key.to_string(),
-                    kind: ConversationKind::Channel,
-                    label: Some(key.to_string()),
-                    summary: None,
-                    current_goal: None,
-                    created_at: created,
-                    last_active,
-                    #[allow(clippy::cast_possible_truncation)]
-                    message_count: msg_count as u32,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                });
-            }
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            state.channel_session_backend.clone(),
+        );
+    let preview_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::composite_conversation_store(
+            vec![Some(store.clone()), channel_conversation_store],
+        )
+        .unwrap_or_else(|| store.clone());
+
+    // Also include channel sessions through the same backend port used by channels.
+    if let Some(backend) = state.channel_session_backend.as_ref() {
+        for session in backend.list_sessions_with_metadata().await {
+            let summary = backend.load_summary(&session.key).await.map(|summary| summary.summary);
+            all_sessions.push(ConversationSession {
+                key: session.key.clone(),
+                kind: ConversationKind::Channel,
+                label: session.label.or_else(|| Some(session.key.clone())),
+                summary,
+                current_goal: session.current_goal,
+                created_at: session.created_at.timestamp().max(0) as u64,
+                last_active: session.last_activity.timestamp().max(0) as u64,
+                #[allow(clippy::cast_possible_truncation)]
+                message_count: session.message_count as u32,
+                input_tokens: session.input_tokens,
+                output_tokens: session.output_tokens,
+            });
         }
     }
     // Sort all sessions by last_active descending
@@ -1890,17 +2028,8 @@ async fn handle_sessions_list(
         let has_active_run = active_runs.contains(&s.key);
 
         // Get preview from last message
-        let preview = if let Some(store) = state.conversation_store.as_ref() {
-            let evts = store.get_events(&s.key, 1).await;
-            evts.last().map(|e| truncate_str(&e.content, 60))
-        } else if let Some(db) = state.chat_db.as_ref() {
-            db.get_messages(&s.key, 1)
-                .await
-                .ok()
-                .and_then(|msgs| msgs.last().map(|m| truncate_str(&m.content, 60)))
-        } else {
-            None
-        };
+        let evts = preview_store.get_events(&s.key, 1).await;
+        let preview = evts.last().map(|e| truncate_str(&e.content, 60));
 
         let kind_str = match s.kind {
             ConversationKind::Web => "web",
@@ -1947,7 +2076,7 @@ async fn handle_sessions_new(
             token_prefix,
         );
 
-    ensure_session(state, &session_key).await?;
+    ensure_session(state, &session_key, token_prefix).await?;
 
     if let Some(ref lbl) = label {
         {
@@ -2054,7 +2183,6 @@ async fn handle_sessions_reset(
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(key) {
-            s.agent.clear_history();
             s.message_count = 0;
             s.input_tokens = 0;
             s.output_tokens = 0;
@@ -2293,6 +2421,101 @@ struct WsToolNotificationHandler {
     seen_tool_results: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
+/// Web transport sink for inbound lifecycle events. Final assistant output is
+/// still delivered through `PresentedOutput`; this port only prevents web from
+/// silently dropping core lifecycle signals that channel transports can expose.
+struct WebChannelOutput {
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    session_key: String,
+}
+
+#[async_trait::async_trait]
+impl synapse_domain::ports::channel_output::ChannelOutputPort for WebChannelOutput {
+    async fn send_message(
+        &self,
+        _recipient: &str,
+        text: &str,
+        _thread_ref: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.tx
+            .send(
+                serde_json::json!({
+                    "type": "assistant_response",
+                    "session_key": self.session_key,
+                    "content": text,
+                    "timestamp": now_secs(),
+                })
+                .to_string(),
+            )
+            .map_err(|error| anyhow::anyhow!("web channel output send failed: {error}"))
+    }
+
+    async fn start_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+        self.send_status("typing_start")
+    }
+
+    async fn stop_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+        self.send_status("typing_stop")
+    }
+
+    async fn add_reaction(
+        &self,
+        _recipient: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> anyhow::Result<()> {
+        self.send_reaction("reaction_add", message_id, emoji)
+    }
+
+    async fn remove_reaction(
+        &self,
+        _recipient: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> anyhow::Result<()> {
+        self.send_reaction("reaction_remove", message_id, emoji)
+    }
+
+    async fn fetch_message_text(&self, _message_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+}
+
+impl WebChannelOutput {
+    fn send_status(&self, status: &str) -> anyhow::Result<()> {
+        self.tx
+            .send(
+                serde_json::json!({
+                    "type": "runtime_status",
+                    "session_key": self.session_key,
+                    "status": status,
+                    "timestamp": now_secs(),
+                })
+                .to_string(),
+            )
+            .map_err(|error| anyhow::anyhow!("web channel output status send failed: {error}"))
+    }
+
+    fn send_reaction(&self, event_type: &str, message_id: &str, emoji: &str) -> anyhow::Result<()> {
+        self.tx
+            .send(
+                serde_json::json!({
+                    "type": event_type,
+                    "session_key": self.session_key,
+                    "message_id": message_id,
+                    "emoji": emoji,
+                    "timestamp": now_secs(),
+                })
+                .to_string(),
+            )
+            .map_err(|error| anyhow::anyhow!("web channel output reaction send failed: {error}"))
+    }
+}
+
 impl RuntimeToolNotificationHandler for WsToolNotificationHandler {
     fn notify(&self, notification: RuntimeToolNotification) {
         match &notification {
@@ -2349,63 +2572,24 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         }
     };
 
-    // Build summary generator from config
-    let (summary_route, provider) = {
-        let config_guard = state.config.lock();
-        let opts = synapse_providers::provider_runtime_options_from_config(&config_guard);
-        let summary_route = resolve_summary_route(&config_guard, &state.model);
-        let provider: std::sync::Arc<dyn synapse_providers::Provider> =
-            if let Some(ref provider_name) = summary_route.provider {
-                let api_key = summary_route
-                    .api_key_env
-                    .as_deref()
-                    .and_then(|env| std::env::var(env).ok())
-                    .or_else(|| summary_route.api_key.clone());
-                match synapse_providers::create_provider_with_options(
-                    provider_name,
-                    api_key.as_deref(),
-                    &opts,
-                ) {
-                    Ok(p) => p.into(),
-                    Err(e) => {
-                        tracing::warn!(
-                            %e,
-                            summary_route_source = summary_route.source.as_str(),
-                            summary_model = summary_route.model.as_str(),
-                            "Summary provider init failed; using current route"
-                        );
-                        state.provider.clone()
-                    }
-                }
-            } else {
-                state.provider.clone()
-            };
-        (summary_route, provider)
-    };
+    let config_snapshot = state.config.lock().clone();
+    let provider_runtime_options =
+        synapse_providers::provider_runtime_options_from_config(&config_snapshot);
 
-    tracing::debug!(
-        session_key,
-        summary_route_source = summary_route.source.as_str(),
-        summary_provider = summary_route.provider.as_deref().unwrap_or("current"),
-        summary_model = summary_route.model.as_str(),
-        "Web session summary lane selected"
-    );
-
-    let generator =
-        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-            provider,
-            summary_route.model.clone(),
-            summary_route.temperature,
-        );
-
-    match synapse_domain::application::services::conversation_service::generate_session_summary(
-        store.as_ref(),
-        &generator,
-        session_key,
-        msg_count,
-        last_summary,
-        prev_summary.as_deref(),
-        WEB_SUMMARY_INTERVAL,
+    match crate::inbound_runtime_summary::summarize_session_if_needed(
+        crate::inbound_runtime_summary::InboundRuntimeSummaryInput {
+            store: store.as_ref(),
+            current_provider: Arc::clone(&state.provider),
+            config: &config_snapshot,
+            current_model: &state.model,
+            provider_runtime_options: &provider_runtime_options,
+            session_key,
+            message_count: msg_count,
+            last_summary_count: last_summary,
+            previous_summary: prev_summary.as_deref(),
+            interval: WEB_SUMMARY_INTERVAL,
+            transport_label: "web",
+        },
     )
     .await
     {

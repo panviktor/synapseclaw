@@ -13,7 +13,7 @@ pub use synapse_security;
 // Config facade.
 pub mod config {
     pub use synapse_domain::config::schema;
-    pub use synapse_domain::config::schema::Config;
+    pub use synapse_domain::config::schema::*;
     pub use synapse_infra::config_io::ConfigIO;
     pub use synapse_infra::workspace;
     pub use synapse_infra::workspace_io;
@@ -30,6 +30,7 @@ pub use synapse_memory as memory;
 
 // Facade re-exports for integration tests.
 pub use synapse_adapters::channels;
+pub use synapse_adapters::gateway;
 pub use synapse_adapters::hooks;
 pub use synapse_adapters::tools;
 pub use synapse_observability as observability;

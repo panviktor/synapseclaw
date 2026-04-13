@@ -2,7 +2,8 @@ use crate::multimodal;
 use crate::traits::ToolSpec;
 use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
-    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
+    MediaArtifact, MediaArtifactKind, Provider, ProviderCapabilities, TokenUsage,
+    ToolCall as ProviderToolCall,
 };
 use async_trait::async_trait;
 use reqwest::Client;
@@ -69,6 +70,8 @@ struct ResponseMessage {
     content: Option<String>,
     #[serde(default)]
     images: Vec<GeneratedImage>,
+    #[serde(flatten)]
+    generated_media: OpenRouterGeneratedMediaFields,
 }
 
 #[derive(Debug, Serialize)]
@@ -158,12 +161,14 @@ struct NativeChoice {
     message: NativeResponseMessage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct NativeResponseMessage {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
     images: Vec<GeneratedImage>,
+    #[serde(flatten)]
+    generated_media: OpenRouterGeneratedMediaFields,
     /// Reasoning/thinking models may return output in `reasoning_content`.
     #[serde(default)]
     reasoning_content: Option<String>,
@@ -184,6 +189,34 @@ struct GeneratedImage {
 #[derive(Debug, Clone, Deserialize)]
 struct GeneratedImageUrl {
     url: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct OpenRouterGeneratedMediaFields {
+    #[serde(default, deserialize_with = "deserialize_media_values")]
+    audio: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_media_values")]
+    audios: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_media_values")]
+    video: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_media_values")]
+    videos: Vec<serde_json::Value>,
+    #[serde(default, deserialize_with = "deserialize_media_values")]
+    music: Vec<serde_json::Value>,
+}
+
+fn deserialize_media_values<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Vec<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?.unwrap_or_default();
+    Ok(match value {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::Array(items) => items,
+        item => vec![item],
+    })
 }
 
 impl OpenRouterProvider {
@@ -268,9 +301,25 @@ impl OpenRouterProvider {
         Some(modalities)
     }
 
-    fn merge_content_and_generated_images(
+    fn expected_media_kind_for_model(model: &str) -> Option<MediaArtifactKind> {
+        let profile = model_catalog::model_profile("openrouter", model)?;
+        let has = |feature| profile.features.iter().any(|item| *item == feature);
+        if has(ModelFeature::MusicGeneration) {
+            Some(MediaArtifactKind::Music)
+        } else if has(ModelFeature::AudioGeneration) {
+            Some(MediaArtifactKind::Audio)
+        } else if has(ModelFeature::VideoGeneration) {
+            Some(MediaArtifactKind::Video)
+        } else if has(ModelFeature::ImageGeneration) {
+            Some(MediaArtifactKind::Image)
+        } else {
+            None
+        }
+    }
+
+    fn merge_content_and_media_artifacts(
         content: Option<String>,
-        images: &[GeneratedImage],
+        artifacts: &[MediaArtifact],
     ) -> Option<String> {
         let mut parts = Vec::new();
         if let Some(content) = content {
@@ -280,16 +329,192 @@ impl OpenRouterProvider {
             }
         }
 
-        parts.extend(images.iter().filter_map(|image| {
-            let url = image.image_url.as_ref()?.url.trim();
-            (!url.is_empty()).then(|| format!("[IMAGE:{url}]"))
-        }));
+        parts.extend(artifacts.iter().filter_map(MediaArtifact::marker));
 
         if parts.is_empty() {
             None
         } else {
             Some(parts.join("\n"))
         }
+    }
+
+    fn response_message_media_artifacts(
+        message: &ResponseMessage,
+        expected_kind: Option<MediaArtifactKind>,
+    ) -> Vec<MediaArtifact> {
+        let mut artifacts = Self::image_media_artifacts(&message.images);
+        Self::append_generated_media_fields(
+            &mut artifacts,
+            &message.generated_media,
+            expected_kind,
+        );
+        artifacts
+    }
+
+    fn native_response_media_artifacts(
+        message: &NativeResponseMessage,
+        expected_kind: Option<MediaArtifactKind>,
+    ) -> Vec<MediaArtifact> {
+        let mut artifacts = Self::image_media_artifacts(&message.images);
+        Self::append_generated_media_fields(
+            &mut artifacts,
+            &message.generated_media,
+            expected_kind,
+        );
+        artifacts
+    }
+
+    fn image_media_artifacts(images: &[GeneratedImage]) -> Vec<MediaArtifact> {
+        let mut artifacts = Vec::new();
+        for image in images {
+            let Some(url) = image.image_url.as_ref().map(|image| image.url.trim()) else {
+                continue;
+            };
+            if !url.is_empty() {
+                Self::push_media_artifact(
+                    &mut artifacts,
+                    MediaArtifact::new(MediaArtifactKind::Image, url),
+                );
+            }
+        }
+        artifacts
+    }
+
+    fn append_generated_media_fields(
+        artifacts: &mut Vec<MediaArtifact>,
+        fields: &OpenRouterGeneratedMediaFields,
+        expected_kind: Option<MediaArtifactKind>,
+    ) {
+        let audio_kind = match expected_kind {
+            Some(MediaArtifactKind::Music) => MediaArtifactKind::Music,
+            _ => MediaArtifactKind::Audio,
+        };
+        for value in fields.audio.iter().chain(fields.audios.iter()) {
+            if let Some(artifact) = Self::media_artifact_from_value(Some(audio_kind), value) {
+                Self::push_media_artifact(artifacts, artifact);
+            }
+        }
+        for value in fields.video.iter().chain(fields.videos.iter()) {
+            if let Some(artifact) =
+                Self::media_artifact_from_value(Some(MediaArtifactKind::Video), value)
+            {
+                Self::push_media_artifact(artifacts, artifact);
+            }
+        }
+        for value in &fields.music {
+            if let Some(artifact) =
+                Self::media_artifact_from_value(Some(MediaArtifactKind::Music), value)
+            {
+                Self::push_media_artifact(artifacts, artifact);
+            }
+        }
+    }
+
+    fn media_artifact_from_value(
+        default_kind: Option<MediaArtifactKind>,
+        value: &serde_json::Value,
+    ) -> Option<MediaArtifact> {
+        let uri = Self::media_uri_from_value(value)?;
+        let mime_type = Self::media_mime_type_from_value(value);
+        let label = Self::media_label_from_value(value);
+        let kind = default_kind?;
+        let mut artifact = MediaArtifact::from_uri(kind, uri);
+        artifact.mime_type = mime_type;
+        artifact.label = label;
+        Some(artifact)
+    }
+
+    fn media_uri_from_value(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(raw) => Self::non_empty_string(raw),
+            serde_json::Value::Object(map) => {
+                for key in [
+                    "url",
+                    "uri",
+                    "data_url",
+                    "dataUrl",
+                    "download_url",
+                    "downloadUrl",
+                    "href",
+                ] {
+                    if let Some(uri) = map.get(key).and_then(Self::string_from_value) {
+                        return Some(uri);
+                    }
+                }
+                if let Some(b64) = map.get("b64_json").and_then(Self::string_from_value) {
+                    let mime = Self::media_mime_type_from_value(value)
+                        .unwrap_or_else(|| "application/octet-stream".to_string());
+                    return Some(format!("data:{mime};base64,{b64}"));
+                }
+                for key in [
+                    "image_url",
+                    "imageUrl",
+                    "audio_url",
+                    "audioUrl",
+                    "video_url",
+                    "videoUrl",
+                    "music_url",
+                    "musicUrl",
+                ] {
+                    if let Some(uri) = map.get(key).and_then(Self::media_uri_from_value) {
+                        return Some(uri);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn media_mime_type_from_value(value: &serde_json::Value) -> Option<String> {
+        let serde_json::Value::Object(map) = value else {
+            return None;
+        };
+        for key in [
+            "mime_type",
+            "mimeType",
+            "content_type",
+            "contentType",
+            "media_type",
+            "mediaType",
+        ] {
+            if let Some(mime) = map.get(key).and_then(Self::string_from_value) {
+                return Some(mime);
+            }
+        }
+        map.get("type")
+            .and_then(Self::string_from_value)
+            .filter(|value| value.contains('/'))
+    }
+
+    fn media_label_from_value(value: &serde_json::Value) -> Option<String> {
+        let serde_json::Value::Object(map) = value else {
+            return None;
+        };
+        for key in ["label", "name", "filename", "file_name", "fileName"] {
+            if let Some(label) = map.get(key).and_then(Self::string_from_value) {
+                return Some(label);
+            }
+        }
+        None
+    }
+
+    fn string_from_value(value: &serde_json::Value) -> Option<String> {
+        value.as_str().and_then(Self::non_empty_string)
+    }
+
+    fn non_empty_string(value: &str) -> Option<String> {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    }
+
+    fn push_media_artifact(artifacts: &mut Vec<MediaArtifact>, artifact: MediaArtifact) {
+        if artifacts.iter().any(|existing| {
+            existing.kind == artifact.kind && existing.locator_key() == artifact.locator_key()
+        }) {
+            return;
+        }
+        artifacts.push(artifact);
     }
 
     fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<NativeToolSpec>> {
@@ -462,6 +687,14 @@ impl OpenRouterProvider {
     fn parse_native_response(
         message: NativeResponseMessage,
     ) -> anyhow::Result<ProviderChatResponse> {
+        Self::parse_native_response_with_media_kind(message, None)
+    }
+
+    fn parse_native_response_with_media_kind(
+        message: NativeResponseMessage,
+        expected_kind: Option<MediaArtifactKind>,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let media_artifacts = Self::native_response_media_artifacts(&message, expected_kind);
         let reasoning_content = message.reasoning_content.or(message.reasoning);
         let tool_calls = message
             .tool_calls
@@ -480,10 +713,11 @@ impl OpenRouterProvider {
             .collect::<anyhow::Result<Vec<_>>>()?;
 
         Ok(ProviderChatResponse {
-            text: Self::merge_content_and_generated_images(message.content, &message.images),
+            text: Self::merge_content_and_media_artifacts(message.content, &media_artifacts),
             tool_calls,
             usage: None,
             reasoning_content,
+            media_artifacts,
         })
     }
 
@@ -607,7 +841,12 @@ impl Provider for OpenRouterProvider {
             .into_iter()
             .next()
             .map(|c| {
-                Self::merge_content_and_generated_images(c.message.content, &c.message.images)
+                let message = c.message;
+                let media_artifacts = Self::response_message_media_artifacts(
+                    &message,
+                    Self::expected_media_kind_for_model(model),
+                );
+                Self::merge_content_and_media_artifacts(message.content, &media_artifacts)
                     .unwrap_or_default()
             })
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))
@@ -660,7 +899,12 @@ impl Provider for OpenRouterProvider {
             .into_iter()
             .next()
             .map(|c| {
-                Self::merge_content_and_generated_images(c.message.content, &c.message.images)
+                let message = c.message;
+                let media_artifacts = Self::response_message_media_artifacts(
+                    &message,
+                    Self::expected_media_kind_for_model(model),
+                );
+                Self::merge_content_and_media_artifacts(message.content, &media_artifacts)
                     .unwrap_or_default()
             })
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))
@@ -716,7 +960,10 @@ impl Provider for OpenRouterProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        let mut result = Self::parse_native_response(message)?;
+        let mut result = Self::parse_native_response_with_media_kind(
+            message,
+            Self::expected_media_kind_for_model(model),
+        )?;
         result.usage = usage;
         Ok(result)
     }
@@ -811,7 +1058,10 @@ impl Provider for OpenRouterProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        let mut result = Self::parse_native_response(message)?;
+        let mut result = Self::parse_native_response_with_media_kind(
+            message,
+            Self::expected_media_kind_for_model(model),
+        )?;
         result.usage = usage;
         Ok(result)
     }
@@ -1173,7 +1423,9 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("Here you go.".into()),
             images: Vec::new(),
+            generated_media: Default::default(),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
                 id: Some("call_789".into()),
@@ -1202,7 +1454,9 @@ mod tests {
                     url: "data:image/png;base64,abcd".into(),
                 }),
             }],
+            generated_media: Default::default(),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: None,
         };
@@ -1213,6 +1467,44 @@ mod tests {
             response.text.as_deref(),
             Some("[IMAGE:data:image/png;base64,abcd]")
         );
+    }
+
+    #[test]
+    fn parse_native_response_converts_generated_audio_video_music_to_media_artifacts() {
+        let message = NativeResponseMessage {
+            content: Some("Generated media".into()),
+            images: Vec::new(),
+            generated_media: OpenRouterGeneratedMediaFields {
+                audio: vec![serde_json::json!({
+                    "url": "data:audio/mpeg;base64,aaaa",
+                    "mime_type": "audio/mpeg"
+                })],
+                video: vec![serde_json::json!({
+                    "url": "data:video/mp4;base64,vvvv",
+                    "mime_type": "video/mp4"
+                })],
+                music: vec![serde_json::json!({
+                    "url": "data:audio/wav;base64,mmmm",
+                    "mime_type": "audio/wav"
+                })],
+                ..Default::default()
+            },
+            reasoning_content: None,
+            media_artifacts: Vec::new(),
+            reasoning: None,
+            tool_calls: None,
+        };
+
+        let response = OpenRouterProvider::parse_native_response(message).unwrap();
+
+        assert_eq!(response.media_artifacts.len(), 3);
+        assert_eq!(response.media_artifacts[0].kind, MediaArtifactKind::Audio);
+        assert_eq!(response.media_artifacts[1].kind, MediaArtifactKind::Video);
+        assert_eq!(response.media_artifacts[2].kind, MediaArtifactKind::Music);
+        let text = response.text.as_deref().unwrap_or_default();
+        assert!(text.contains("[AUDIO:data:audio/mpeg;base64,aaaa]"));
+        assert!(text.contains("[VIDEO:data:video/mp4;base64,vvvv]"));
+        assert!(text.contains("[MUSIC:data:audio/wav;base64,mmmm]"));
     }
 
     #[test]
@@ -1351,6 +1643,7 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("answer".into()),
             images: Vec::new(),
+            generated_media: Default::default(),
             reasoning_content: Some("thinking step".into()),
             reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
@@ -1372,7 +1665,9 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("answer".into()),
             images: Vec::new(),
+            generated_media: Default::default(),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
             reasoning: Some("normalized thinking".into()),
             tool_calls: None,
         };
@@ -1390,7 +1685,9 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("hello".into()),
             images: Vec::new(),
+            generated_media: Default::default(),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: None,
         };

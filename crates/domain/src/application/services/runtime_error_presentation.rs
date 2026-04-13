@@ -10,6 +10,10 @@ pub fn format_timeout_recovery_response() -> &'static str {
     "Request timed out. Try a simpler question or start a fresh session."
 }
 
+pub fn format_runtime_failure_response(error: &dyn std::fmt::Display) -> String {
+    format!("⚠️ {error}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -23,5 +27,11 @@ mod tests {
     #[test]
     fn timeout_response_is_operator_facing() {
         assert!(format_timeout_recovery_response().contains("timed out"));
+    }
+
+    #[test]
+    fn runtime_failure_response_is_shared() {
+        let response = format_runtime_failure_response(&"provider failed");
+        assert_eq!(response, "⚠️ provider failed");
     }
 }

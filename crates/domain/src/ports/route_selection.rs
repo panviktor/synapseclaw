@@ -4,8 +4,13 @@
 
 use crate::application::services::runtime_assumptions::RuntimeAssumption;
 use crate::application::services::runtime_calibration::RuntimeCalibrationRecord;
-use crate::application::services::runtime_trace_janitor::RuntimeHandoffArtifact;
-use crate::application::services::runtime_watchdog::RuntimeWatchdogAlert;
+use crate::application::services::runtime_trace_janitor::{
+    append_runtime_watchdog_alerts, run_runtime_trace_janitor, RuntimeHandoffArtifact,
+    RuntimeTraceJanitorInput,
+};
+use crate::application::services::runtime_watchdog::{
+    build_runtime_watchdog_digest, RuntimeWatchdogAlert, RuntimeWatchdogInput,
+};
 use crate::config::schema::{CapabilityLane, ContextCompressionConfig};
 use crate::domain::tool_repair::ToolRepairTrace;
 use crate::domain::turn_admission::{
@@ -108,6 +113,40 @@ impl RouteSelection {
         self.calibrations.clear();
         self.watchdog_alerts.clear();
         self.handoff_artifacts.clear();
+    }
+
+    pub fn clean_runtime_traces(&mut self, now_unix: i64) {
+        let cleaned = run_runtime_trace_janitor(RuntimeTraceJanitorInput {
+            tool_repairs: &self.recent_tool_repairs,
+            assumptions: &self.assumptions,
+            watchdog_alerts: &self.watchdog_alerts,
+            calibration_records: &self.calibrations,
+            handoff_artifacts: &self.handoff_artifacts,
+            now_unix,
+        });
+        self.recent_tool_repairs = cleaned.tool_repairs;
+        self.last_tool_repair = self.recent_tool_repairs.last().cloned();
+        self.assumptions = cleaned.assumptions;
+        self.calibrations = cleaned.calibration_records;
+        self.watchdog_alerts = cleaned.watchdog_alerts;
+        self.handoff_artifacts = cleaned.handoff_artifacts;
+    }
+
+    pub fn run_runtime_trace_maintenance(&mut self, now_unix: i64) {
+        self.clean_runtime_traces(now_unix);
+
+        let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+            last_admission: self.last_admission.as_ref(),
+            recent_admissions: &self.recent_admissions,
+            last_tool_repair: self.last_tool_repair.as_ref(),
+            recent_tool_repairs: &self.recent_tool_repairs,
+            context_cache: self.context_cache.as_ref(),
+            assumptions: &self.assumptions,
+            subsystem_observations: &[],
+            now_unix,
+        });
+        self.watchdog_alerts =
+            append_runtime_watchdog_alerts(&self.watchdog_alerts, &digest.alerts, now_unix);
     }
 }
 

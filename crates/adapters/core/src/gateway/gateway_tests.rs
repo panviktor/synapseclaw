@@ -42,8 +42,8 @@ fn generate_test_secret() -> String {
 }
 
 #[test]
-fn security_body_limit_is_64kb() {
-    assert_eq!(MAX_BODY_SIZE, 65_536);
+fn security_body_limit_accepts_web_media_uploads() {
+    assert_eq!(MAX_BODY_SIZE, 25 * 1024 * 1024);
 }
 
 #[test]
@@ -103,6 +103,7 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -143,6 +144,9 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -207,8 +211,34 @@ async fn metrics_endpoint_renders_prometheus_output() {
         wati: None,
         observer,
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -222,6 +252,9 @@ async fn metrics_endpoint_renders_prometheus_output() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -443,6 +476,7 @@ fn whatsapp_memory_key_includes_sender_and_message_id() {
         channel: "whatsapp".into(),
         timestamp: 1,
         thread_ts: None,
+        media_attachments: Vec::new(),
     };
 
     let key = whatsapp_memory_key(&msg);
@@ -749,6 +783,7 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -789,6 +824,9 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -867,6 +905,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -907,6 +946,9 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -997,6 +1039,7 @@ async fn webhook_secret_hash_rejects_missing_header() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1037,6 +1080,9 @@ async fn webhook_secret_hash_rejects_missing_header() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -1099,6 +1145,7 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1139,6 +1186,9 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -1206,6 +1256,7 @@ async fn webhook_secret_hash_accepts_valid_header() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1246,6 +1297,9 @@ async fn webhook_secret_hash_accepts_valid_header() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -1318,6 +1372,7 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1358,6 +1413,9 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,
@@ -1426,6 +1484,7 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         wati: None,
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
+        runtime_tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1466,6 +1525,9 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(vec![]),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_conversation_histories: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        web_route_overrides: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        provider_cache: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db: None,
         ipc_push_dispatcher: None,
         ipc_push_dedup: None,

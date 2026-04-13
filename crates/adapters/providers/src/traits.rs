@@ -8,7 +8,8 @@ use futures_util::{stream, StreamExt};
 
 pub use synapse_domain::domain::message::ChatMessage;
 pub use synapse_domain::ports::provider::{
-    ChatRequest, ChatResponse, ConversationMessage, ProviderCapabilities, ProviderCapabilityError,
+    ChatRequest, ChatResponse, ConversationMessage, MediaArtifact, MediaArtifactKind,
+    MediaArtifactLocator, ProviderCapabilities, ProviderCapabilityError, ProviderFileRef,
     TokenUsage, ToolCall, ToolResultMessage,
 };
 pub use synapse_domain::ports::tool::ToolSpec;
@@ -229,6 +230,7 @@ pub trait Provider: Send + Sync {
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 
@@ -269,6 +271,7 @@ pub trait Provider: Send + Sync {
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         })
     }
 
@@ -362,6 +365,7 @@ mod tests {
             tool_calls: vec![],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
         assert!(!empty.has_tool_calls());
         assert_eq!(empty.text_or_empty(), "");
@@ -375,6 +379,7 @@ mod tests {
             }],
             usage: None,
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
         assert!(with_tools.has_tool_calls());
         assert_eq!(with_tools.text_or_empty(), "Let me check");
@@ -398,9 +403,29 @@ mod tests {
                 cached_input_tokens: None,
             }),
             reasoning_content: None,
+            media_artifacts: Vec::new(),
         };
         assert_eq!(resp.usage.as_ref().unwrap().input_tokens, Some(100));
         assert_eq!(resp.usage.as_ref().unwrap().output_tokens, Some(50));
+    }
+
+    #[test]
+    fn provider_file_media_artifact_marker_is_normalized() {
+        let artifact = MediaArtifact::from_provider_file(
+            MediaArtifactKind::Audio,
+            ProviderFileRef {
+                provider: "minimax".into(),
+                file_id: "file_123".into(),
+                purpose: Some("t2a_async_input".into()),
+                uri: None,
+                downloadable: false,
+            },
+        );
+
+        assert_eq!(
+            artifact.marker().as_deref(),
+            Some("[AUDIO:provider_file:minimax:file_123]")
+        );
     }
 
     #[test]

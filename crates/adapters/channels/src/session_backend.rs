@@ -1,8 +1,8 @@
 //! Trait abstraction for session persistence backends.
 //!
-//! Backends store per-sender conversation histories. The trait is intentionally
-//! minimal — load, append, remove_last, list — so that JSONL, SQLite, and
-//! SurrealDB backends share a common interface.
+//! Backends store per-sender conversation histories. The trait keeps transcript
+//! writes and session metadata behind one channel-facing port so web/channel
+//! runtime code does not grow separate persistence semantics.
 //!
 //! Phase 4.5: made async to support SurrealDB without `block_on()`.
 
@@ -16,12 +16,20 @@ use synapse_providers::traits::ChatMessage;
 pub struct SessionMetadata {
     /// Session key (e.g. `telegram_user123`).
     pub key: String,
+    /// Optional human-readable label.
+    pub label: Option<String>,
+    /// Optional current goal extracted for the session.
+    pub current_goal: Option<String>,
     /// When the session was first created.
     pub created_at: DateTime<Utc>,
     /// When the last message was appended.
     pub last_activity: DateTime<Utc>,
     /// Total number of messages in the session.
     pub message_count: usize,
+    /// Provider input tokens accumulated for this session.
+    pub input_tokens: u64,
+    /// Provider output tokens accumulated for this session.
+    pub output_tokens: u64,
 }
 
 /// Rolling summary of a channel conversation session.
@@ -47,8 +55,8 @@ pub struct SessionQuery {
 /// Trait for session persistence backends.
 ///
 /// All methods are async to support SurrealDB and other async backends.
-/// JSONL/SQLite implementations can use synchronous I/O internally
-/// since async-trait wraps them in `Box::pin(async { ... })`.
+/// SQLite implementations can use synchronous I/O internally since async-trait
+/// wraps them in `Box::pin(async { ... })`.
 #[async_trait]
 pub trait SessionBackend: Send + Sync {
     /// Load all messages for a session. Returns empty vec if session doesn't exist.
@@ -76,12 +84,55 @@ pub trait SessionBackend: Send + Sync {
             let messages = self.load(&key).await;
             result.push(SessionMetadata {
                 key,
+                label: None,
+                current_goal: None,
                 created_at: Utc::now(),
                 last_activity: Utc::now(),
                 message_count: messages.len(),
+                input_tokens: 0,
+                output_tokens: 0,
             });
         }
         result
+    }
+
+    /// Touch a session's last activity without changing transcript content.
+    async fn touch_session(&self, session_key: &str) -> std::io::Result<()> {
+        let messages = self.load(session_key).await;
+        self.replace(session_key, &messages).await
+    }
+
+    /// Update the durable user-facing label for a session.
+    async fn update_label(&self, _session_key: &str, _label: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "session backend does not support durable labels",
+        ))
+    }
+
+    /// Update the durable current goal for a session.
+    async fn update_goal(&self, _session_key: &str, _goal: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "session backend does not support durable goals",
+        ))
+    }
+
+    /// Increment the durable message count independently from transcript append.
+    async fn increment_message_count(&self, _session_key: &str) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "session backend derives message count from transcript writes",
+        ))
+    }
+
+    /// Add provider token accounting to durable session metadata.
+    async fn add_token_usage(
+        &self,
+        _session_key: &str,
+        _input: i64,
+        _output: i64,
+    ) -> std::io::Result<()> {
+        Err(std::io::Error::other(
+            "session backend does not support durable token usage",
+        ))
     }
 
     /// Compact a session file (remove duplicates/corruption). No-op by default.
@@ -127,9 +178,13 @@ mod tests {
     fn session_metadata_is_constructible() {
         let meta = SessionMetadata {
             key: "test".into(),
+            label: None,
+            current_goal: None,
             created_at: Utc::now(),
             last_activity: Utc::now(),
             message_count: 5,
+            input_tokens: 0,
+            output_tokens: 0,
         };
         assert_eq!(meta.key, "test");
         assert_eq!(meta.message_count, 5);

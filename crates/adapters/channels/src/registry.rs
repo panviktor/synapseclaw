@@ -236,6 +236,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
             "telegram" => vec![
                 ChannelCapability::SendText,
                 ChannelCapability::ReceiveText,
+                ChannelCapability::Attachments,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::EditMessage,
                 ChannelCapability::RuntimeCommands,
@@ -245,6 +246,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::SendText,
                 ChannelCapability::ReceiveText,
                 ChannelCapability::Threads,
+                ChannelCapability::Attachments,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::EditMessage,
@@ -255,6 +257,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::SendText,
                 ChannelCapability::ReceiveText,
                 ChannelCapability::Threads,
+                ChannelCapability::Attachments,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::InterruptOnNewMessage,
@@ -265,6 +268,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::SendText,
                 ChannelCapability::ReceiveText,
                 ChannelCapability::Threads,
+                ChannelCapability::Attachments,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::RuntimeCommands,
@@ -283,6 +287,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::ReceiveText,
                 ChannelCapability::Reactions,
             ],
+            "web" => synapse_domain::domain::channel::web_channel_capabilities(),
             _ => vec![],
         }
     }

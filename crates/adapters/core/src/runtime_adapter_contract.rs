@@ -3,6 +3,9 @@
 //! Web and channel adapters intentionally keep different transports and
 //! lifecycles, but must not fork the common runtime-command decisions.
 
+use synapse_domain::application::services::assistant_output_presentation::{
+    AssistantOutputPresenter, OutputDeliveryHints, PresentedOutput,
+};
 use synapse_domain::application::services::inbound_message_service::CommandEffect;
 use synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflight;
 use synapse_domain::application::services::runtime_command_presentation::{
@@ -145,7 +148,7 @@ pub(crate) struct RuntimeModelHelpSnapshot {
 
 #[async_trait::async_trait]
 pub(crate) trait RuntimeCommandHost {
-    fn fallback_provider(&self) -> String;
+    fn current_provider(&self) -> String;
 
     async fn provider_help_route(&mut self) -> anyhow::Result<RouteSelection>;
 
@@ -163,6 +166,27 @@ pub(crate) trait RuntimeCommandHost {
     ) -> anyhow::Result<RuntimeModelSwitchOutcome>;
 
     async fn clear_session(&mut self) -> anyhow::Result<()>;
+}
+
+pub(crate) async fn execute_runtime_command_output<C, H>(
+    contract: &C,
+    host: &mut H,
+    effect: &CommandEffect,
+    default_provider: &str,
+    delivery_hints: OutputDeliveryHints,
+) -> anyhow::Result<PresentedOutput>
+where
+    C: RuntimeAdapterContract,
+    H: RuntimeCommandHost,
+{
+    let text = execute_runtime_command_effect(contract, host, effect, default_provider).await?;
+    Ok(AssistantOutputPresenter::success(
+        text,
+        Vec::new(),
+        String::new(),
+        false,
+        delivery_hints,
+    ))
 }
 
 pub(crate) async fn execute_runtime_command_effect<C, H>(
@@ -216,7 +240,7 @@ where
         } => {
             let provider = inferred_provider
                 .clone()
-                .unwrap_or_else(|| host.fallback_provider());
+                .unwrap_or_else(|| host.current_provider());
             if model.is_empty() {
                 return Ok(format_switch_model_success(
                     model,
@@ -475,7 +499,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockRuntimeCommandHost {
-        fallback_provider: String,
+        current_provider: String,
         show_providers: usize,
         show_model: usize,
         switched_provider: Option<String>,
@@ -503,11 +527,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RuntimeCommandHost for MockRuntimeCommandHost {
-        fn fallback_provider(&self) -> String {
-            if self.fallback_provider.is_empty() {
+        fn current_provider(&self) -> String {
+            if self.current_provider.is_empty() {
                 "openrouter".to_string()
             } else {
-                self.fallback_provider.clone()
+                self.current_provider.clone()
             }
         }
 
@@ -543,7 +567,7 @@ mod tests {
             request: RuntimeRouteMutationRequest,
             compacted: bool,
         ) -> anyhow::Result<RuntimeModelSwitchOutcome> {
-            let provider = request.provider.unwrap_or_else(|| self.fallback_provider());
+            let provider = request.provider.unwrap_or_else(|| self.current_provider());
             let model = request.model.unwrap_or_default();
             let lane = request.lane;
             self.switched_model = Some(model);

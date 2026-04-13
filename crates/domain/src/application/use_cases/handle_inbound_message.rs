@@ -5,6 +5,9 @@
 //!
 //! All 24 behaviors from the original function are accounted for here.
 
+use crate::application::services::assistant_output_presentation::{
+    AssistantOutputPresenter, OutputDeliveryHints, PresentedOutput,
+};
 use crate::application::services::channel_presentation::{
     self, ChannelPresentationMode, CompactProgressSurface,
 };
@@ -24,7 +27,8 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
 use crate::application::services::runtime_error_presentation::{
-    format_context_limit_recovery_response, format_timeout_recovery_response,
+    format_context_limit_recovery_response, format_runtime_failure_response,
+    format_timeout_recovery_response,
 };
 use crate::application::services::runtime_trace_janitor::{
     append_runtime_handoff_packet, append_runtime_watchdog_alerts,
@@ -151,9 +155,7 @@ pub enum HandleResult {
     /// Agent produced a response — adapter delivers it.
     Response {
         conversation_key: String,
-        response_text: String,
-        tool_summary: String,
-        tools_used: bool,
+        output: PresentedOutput,
     },
     /// Cancelled by hook.
     Cancelled { reason: String },
@@ -168,7 +170,12 @@ pub async fn handle(
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
 ) -> Result<HandleResult> {
-    let conversation_key = inbound_message_service::conversation_key(envelope);
+    let conversation_key =
+        inbound_message_service::conversation_key_for_agent(envelope, &config.agent_id);
+    let provider_facing_content = inbound_message_service::provider_facing_content(
+        &envelope.content,
+        &envelope.media_attachments,
+    );
 
     // ── 1. Hook: on_message_received ─────────────────────────────
     let content = match ports
@@ -176,7 +183,7 @@ pub async fn handle(
         .on_message_received(
             &envelope.source_adapter,
             &envelope.actor_id,
-            envelope.content.clone(),
+            provider_facing_content,
         )
         .await
     {
@@ -237,7 +244,7 @@ async fn handle_regular_message(
 ) -> Result<HandleResult> {
     let current_conversation = crate::domain::conversation_target::CurrentConversationContext {
         source_adapter: envelope.source_adapter.clone(),
-        conversation_ref: envelope.conversation_ref.clone(),
+        conversation_id: envelope.conversation_id.clone(),
         reply_ref: envelope.reply_ref.clone(),
         thread_ref: envelope.thread_ref.clone(),
         actor_id: envelope.actor_id.clone(),
@@ -249,7 +256,7 @@ async fn handle_regular_message(
     let user_profile = ports
         .user_profile_store
         .as_ref()
-        .and_then(|store| store.load(&channel_user_profile_key(envelope)));
+        .and_then(|store| store.load(&channel_user_profile_key(&config.agent_id, envelope)));
 
     // ── 3. Resolve route (with query classification override) ─────
     let mut route = ports.routes.get_route(conversation_key);
@@ -316,7 +323,10 @@ async fn handle_regular_message(
         if inbound_message_service::should_autosave(config.auto_save_memory, content) {
             let _ = mem
                 .store(
-                    &inbound_message_service::autosave_memory_key(envelope),
+                    &inbound_message_service::autosave_memory_key_for_agent(
+                        envelope,
+                        &config.agent_id,
+                    ),
                     content,
                     &crate::domain::memory::MemoryCategory::Conversation,
                     Some(conversation_key),
@@ -409,7 +419,11 @@ async fn handle_regular_message(
     }
 
     // ── #7/#8: Enrich context for first turn ─────────────────────
-    let enrichment = inbound_message_service::decide_history_enrichment(has_prior, envelope);
+    let enrichment = inbound_message_service::decide_history_enrichment_for_agent(
+        has_prior,
+        envelope,
+        &config.agent_id,
+    );
     match enrichment {
         HistoryEnrichment::ThreadSeeding {
             parent_key,
@@ -644,23 +658,12 @@ async fn execute_agent_turn(
     mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
     let janitor_now_unix = chrono::Utc::now().timestamp();
-    let cleaned_route_traces =
-        crate::application::services::runtime_trace_janitor::run_runtime_trace_janitor(
-            crate::application::services::runtime_trace_janitor::RuntimeTraceJanitorInput {
-                tool_repairs: &route.recent_tool_repairs,
-                assumptions: &route.assumptions,
-                watchdog_alerts: &route.watchdog_alerts,
-                calibration_records: &route.calibrations,
-                handoff_artifacts: &route.handoff_artifacts,
-                now_unix: janitor_now_unix,
-            },
-        );
-    route.recent_tool_repairs = cleaned_route_traces.tool_repairs;
-    route.last_tool_repair = route.recent_tool_repairs.last().cloned();
-    route.assumptions = cleaned_route_traces.assumptions;
-    route.calibrations = cleaned_route_traces.calibration_records;
-    route.watchdog_alerts = cleaned_route_traces.watchdog_alerts;
-    route.handoff_artifacts = cleaned_route_traces.handoff_artifacts;
+    route.clean_runtime_traces(janitor_now_unix);
+    let delivery_hints = OutputDeliveryHints {
+        reply_ref: Some(envelope.reply_ref.clone()),
+        thread_ref: envelope.thread_ref.clone(),
+        already_delivered: false,
+    };
 
     struct ConversationContextGuard {
         port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
@@ -688,7 +691,7 @@ async fn execute_agent_turn(
 
     let current_conversation = crate::domain::conversation_target::CurrentConversationContext {
         source_adapter: envelope.source_adapter.clone(),
-        conversation_ref: envelope.conversation_ref.clone(),
+        conversation_id: envelope.conversation_id.clone(),
         reply_ref: envelope.reply_ref.clone(),
         thread_ref: envelope.thread_ref.clone(),
         actor_id: envelope.actor_id.clone(),
@@ -826,12 +829,14 @@ async fn execute_agent_turn(
         ports.routes.set_route(conversation_key, route.clone());
         return Ok(HandleResult::Response {
             conversation_key: conversation_key.to_string(),
-            response_text: format_blocked_turn_admission_response(
-                &admission_decision,
-                handoff_packet.as_ref(),
+            output: AssistantOutputPresenter::failure(
+                format_blocked_turn_admission_response(
+                    &admission_decision,
+                    handoff_packet.as_ref(),
+                ),
+                AgentRuntimeErrorKind::CapabilityMismatch,
+                delivery_hints.clone(),
             ),
-            tool_summary: String::new(),
-            tools_used: false,
         });
     }
     ports.routes.set_route(conversation_key, route.clone());
@@ -1006,31 +1011,26 @@ async fn execute_agent_turn(
             if response_text.chars().count() > HOOK_MAX_OUTBOUND_CHARS {
                 response_text = truncate_chars(&response_text, HOOK_MAX_OUTBOUND_CHARS);
             }
+            let response_text_for_delivery = response_text.clone();
 
-            // ── #14: Finalize draft or send ──────────────────────
+            // ── #14: Finalize draft if the transport used a streaming draft.
+            let mut response_delivery_hints = delivery_hints.clone();
+            let draft_delivered = matches!(draft_state.as_ref(), Some((_, Some(_))));
             if let Some((_, Some(ref draft_id))) = draft_state {
                 let _ = ports
                     .channel_output
-                    .finalize_draft(&envelope.reply_ref, draft_id, &response_text)
+                    .finalize_draft(&envelope.reply_ref, draft_id, &response_text_for_delivery)
                     .await;
-            } else {
-                let _ = ports
-                    .channel_output
-                    .send_message(
-                        &envelope.reply_ref,
-                        &response_text,
-                        envelope.thread_ref.as_deref(),
-                    )
-                    .await;
+                response_delivery_hints.already_delivered = turn_result.media_artifacts.is_empty();
             }
 
             // ── #15: Tool context summary for history ────────────
             let tool_summary = &turn_result.tool_summary;
             let history_response =
                 if inbound_message_service::should_include_tool_summary(tool_summary, caps) {
-                    format!("{tool_summary}\n{response_text}")
+                    format!("{tool_summary}\n{response_text_for_delivery}")
                 } else {
-                    response_text.clone()
+                    response_text_for_delivery.clone()
                 };
 
             // ── #16: Persist assistant turn ──────────────────────
@@ -1069,7 +1069,7 @@ async fn execute_agent_turn(
                         &mut state,
                         content,
                         &turn_result.tool_facts,
-                        &response_text,
+                        &response_text_for_delivery,
                     );
                     store.set(conversation_key, state);
                 }
@@ -1081,12 +1081,12 @@ async fn execute_agent_turn(
                 let input = crate::application::services::post_turn_orchestrator::PostTurnInput {
                     agent_id: config.agent_id.clone(),
                     user_message: content.to_string(),
-                    assistant_response: response_text.clone(),
+                    assistant_response: response_text_for_delivery.clone(),
                     tools_used: turn_result.tool_names.clone(),
                     tool_facts: turn_result.tool_facts.clone(),
                     run_recipe_store: ports.run_recipe_store.clone(),
                     user_profile_store: ports.user_profile_store.clone(),
-                    user_profile_key: Some(channel_user_profile_key(envelope)),
+                    user_profile_key: Some(channel_user_profile_key(&config.agent_id, envelope)),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
                 };
@@ -1114,9 +1114,17 @@ async fn execute_agent_turn(
 
             Ok(HandleResult::Response {
                 conversation_key: conversation_key.to_string(),
-                response_text,
-                tool_summary: turn_result.tool_summary,
-                tools_used: turn_result.tools_used,
+                output: AssistantOutputPresenter::success(
+                    if draft_delivered && !turn_result.media_artifacts.is_empty() {
+                        String::new()
+                    } else {
+                        response_text_for_delivery
+                    },
+                    turn_result.media_artifacts,
+                    turn_result.tool_summary,
+                    turn_result.tools_used,
+                    response_delivery_hints,
+                ),
             })
         }
         Err(e) => {
@@ -1150,16 +1158,14 @@ async fn execute_agent_turn(
                     }
                 }
                 let msg = format_context_limit_recovery_response(compacted);
-                let _ = ports
-                    .channel_output
-                    .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())
-                    .await;
                 // Don't rollback — keep the user turn for retry
                 return Ok(HandleResult::Response {
                     conversation_key: conversation_key.to_string(),
-                    response_text: msg.to_string(),
-                    tool_summary: String::new(),
-                    tools_used: false,
+                    output: AssistantOutputPresenter::failure(
+                        msg,
+                        AgentRuntimeErrorKind::ContextLimitExceeded,
+                        delivery_hints.clone(),
+                    ),
                 });
             }
 
@@ -1167,32 +1173,24 @@ async fn execute_agent_turn(
             if matches!(e.kind, AgentRuntimeErrorKind::Timeout) {
                 ports.history.rollback_last_turn(conversation_key, content);
                 let msg = format_timeout_recovery_response();
-                let _ = ports
-                    .channel_output
-                    .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())
-                    .await;
                 return Ok(HandleResult::Response {
                     conversation_key: conversation_key.to_string(),
-                    response_text: msg.to_string(),
-                    tool_summary: String::new(),
-                    tools_used: false,
+                    output: AssistantOutputPresenter::failure(
+                        msg,
+                        AgentRuntimeErrorKind::Timeout,
+                        delivery_hints.clone(),
+                    ),
                 });
             }
 
             // ── #21: Generic error ───────────────────────────────
             ports.history.rollback_last_turn(conversation_key, content);
-            let msg = format!("⚠️ {e}");
-            let _ = ports
-                .channel_output
-                .send_message(&envelope.reply_ref, &msg, envelope.thread_ref.as_deref())
-                .await;
+            let msg = format_runtime_failure_response(&e);
 
             // Return as Response so caller doesn't double-send error
             Ok(HandleResult::Response {
                 conversation_key: conversation_key.to_string(),
-                response_text: msg,
-                tool_summary: String::new(),
-                tools_used: false,
+                output: AssistantOutputPresenter::failure(msg, e.kind, delivery_hints.clone()),
             })
         }
     }
@@ -1249,8 +1247,8 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
-    format!("channel:{}:{}", envelope.source_adapter, envelope.actor_id)
+fn channel_user_profile_key(agent_id: &str, envelope: &InboundEnvelope) -> String {
+    inbound_message_service::conversation_identity(envelope, agent_id).actor_profile_key()
 }
 
 #[cfg(test)]
@@ -1443,6 +1441,7 @@ mod tests {
                 tool_summary: String::new(),
                 last_tool_repair: None,
                 tool_repairs: vec![],
+                media_artifacts: vec![],
             })
         }
     }
@@ -1688,13 +1687,18 @@ mod tests {
             source_kind: SourceKind::Channel,
             source_adapter: "telegram".into(),
             actor_id: "user1".into(),
-            conversation_ref: "telegram_user1".into(),
+            conversation_id: "telegram_user1".into(),
             event_ref: None,
             reply_ref: "chat123".into(),
             thread_ref: None,
+            media_attachments: Vec::new(),
             content: content.into(),
             received_at: 0,
         }
+    }
+
+    fn test_conversation_key() -> &'static str {
+        "conversation:test-agent:telegram:telegram_user1:user1"
     }
 
     fn test_ports(response: &str) -> InboundMessagePorts {
@@ -1744,7 +1748,7 @@ mod tests {
             .await
             .unwrap();
         match result {
-            HandleResult::Response { response_text, .. } => assert_eq!(response_text, "Hi!"),
+            HandleResult::Response { output, .. } => assert_eq!(output.text, "Hi!"),
             other => panic!("expected Response, got {other:?}"),
         }
     }
@@ -1755,7 +1759,7 @@ mod tests {
         let caps = vec![ChannelCapability::SendText];
         let ports = test_ports("Hi!");
         handle(&env, &caps, &test_config(), &ports).await.unwrap();
-        assert_eq!(ports.history.get_history("telegram_user1").len(), 2);
+        assert_eq!(ports.history.get_history(test_conversation_key()).len(), 2);
     }
 
     #[tokio::test]
@@ -1782,7 +1786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ack_reactions_use_event_ref_not_conversation_ref() {
+    async fn ack_reactions_use_event_ref_not_conversation_id() {
         let output = Arc::new(RecordingChannelOutput::default());
         let ports = InboundMessagePorts {
             history: Arc::new(MockHistory::new()),
@@ -1813,7 +1817,7 @@ mod tests {
         let caps = vec![ChannelCapability::SendText];
         let mut env = test_envelope("Hello");
         env.event_ref = Some("telegram_42_99".into());
-        env.conversation_ref = "telegram_user1".into();
+        env.conversation_id = "telegram_user1".into();
 
         handle(&env, &caps, &config, &ports).await.unwrap();
 
@@ -1853,7 +1857,7 @@ mod tests {
         let ports = test_ports("");
         ports
             .history
-            .append_turn("telegram_user1", ChatMessage::user("old"));
+            .append_turn(test_conversation_key(), ChatMessage::user("old"));
         let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
         assert!(matches!(
             result,
@@ -1862,7 +1866,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(ports.history.has_history("telegram_user1"));
+        assert!(ports.history.has_history(test_conversation_key()));
     }
 
     #[tokio::test]
@@ -1873,7 +1877,10 @@ mod tests {
             ChannelCapability::RuntimeCommands,
         ];
         let history = Arc::new(MockHistory::new());
-        history.append_turn("telegram_user1", ChatMessage::user("x".repeat(20_000)));
+        history.append_turn(
+            test_conversation_key(),
+            ChatMessage::user("x".repeat(20_000)),
+        );
         let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
         let ports = test_ports_with_state(history, routes.clone(), "");
         let config = config_with_route_window("openrouter", "tiny-model", 1_000);
@@ -1914,7 +1921,7 @@ mod tests {
         let history = Arc::new(MockHistory::new());
         for idx in 0..20 {
             history.append_turn(
-                "telegram_user1",
+                test_conversation_key(),
                 ChatMessage::user(format!("{idx}: {}", "x".repeat(1_000))),
             );
         }
@@ -1944,7 +1951,7 @@ mod tests {
 
         assert_eq!(routes.set_count(), 0);
         assert!(routes.current_route().is_none());
-        assert_eq!(history.get_history("telegram_user1").len(), 20);
+        assert_eq!(history.get_history(test_conversation_key()).len(), 20);
     }
 
     #[tokio::test]
@@ -1981,8 +1988,8 @@ mod tests {
 
         let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
         match result {
-            HandleResult::Response { response_text, .. } => {
-                assert!(response_text.contains("Context window exceeded"));
+            HandleResult::Response { output, .. } => {
+                assert!(output.text.contains("Context window exceeded"));
             }
             other => panic!("expected Response, got {other:?}"),
         }

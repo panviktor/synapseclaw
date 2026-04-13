@@ -52,7 +52,7 @@ pub struct ChannelAgentRuntime {
 }
 
 impl ChannelAgentRuntime {
-    async fn get_or_create_provider(&self, provider_name: &str) -> Result<Arc<dyn Provider>> {
+    pub async fn get_or_create_provider(&self, provider_name: &str) -> Result<Arc<dyn Provider>> {
         if provider_name.is_empty() || provider_name == self.default_provider_name {
             return Ok(Arc::clone(&self.provider));
         }
@@ -185,6 +185,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         let tool_facts = loop_result.tool_facts;
         let last_tool_repair = loop_result.last_tool_repair;
         let tool_repairs = loop_result.tool_repairs;
+        let media_artifacts = loop_result.media_artifacts;
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);
 
@@ -197,6 +198,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             tool_summary,
             last_tool_repair,
             tool_repairs,
+            media_artifacts,
         })
     }
 
@@ -310,7 +312,7 @@ mod tests {
     use super::*;
     use synapse_domain::config::schema::ModelFeature;
     use synapse_domain::ports::model_profile_catalog::{
-        CatalogModelProfile, CatalogModelProfileSource,
+        CatalogModelProfile, CatalogModelProfileSource, ModelProfileObservation,
     };
 
     struct StaticCatalog {
@@ -324,6 +326,15 @@ mod tests {
             _model: &str,
         ) -> Option<CatalogModelProfile> {
             self.profile.clone()
+        }
+
+        fn record_model_profile_observation(
+            &self,
+            _provider: &str,
+            _model: &str,
+            _observation: ModelProfileObservation,
+        ) -> anyhow::Result<()> {
+            Ok(())
         }
     }
 

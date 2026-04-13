@@ -168,7 +168,7 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
             profile: None,
             current_conversation: Some(CurrentConversationContext {
                 source_adapter: "matrix".into(),
-                conversation_ref: "!room:example".into(),
+                conversation_id: "!room:example".into(),
                 reply_ref: "!room:example".into(),
                 thread_ref: None,
                 actor_id: "@victor:example".into(),
