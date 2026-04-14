@@ -1731,6 +1731,7 @@ mod tests {
             observer: std::sync::Arc::new(synapse_observability::NoopObserver),
             tools_registry: std::sync::Arc::new(Vec::new()),
             runtime_tools_registry: std::sync::Arc::new(Vec::new()),
+            runtime_mcp_activated_tools: None,
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
             dialogue_state_store: std::sync::Arc::new(

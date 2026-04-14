@@ -48,7 +48,7 @@ pub fn format_common_command_effect(
     options: &RuntimeCommandPresentationOptions,
 ) -> Option<String> {
     match effect {
-        CommandEffect::ShowProviders | CommandEffect::ShowModel => None,
+        CommandEffect::ShowProviders | CommandEffect::ShowModel | CommandEffect::ShowDoctor => None,
         CommandEffect::SwitchProvider { provider } => {
             Some(format_switch_provider_success(provider, options))
         }
@@ -259,6 +259,10 @@ mod tests {
 
         assert_eq!(
             format_common_command_effect(&CommandEffect::ShowModel, &options),
+            None
+        );
+        assert_eq!(
+            format_common_command_effect(&CommandEffect::ShowDoctor, &options),
             None
         );
         assert_eq!(

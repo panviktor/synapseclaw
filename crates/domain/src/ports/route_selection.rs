@@ -4,6 +4,7 @@
 
 use crate::application::services::runtime_assumptions::RuntimeAssumption;
 use crate::application::services::runtime_calibration::RuntimeCalibrationRecord;
+use crate::application::services::runtime_decision_trace::RuntimeDecisionTrace;
 use crate::application::services::runtime_trace_janitor::{
     append_runtime_watchdog_alerts, run_runtime_trace_janitor, RuntimeHandoffArtifact,
     RuntimeTraceJanitorInput,
@@ -100,6 +101,8 @@ pub struct RouteSelection {
     pub watchdog_alerts: Vec<RuntimeWatchdogAlert>,
     /// Bounded short-lived handoff artifacts for this route.
     pub handoff_artifacts: Vec<RuntimeHandoffArtifact>,
+    /// Bounded per-turn runtime decision traces for this route.
+    pub runtime_decision_traces: Vec<RuntimeDecisionTrace>,
 }
 
 impl RouteSelection {
@@ -113,6 +116,7 @@ impl RouteSelection {
         self.calibrations.clear();
         self.watchdog_alerts.clear();
         self.handoff_artifacts.clear();
+        self.runtime_decision_traces.clear();
     }
 
     pub fn clean_runtime_traces(&mut self, now_unix: i64) {
@@ -122,6 +126,7 @@ impl RouteSelection {
             watchdog_alerts: &self.watchdog_alerts,
             calibration_records: &self.calibrations,
             handoff_artifacts: &self.handoff_artifacts,
+            decision_traces: &self.runtime_decision_traces,
             now_unix,
         });
         self.recent_tool_repairs = cleaned.tool_repairs;
@@ -130,6 +135,7 @@ impl RouteSelection {
         self.calibrations = cleaned.calibration_records;
         self.watchdog_alerts = cleaned.watchdog_alerts;
         self.handoff_artifacts = cleaned.handoff_artifacts;
+        self.runtime_decision_traces = cleaned.decision_traces;
     }
 
     pub fn run_runtime_trace_maintenance(&mut self, now_unix: i64) {

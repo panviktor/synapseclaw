@@ -18,7 +18,7 @@ use crate::runtime_adapter_contract::{
     RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
     WebRuntimeAdapterContract,
 };
-use crate::runtime_routes::WorkspaceModelProfileCatalog;
+use crate::runtime_routes::{RuntimeCapabilityDoctorInput, WorkspaceModelProfileCatalog};
 use crate::runtime_tool_notifications::RuntimeToolNotification;
 use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
 use synapse_domain::application::services::assistant_output_presentation::PresentedOutput;
@@ -235,7 +235,29 @@ fn default_web_route_selection(
         calibrations: Vec::new(),
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
     }
+}
+
+fn web_provider_capabilities_for_route(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+    route: &RouteSelection,
+) -> synapse_domain::ports::provider::ProviderCapabilities {
+    let default_provider = default_web_provider(config);
+    if route
+        .provider
+        .eq_ignore_ascii_case(default_provider.as_str())
+    {
+        return state.provider.capabilities();
+    }
+    state
+        .provider_cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&route.provider)
+        .map(|provider| provider.capabilities())
+        .unwrap_or_default()
 }
 
 /// Query params for the proxy WebSocket.
@@ -880,7 +902,10 @@ async fn handle_channel_history(
         })
         .collect();
 
-    let summary = backend.load_summary(session_key).await.map(|summary| summary.summary);
+    let summary = backend
+        .load_summary(session_key)
+        .await
+        .map(|summary| summary.summary);
     let metadata = backend
         .list_sessions_with_metadata()
         .await
@@ -1674,6 +1699,35 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         })
     }
 
+    async fn capability_doctor_report(
+        &mut self,
+    ) -> anyhow::Result<
+        synapse_domain::application::services::capability_doctor::CapabilityDoctorReport,
+    > {
+        let route = current_web_route_selection(self.state, self.conversation_key)?;
+        let provider_capabilities =
+            web_provider_capabilities_for_route(self.state, self.config, &route);
+        let memory_backend_healthy = Some(self.state.mem.health_check().await);
+        let embedding_profile = self.state.mem.embedding_profile();
+        Ok(
+            crate::runtime_routes::build_runtime_capability_doctor_report(
+                RuntimeCapabilityDoctorInput {
+                    route: &route,
+                    config: self.config,
+                    provider_capabilities,
+                    provider_plan_denial: None,
+                    tool_registry_count: self.state.runtime_tools_registry.len(),
+                    memory_backend_name: Some(self.state.mem.name()),
+                    memory_backend_healthy,
+                    memory_backend_configured: true,
+                    embedding_profile: Some(&embedding_profile),
+                    channel_name: Some("web"),
+                    channel_available: Some(true),
+                },
+            ),
+        )
+    }
+
     async fn switch_provider(
         &mut self,
         request: RuntimeRouteMutationRequest,
@@ -1730,6 +1784,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
             },
             Some(&catalog),
         );
@@ -1991,7 +2046,10 @@ async fn handle_sessions_list(
     // Also include channel sessions through the same backend port used by channels.
     if let Some(backend) = state.channel_session_backend.as_ref() {
         for session in backend.list_sessions_with_metadata().await {
-            let summary = backend.load_summary(&session.key).await.map(|summary| summary.summary);
+            let summary = backend
+                .load_summary(&session.key)
+                .await
+                .map(|summary| summary.summary);
             all_sessions.push(ConversationSession {
                 key: session.key.clone(),
                 kind: ConversationKind::Channel,

@@ -6,6 +6,7 @@
 use synapse_domain::application::services::assistant_output_presentation::{
     AssistantOutputPresenter, OutputDeliveryHints, PresentedOutput,
 };
+use synapse_domain::application::services::capability_doctor::CapabilityDoctorReport;
 use synapse_domain::application::services::inbound_message_service::CommandEffect;
 use synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflight;
 use synapse_domain::application::services::runtime_command_presentation::{
@@ -154,6 +155,8 @@ pub(crate) trait RuntimeCommandHost {
 
     async fn model_help_snapshot(&mut self) -> anyhow::Result<RuntimeModelHelpSnapshot>;
 
+    async fn capability_doctor_report(&mut self) -> anyhow::Result<CapabilityDoctorReport>;
+
     async fn switch_provider(
         &mut self,
         request: RuntimeRouteMutationRequest,
@@ -210,6 +213,12 @@ where
             Ok(crate::runtime_routes::build_models_help_response(
                 &snapshot.route,
                 &snapshot.config,
+            ))
+        }
+        CommandEffect::ShowDoctor => {
+            let report = host.capability_doctor_report().await?;
+            Ok(crate::runtime_routes::build_capability_doctor_response(
+                &report,
             ))
         }
         CommandEffect::SwitchProvider { provider } => match contract.canonical_provider(provider) {
@@ -354,6 +363,11 @@ pub(crate) fn runtime_adapter_descriptors() -> [RuntimeAdapterDescriptor; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::application::services::capability_doctor::{
+        CapabilityDoctorModelProfileSnapshot, CapabilityDoctorNode, CapabilityDoctorReadiness,
+        CapabilityDoctorRouteSnapshot, CapabilityDoctorSeverity, CapabilityDoctorSubsystem,
+        CapabilityDoctorSummary,
+    };
     use synapse_domain::application::services::inbound_message_service::CommandEffect;
     use synapse_domain::application::services::route_switch_preflight::{
         RouteSwitchPreflight, RouteSwitchStatus,
@@ -492,7 +506,8 @@ mod tests {
             "{path} must instantiate {contract_type} on the runtime-command hot path"
         );
         assert!(
-            source.contains("execute_runtime_command_effect"),
+            source.contains("execute_runtime_command_effect")
+                || source.contains("execute_runtime_command_output"),
             "{path} must execute runtime commands through the shared adapter-core executor"
         );
     }
@@ -502,6 +517,7 @@ mod tests {
         current_provider: String,
         show_providers: usize,
         show_model: usize,
+        show_doctor: usize,
         switched_provider: Option<String>,
         switched_model: Option<String>,
         cleared: bool,
@@ -522,6 +538,7 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
         }
     }
 
@@ -546,6 +563,11 @@ mod tests {
                 route: test_route("openrouter", "test-model"),
                 config: Config::default(),
             })
+        }
+
+        async fn capability_doctor_report(&mut self) -> anyhow::Result<CapabilityDoctorReport> {
+            self.show_doctor += 1;
+            Ok(test_capability_doctor_report())
         }
 
         async fn switch_provider(
@@ -581,6 +603,46 @@ mod tests {
         async fn clear_session(&mut self) -> anyhow::Result<()> {
             self.cleared = true;
             Ok(())
+        }
+    }
+
+    fn test_capability_doctor_report() -> CapabilityDoctorReport {
+        CapabilityDoctorReport {
+            generated_at_unix: 100,
+            route: CapabilityDoctorRouteSnapshot {
+                provider: "openrouter".into(),
+                model: "test-model".into(),
+                lane: None,
+                candidate_index: None,
+            },
+            model_profile: CapabilityDoctorModelProfileSnapshot {
+                context_window_tokens: Some(128_000),
+                max_output_tokens: Some(8_192),
+                features: vec!["tool_calling".into()],
+                context_window_source: "manual_config".into(),
+                context_window_freshness: "explicit".into(),
+                context_window_confidence: "high".into(),
+                max_output_source: "manual_config".into(),
+                max_output_freshness: "explicit".into(),
+                max_output_confidence: "high".into(),
+                features_source: "manual_config".into(),
+                features_freshness: "explicit".into(),
+                features_confidence: "high".into(),
+                observed_at_unix: None,
+            },
+            summary: CapabilityDoctorSummary {
+                ok: 1,
+                warn: 0,
+                error: 0,
+            },
+            nodes: vec![CapabilityDoctorNode {
+                subsystem: CapabilityDoctorSubsystem::ProviderAdapter,
+                subject: "openrouter".into(),
+                readiness: CapabilityDoctorReadiness::Ready,
+                severity: CapabilityDoctorSeverity::Ok,
+                evidence: vec!["provider adapter is registered".into()],
+                recommendation: None,
+            }],
         }
     }
 
@@ -658,6 +720,34 @@ mod tests {
         assert_eq!(host.show_model, 1);
         assert!(response.contains("Current provider: `openrouter`"));
         assert!(response.contains("Current model: `test-model`"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_show_doctor_from_shared_report() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowDoctor,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowDoctor,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_doctor, 1);
+        assert_eq!(channel_host.show_doctor, 1);
+        assert!(web_response.contains("Capability doctor"));
+        assert!(web_response.contains("provider_adapter"));
     }
 
     #[tokio::test]

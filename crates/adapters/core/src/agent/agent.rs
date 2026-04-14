@@ -55,9 +55,15 @@ use synapse_domain::application::services::runtime_calibration::{
     RuntimeCalibrationDecisionKind, RuntimeCalibrationObservation, RuntimeCalibrationOutcome,
     RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
 };
+use synapse_domain::application::services::runtime_decision_trace::{
+    append_runtime_decision_trace, build_runtime_decision_trace, build_runtime_decision_trace_id,
+    merge_runtime_decision_trace_update, runtime_memory_decision_from_autosave,
+    runtime_tool_decisions_from_repairs, RuntimeDecisionTrace, RuntimeDecisionTraceInput,
+    RuntimeDecisionTraceUpdate, RuntimeTraceRouteRef,
+};
 use synapse_domain::application::services::runtime_trace_janitor::{
     append_runtime_handoff_packet, append_runtime_watchdog_alerts, run_runtime_trace_janitor,
-    RuntimeHandoffArtifact, RuntimeTraceJanitorInput,
+    RuntimeHandoffArtifact, RuntimeTraceJanitorInput, RUNTIME_TRACE_JANITOR_TTL_SECS,
 };
 use synapse_domain::application::services::runtime_watchdog::{
     build_runtime_subsystem_observations, build_runtime_watchdog_digest,
@@ -354,6 +360,8 @@ pub struct Agent {
     recent_runtime_watchdog_alerts: Vec<RuntimeWatchdogAlert>,
     /// Bounded short-lived handoff artifacts for this live agent.
     recent_runtime_handoff_artifacts: Vec<RuntimeHandoffArtifact>,
+    /// Bounded per-turn runtime decision traces for this live agent.
+    recent_runtime_decision_traces: Vec<RuntimeDecisionTrace>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -775,6 +783,7 @@ impl AgentBuilder {
             recent_runtime_calibrations: Vec::new(),
             recent_runtime_watchdog_alerts: Vec::new(),
             recent_runtime_handoff_artifacts: Vec::new(),
+            recent_runtime_decision_traces: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -958,6 +967,10 @@ impl Agent {
         &self.recent_runtime_handoff_artifacts
     }
 
+    pub fn recent_runtime_decision_traces(&self) -> &[RuntimeDecisionTrace] {
+        &self.recent_runtime_decision_traces
+    }
+
     pub fn run_runtime_trace_maintenance_tick(&mut self, now_unix: i64) {
         let context_cache_stats = self.history_compaction_cache_stats_for_route(
             &self.provider_name,
@@ -979,6 +992,7 @@ impl Agent {
             calibrations: self.recent_runtime_calibrations.clone(),
             watchdog_alerts: self.recent_runtime_watchdog_alerts.clone(),
             handoff_artifacts: self.recent_runtime_handoff_artifacts.clone(),
+            runtime_decision_traces: self.recent_runtime_decision_traces.clone(),
         };
         route.run_runtime_trace_maintenance(now_unix);
         self.recent_turn_tool_repairs = route.recent_tool_repairs;
@@ -987,6 +1001,7 @@ impl Agent {
         self.recent_runtime_calibrations = route.calibrations;
         self.recent_runtime_watchdog_alerts = route.watchdog_alerts;
         self.recent_runtime_handoff_artifacts = route.handoff_artifacts;
+        self.recent_runtime_decision_traces = route.runtime_decision_traces;
     }
 
     fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
@@ -996,6 +1011,7 @@ impl Agent {
             watchdog_alerts: &self.recent_runtime_watchdog_alerts,
             calibration_records: &self.recent_runtime_calibrations,
             handoff_artifacts: &self.recent_runtime_handoff_artifacts,
+            decision_traces: &self.recent_runtime_decision_traces,
             now_unix,
         });
         let removed_total = cleaned.report.removed_total();
@@ -1005,6 +1021,7 @@ impl Agent {
         self.recent_runtime_watchdog_alerts = cleaned.watchdog_alerts;
         self.recent_runtime_calibrations = cleaned.calibration_records;
         self.recent_runtime_handoff_artifacts = cleaned.handoff_artifacts;
+        self.recent_runtime_decision_traces = cleaned.decision_traces;
         if removed_total > 0 || promotion_candidates > 0 {
             tracing::debug!(
                 removed_total,
@@ -1177,6 +1194,7 @@ impl Agent {
         rebuilt.recent_runtime_calibrations.clear();
         rebuilt.recent_runtime_watchdog_alerts.clear();
         rebuilt.recent_runtime_handoff_artifacts.clear();
+        rebuilt.recent_runtime_decision_traces.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -2165,6 +2183,7 @@ impl Agent {
         self.last_turn_tool_facts.clear();
         self.last_turn_tool_repair = None;
         self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
+        let mut pre_admission_memory_decisions = Vec::new();
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -2341,15 +2360,24 @@ impl Agent {
             )
         {
             let user_key = autosave_memory_key("user_msg");
-            let _ = self
+            let category = MemoryCategory::Conversation;
+            let observed_at_unix = chrono::Utc::now().timestamp();
+            let store_result = self
                 .memory
                 .store(
                     &user_key,
                     user_message,
-                    &MemoryCategory::Conversation,
+                    &category,
                     self.memory_session_id.as_deref(),
                 )
                 .await;
+            let failure = store_result.as_ref().err().map(|error| error.to_string());
+            pre_admission_memory_decisions.push(runtime_memory_decision_from_autosave(
+                observed_at_unix,
+                &category,
+                store_result.is_ok(),
+                failure.as_deref(),
+            ));
         }
 
         // Store literal raw user message in history
@@ -2511,6 +2539,40 @@ impl Agent {
             );
             let context_cache_stats =
                 self.history_compaction_cache_stats_for_compression(&effective_compression);
+            let runtime_trace_id = build_runtime_decision_trace_id(
+                observed_at_unix,
+                &format!(
+                    "{}:{}:{}",
+                    self.agent_id,
+                    self.turn_count,
+                    self.recent_turn_admissions.len()
+                ),
+            );
+            let route_ref = RuntimeTraceRouteRef::new(
+                effective_provider.clone(),
+                effective_model.clone(),
+                effective_lane,
+                effective_candidate_index,
+            );
+            let mut runtime_trace = build_runtime_decision_trace(RuntimeDecisionTraceInput {
+                trace_id: runtime_trace_id.clone(),
+                observed_at_unix,
+                route_before: route_ref.clone(),
+                route_after: route_ref,
+                admission: &admission_decision,
+                model_profile: &effective_model_profile,
+                provider_context: provider_context_input,
+                context_cache: Some(context_cache_stats),
+            });
+            if !pre_admission_memory_decisions.is_empty() {
+                runtime_trace.memory = std::mem::take(&mut pre_admission_memory_decisions);
+            }
+            self.recent_runtime_decision_traces = append_runtime_decision_trace(
+                &self.recent_runtime_decision_traces,
+                runtime_trace,
+                observed_at_unix,
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
             let memory_backend_healthy = self.memory.health_check().await;
             let embedding_profile = self.memory.embedding_profile();
             let subsystem_observations =
@@ -2964,6 +3026,22 @@ impl Agent {
                         &tool_repairs_this_turn,
                         chrono::Utc::now().timestamp(),
                     );
+                if let Some(trace_id) = self
+                    .recent_runtime_decision_traces
+                    .last()
+                    .map(|trace| trace.trace_id.clone())
+                {
+                    self.recent_runtime_decision_traces = merge_runtime_decision_trace_update(
+                        &self.recent_runtime_decision_traces,
+                        &trace_id,
+                        RuntimeDecisionTraceUpdate {
+                            tools: runtime_tool_decisions_from_repairs(&tool_repairs_this_turn),
+                            ..Default::default()
+                        },
+                        chrono::Utc::now().timestamp(),
+                        RUNTIME_TRACE_JANITOR_TTL_SECS,
+                    );
+                }
                 self.recent_runtime_assumptions = apply_tool_repair_assumption_challenges(
                     &self.recent_runtime_assumptions,
                     &tool_repairs_this_turn,

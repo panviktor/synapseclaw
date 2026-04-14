@@ -98,10 +98,10 @@ pub(crate) fn build_channel_session_backend(
 
     if let Some(db) = shared_surreal {
         tracing::info!("📂 Session persistence enabled (SurrealDB)");
-        return Ok(Some(Arc::new(session_surreal::SurrealSessionBackend::new(
-            Arc::clone(db),
-        ))
-            as Arc<dyn crate::channels::session_backend::SessionBackend>));
+        return Ok(Some(
+            Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
+                as Arc<dyn crate::channels::session_backend::SessionBackend>,
+        ));
     }
 
     anyhow::bail!(
@@ -229,7 +229,8 @@ struct ChannelRuntimeContext {
         Option<Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
-    conversation_store: Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
+    conversation_store:
+        Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
@@ -446,6 +447,7 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
         calibrations: Vec::new(),
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
     }
 }
 
@@ -546,10 +548,17 @@ fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
 fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
     let mut config = Config::default();
     config.workspace_dir = ctx.workspace_dir.as_ref().clone();
+    config.api_key = ctx.api_key.clone();
+    config.api_url = ctx.api_url.clone();
     config.default_provider = Some(ctx.default_provider.as_ref().clone());
     config.default_model = Some(ctx.model.as_ref().clone());
     config.model_lanes = ctx.model_lanes.as_ref().clone();
     config.model_preset = ctx.model_preset.clone();
+    config.reliability = ctx.reliability.as_ref().clone();
+    config.runtime.reasoning_enabled = ctx.provider_runtime_options.reasoning_enabled;
+    config.runtime.reasoning_effort = ctx.provider_runtime_options.reasoning_effort.clone();
+    config.agent.prompt_caching = ctx.provider_runtime_options.prompt_caching;
+    config.agent.max_tool_iterations = ctx.max_tool_iterations;
     config
 }
 
@@ -688,6 +697,21 @@ async fn get_or_create_provider(
         .entry(provider_name.to_string())
         .or_insert_with(|| Arc::clone(&provider));
     Ok(Arc::clone(cached))
+}
+
+fn channel_provider_capabilities_for_route(
+    ctx: &ChannelRuntimeContext,
+    route: &ChannelRouteSelection,
+) -> synapse_domain::ports::provider::ProviderCapabilities {
+    if route.provider.eq_ignore_ascii_case(ctx.default_provider.as_str()) {
+        return ctx.provider.capabilities();
+    }
+    ctx.provider_cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&route.provider)
+        .map(|provider| provider.capabilities())
+        .unwrap_or_default()
 }
 
 async fn create_resilient_provider_nonblocking(
@@ -1107,6 +1131,33 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
             route: current,
             config,
         })
+    }
+
+    async fn capability_doctor_report(
+        &mut self,
+    ) -> anyhow::Result<
+        synapse_domain::application::services::capability_doctor::CapabilityDoctorReport,
+    > {
+        let current = get_route_selection(self.ctx, self.conversation_key);
+        let config = channel_runtime_config_snapshot(self.ctx);
+        let provider_capabilities = channel_provider_capabilities_for_route(self.ctx, &current);
+        let memory_backend_healthy = Some(self.ctx.memory.health_check().await);
+        let embedding_profile = self.ctx.memory.embedding_profile();
+        Ok(crate::runtime_routes::build_runtime_capability_doctor_report(
+            crate::runtime_routes::RuntimeCapabilityDoctorInput {
+                route: &current,
+                config: &config,
+                provider_capabilities,
+                provider_plan_denial: None,
+                tool_registry_count: self.ctx.tools_registry.len(),
+                memory_backend_name: Some(self.ctx.memory.name()),
+                memory_backend_healthy,
+                memory_backend_configured: true,
+                embedding_profile: Some(&embedding_profile),
+                channel_name: Some("channel"),
+                channel_available: Some(!self.ctx.channels_by_name.is_empty()),
+            },
+        ))
     }
 
     async fn switch_provider(
@@ -3148,6 +3199,7 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
         };
         let effective_compression =
             synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
@@ -3228,7 +3280,7 @@ mod tests {
         )
         .await;
 
-        assert!(response.contains("blocked"));
+        assert!(response.text.contains("blocked"));
         assert!(ctx.route_overrides.lock().unwrap().get("sender").is_none());
     }
 
@@ -3275,7 +3327,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            response,
+            response.text,
             synapse_domain::application::services::runtime_command_presentation::format_switch_model_success(
                 "compact-model",
                 "openrouter",
@@ -3335,6 +3387,7 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
             },
         );
 
@@ -3346,7 +3399,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            response,
+            response.text,
             synapse_domain::application::services::runtime_command_presentation::format_clear_session_response()
         );
         assert!(ctx

@@ -26,12 +26,18 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use crate::application::services::runtime_decision_trace::{
+    build_runtime_decision_trace, build_runtime_decision_trace_id,
+    merge_runtime_decision_trace_update, runtime_tool_decisions_from_repairs,
+    RuntimeDecisionTraceInput, RuntimeDecisionTraceUpdate, RuntimeTraceRouteRef,
+};
 use crate::application::services::runtime_error_presentation::{
     format_context_limit_recovery_response, format_runtime_failure_response,
     format_timeout_recovery_response,
 };
 use crate::application::services::runtime_trace_janitor::{
-    append_runtime_handoff_packet, append_runtime_watchdog_alerts,
+    append_runtime_decision_trace_for_janitor, append_runtime_handoff_packet,
+    append_runtime_watchdog_alerts, RUNTIME_TRACE_JANITOR_TTL_SECS,
 };
 use crate::application::services::runtime_watchdog::{
     build_runtime_subsystem_observations, build_runtime_watchdog_digest,
@@ -218,7 +224,8 @@ pub async fn handle(
                 }
                 CommandEffect::SwitchModelBlocked { .. }
                 | CommandEffect::ShowProviders
-                | CommandEffect::ShowModel => {}
+                | CommandEffect::ShowModel
+                | CommandEffect::ShowDoctor => {}
             }
 
             Ok(HandleResult::Command {
@@ -705,6 +712,9 @@ async fn execute_agent_turn(
             ports.model_profile_catalog.as_deref(),
         );
     let route_capabilities = ports.agent_runtime.capabilities_for(&route.provider);
+    let route_before_admission = route.clone();
+    let provider_context =
+        provider_context_input_for_history(&history).with_target_model_profile(&route_profile);
     let admission_decision = crate::application::services::turn_admission::assess_turn_admission(
         crate::application::services::turn_admission::TurnAdmissionInput {
             config: Some(&routing_config),
@@ -716,8 +726,7 @@ async fn execute_agent_turn(
             current_lane: route.lane,
             current_profile: &route_profile,
             provider_capabilities: &route_capabilities,
-            provider_context: provider_context_input_for_history(&history)
-                .with_target_model_profile(&route_profile),
+            provider_context,
             calibration_records: &route.calibrations,
             catalog: ports.model_profile_catalog.as_deref(),
         },
@@ -753,6 +762,7 @@ async fn execute_agent_turn(
         route.candidate_index = route_override.candidate_index;
     }
     let observed_at_unix = chrono::Utc::now().timestamp();
+    let runtime_trace_id = build_runtime_decision_trace_id(observed_at_unix, conversation_key);
     let admission_state = RouteAdmissionState {
         observed_at_unix,
         snapshot: admission_decision.snapshot.clone(),
@@ -767,6 +777,37 @@ async fn execute_agent_turn(
             observed_at_unix,
         );
     route.last_admission = Some(admission_state);
+    let selected_route_profile =
+        crate::application::services::model_lane_resolution::resolve_route_selection_profile(
+            &routing_config,
+            &route,
+            ports.model_profile_catalog.as_deref(),
+        );
+    let runtime_trace = build_runtime_decision_trace(RuntimeDecisionTraceInput {
+        trace_id: runtime_trace_id.clone(),
+        observed_at_unix,
+        route_before: RuntimeTraceRouteRef::new(
+            route_before_admission.provider,
+            route_before_admission.model,
+            route_before_admission.lane,
+            route_before_admission.candidate_index,
+        ),
+        route_after: RuntimeTraceRouteRef::new(
+            route.provider.clone(),
+            route.model.clone(),
+            route.lane,
+            route.candidate_index,
+        ),
+        admission: &admission_decision,
+        model_profile: &selected_route_profile,
+        provider_context,
+        context_cache: route.context_cache,
+    });
+    route.runtime_decision_traces = append_runtime_decision_trace_for_janitor(
+        &route.runtime_decision_traces,
+        runtime_trace,
+        observed_at_unix,
+    );
     let memory_backend_healthy = if let Some(memory) = ports.memory.as_ref() {
         Some(memory.health_check().await)
     } else {
@@ -1049,6 +1090,16 @@ async fn execute_agent_turn(
                 &route.assumptions,
                 &turn_result.tool_repairs,
             );
+            route.runtime_decision_traces = merge_runtime_decision_trace_update(
+                &route.runtime_decision_traces,
+                &runtime_trace_id,
+                RuntimeDecisionTraceUpdate {
+                    tools: runtime_tool_decisions_from_repairs(&turn_result.tool_repairs),
+                    ..Default::default()
+                },
+                chrono::Utc::now().timestamp(),
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
             route.calibrations =
                 crate::application::services::runtime_calibration::append_tool_fact_calibration_observations(
                     &route.calibrations,
@@ -1089,6 +1140,13 @@ async fn execute_agent_turn(
                     user_profile_key: Some(channel_user_profile_key(&config.agent_id, envelope)),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
+                    runtime_trace_sink: Some(
+                        crate::application::services::post_turn_orchestrator::PostTurnRuntimeTraceSink {
+                            trace_id: runtime_trace_id.clone(),
+                            conversation_key: conversation_key.to_string(),
+                            routes: Arc::clone(&ports.routes),
+                        },
+                    ),
                 };
                 tokio::spawn(async move {
                     // Orchestrator handles tracing internally
@@ -1345,6 +1403,7 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1391,6 +1450,7 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
             }
         }
     }

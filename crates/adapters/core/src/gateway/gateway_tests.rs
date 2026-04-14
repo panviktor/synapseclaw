@@ -104,6 +104,7 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -212,6 +213,7 @@ async fn metrics_endpoint_renders_prometheus_output() {
         observer,
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -784,6 +786,7 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -906,6 +909,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1040,6 +1044,7 @@ async fn webhook_secret_hash_rejects_missing_header() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1146,6 +1151,7 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1257,6 +1263,7 @@ async fn webhook_secret_hash_accepts_valid_header() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1373,6 +1380,7 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(
@@ -1485,6 +1493,7 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         runtime_tools_registry: Arc::new(Vec::new()),
+        runtime_mcp_activated_tools: None,
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
         dialogue_state_store: Arc::new(

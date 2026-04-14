@@ -20,15 +20,22 @@ use crate::application::services::procedural_cluster_service::{
 };
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::run_recipe_review_service;
+use crate::application::services::runtime_decision_trace::{
+    merge_runtime_decision_trace_update, runtime_auxiliary_decision,
+    runtime_memory_decision_from_mutation, RuntimeDecisionTraceUpdate,
+    RuntimeTraceAuxiliaryDecision, RuntimeTraceMemoryDecision,
+};
+use crate::application::services::runtime_trace_janitor::RUNTIME_TRACE_JANITOR_TTL_SECS;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
 use crate::application::services::user_profile_service;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{
-    MutationCandidate, MutationSource, MutationThresholds, MutationWriteClass,
+    MutationCandidate, MutationDecision, MutationSource, MutationThresholds, MutationWriteClass,
 };
 use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::memory::UnifiedMemoryPort;
+use crate::ports::route_selection::RouteSelectionPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
 use crate::ports::user_profile_store::UserProfileStorePort;
 use std::collections::HashSet;
@@ -50,6 +57,15 @@ pub struct PostTurnInput {
     /// Optional SSE event sender for publishing reports to UI.
     /// Both web and channels should pass this if available.
     pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    /// Optional sink for merging post-turn memory/aux decisions into the turn trace.
+    pub runtime_trace_sink: Option<PostTurnRuntimeTraceSink>,
+}
+
+#[derive(Clone)]
+pub struct PostTurnRuntimeTraceSink {
+    pub trace_id: String,
+    pub conversation_key: String,
+    pub routes: Arc<dyn RouteSelectionPort>,
 }
 
 /// What the orchestrator did — returned to the transport adapter for logging/UI.
@@ -83,6 +99,10 @@ pub struct PostTurnReport {
     pub skills_penalized: usize,
     /// Whether a dynamic user profile patch was applied.
     pub user_profile_updated: bool,
+    /// Redacted runtime memory decisions for the matching turn trace.
+    pub runtime_memory_decisions: Vec<RuntimeTraceMemoryDecision>,
+    /// Redacted auxiliary learning decisions for the matching turn trace.
+    pub runtime_auxiliary_decisions: Vec<RuntimeTraceAuxiliaryDecision>,
 }
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -173,6 +193,8 @@ pub async fn execute_post_turn_learning(
         skills_upserted: 0,
         skills_penalized: 0,
         user_profile_updated: false,
+        runtime_memory_decisions: Vec::new(),
+        runtime_auxiliary_decisions: Vec::new(),
     };
     let allow_background_learning = matches!(
         memory_quality_governor::assess_background_learning_input(&input.user_message),
@@ -195,23 +217,17 @@ pub async fn execute_post_turn_learning(
             &MutationThresholds::default(),
         )
         .await;
-        match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
-            Ok(event) => {
-                tracing::debug!(
-                    target: "post_turn",
-                    kind = ?event.kind,
-                    agent_id = %input.agent_id,
-                    "Explicit learning event"
-                );
-                report.explicit_mutation = Some(event);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "post_turn",
-                    error = %e,
-                    "Explicit mutation failed"
-                );
-            }
+        let (event, trace) =
+            apply_decision_with_runtime_trace(mem, &decision, &input.agent_id, None).await;
+        report.runtime_memory_decisions.push(trace);
+        if let Some(event) = event {
+            tracing::debug!(
+                target: "post_turn",
+                kind = ?event.kind,
+                agent_id = %input.agent_id,
+                "Explicit learning event"
+            );
+            report.explicit_mutation = Some(event);
         }
     }
 
@@ -247,15 +263,16 @@ pub async fn execute_post_turn_learning(
                 )
                 .await;
             let decision = merge_precedent_update_decision(mem, &input.agent_id, decision).await;
-            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
-                Ok(event) => report.candidate_mutations.push(event),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "post_turn",
-                        error = %e,
-                        "Precedent mutation failed"
-                    );
-                }
+            let (event, trace) = apply_decision_with_runtime_trace(
+                mem,
+                &decision,
+                &input.agent_id,
+                Some("precedent_similarity"),
+            )
+            .await;
+            report.runtime_memory_decisions.push(trace);
+            if let Some(event) = event {
+                report.candidate_mutations.push(event);
             }
         }
     }
@@ -276,15 +293,16 @@ pub async fn execute_post_turn_learning(
             )
             .await;
             let decision = merge_failure_update_decision(mem, &input.agent_id, decision).await;
-            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
-                Ok(event) => report.candidate_mutations.push(event),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "post_turn",
-                        error = %e,
-                        "Failure-pattern mutation failed"
-                    );
-                }
+            let (event, trace) = apply_decision_with_runtime_trace(
+                mem,
+                &decision,
+                &input.agent_id,
+                Some("failure_similarity"),
+            )
+            .await;
+            report.runtime_memory_decisions.push(trace);
+            if let Some(event) = event {
+                report.candidate_mutations.push(event);
             }
         }
     }
@@ -348,15 +366,11 @@ pub async fn execute_post_turn_learning(
         )
         .await;
         for decision in decisions {
-            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
-                Ok(event) => report.candidate_mutations.push(event),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "post_turn",
-                        error = %e,
-                        "Typed candidate mutation failed"
-                    );
-                }
+            let (event, trace) =
+                apply_decision_with_runtime_trace(mem, &decision, &input.agent_id, None).await;
+            report.runtime_memory_decisions.push(trace);
+            if let Some(event) = event {
+                report.candidate_mutations.push(event);
             }
         }
     }
@@ -675,6 +689,19 @@ pub async fn execute_post_turn_learning(
         report.reflection_started = true;
     }
 
+    let trace_observed_at_unix = chrono::Utc::now().timestamp();
+    report.runtime_auxiliary_decisions = build_runtime_auxiliary_decisions(
+        &report,
+        input.auto_save_enabled,
+        allow_background_learning,
+        should_consolidate,
+        should_reflect,
+        trace_observed_at_unix,
+    );
+    if let Some(sink) = input.runtime_trace_sink.as_ref() {
+        publish_runtime_trace_fragments(sink, &report, trace_observed_at_unix);
+    }
+
     tracing::debug!(
         target: "post_turn",
         signal = ?report.signal,
@@ -714,6 +741,179 @@ pub async fn execute_post_turn_learning(
     }
 
     report
+}
+
+async fn apply_decision_with_runtime_trace(
+    mem: &dyn UnifiedMemoryPort,
+    decision: &MutationDecision,
+    agent_id: &str,
+    source_override: Option<&str>,
+) -> (Option<LearningEvent>, RuntimeTraceMemoryDecision) {
+    let observed_at_unix = chrono::Utc::now().timestamp();
+    match mutation::apply_decision_with_event(mem, decision, agent_id).await {
+        Ok(event) => {
+            let applied = !decision.action.is_noop();
+            let trace = runtime_memory_decision_from_mutation(
+                decision,
+                observed_at_unix,
+                source_override,
+                applied,
+                event.entry_id.as_deref(),
+                None,
+            );
+            (Some(event), trace)
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "post_turn",
+                error = %error,
+                action = ?decision.action,
+                "Memory mutation failed"
+            );
+            let error = error.to_string();
+            let trace = runtime_memory_decision_from_mutation(
+                decision,
+                observed_at_unix,
+                source_override,
+                false,
+                None,
+                Some(&error),
+            );
+            (None, trace)
+        }
+    }
+}
+
+fn build_runtime_auxiliary_decisions(
+    report: &PostTurnReport,
+    auto_save_enabled: bool,
+    allow_background_learning: bool,
+    should_consolidate: bool,
+    should_reflect: bool,
+    observed_at_unix: i64,
+) -> Vec<RuntimeTraceAuxiliaryDecision> {
+    let mut decisions = Vec::new();
+    if should_consolidate || report.consolidation_started {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "consolidation",
+            if report.consolidation_started {
+                "started"
+            } else {
+                "attempted"
+            },
+            usize::from(report.consolidation_started),
+            None,
+        ));
+    } else if auto_save_enabled && !allow_background_learning {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "consolidation",
+            "suppressed",
+            0,
+            Some("background_learning_governor"),
+        ));
+    }
+    if should_reflect || report.reflection_started {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "reflection",
+            if report.reflection_started {
+                "started"
+            } else {
+                "attempted"
+            },
+            usize::from(report.reflection_started),
+            None,
+        ));
+    }
+    if report.run_recipes_upserted > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "run_recipe",
+            "upserted",
+            report.run_recipes_upserted,
+            None,
+        ));
+    }
+    if report.run_recipes_removed > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "run_recipe",
+            "removed_redundant",
+            report.run_recipes_removed,
+            None,
+        ));
+    }
+    if !report.skill_promotion_assessments.is_empty() {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "skill_promotion",
+            "assessed",
+            report.skill_promotion_assessments.len(),
+            None,
+        ));
+    }
+    if report.skills_upserted > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "skill_promotion",
+            "upserted",
+            report.skills_upserted,
+            None,
+        ));
+    }
+    if report.skills_penalized > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "skill_feedback",
+            "penalized",
+            report.skills_penalized,
+            None,
+        ));
+    }
+    if report.user_profile_updated {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "user_profile",
+            "updated",
+            1,
+            None,
+        ));
+    }
+    decisions
+}
+
+fn publish_runtime_trace_fragments(
+    sink: &PostTurnRuntimeTraceSink,
+    report: &PostTurnReport,
+    now_unix: i64,
+) {
+    if report.runtime_memory_decisions.is_empty() && report.runtime_auxiliary_decisions.is_empty() {
+        return;
+    }
+    let mut route = sink.routes.get_route(&sink.conversation_key);
+    let updated = merge_runtime_decision_trace_update(
+        &route.runtime_decision_traces,
+        &sink.trace_id,
+        RuntimeDecisionTraceUpdate {
+            memory: report.runtime_memory_decisions.clone(),
+            auxiliary: report.runtime_auxiliary_decisions.clone(),
+            ..Default::default()
+        },
+        now_unix,
+        RUNTIME_TRACE_JANITOR_TTL_SECS,
+    );
+    if updated == route.runtime_decision_traces {
+        tracing::debug!(
+            target: "post_turn",
+            trace_id = %sink.trace_id,
+            "Post-turn runtime trace sink found no matching active trace"
+        );
+        return;
+    }
+    route.runtime_decision_traces = updated;
+    sink.routes.set_route(&sink.conversation_key, route);
 }
 
 async fn merge_precedent_update_decision(
@@ -1094,6 +1294,7 @@ mod tests {
                 user_profile_key: Some("web:test".into()),
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1139,6 +1340,7 @@ mod tests {
                 user_profile_key: Some("web:test".into()),
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1181,6 +1383,7 @@ mod tests {
                 user_profile_key: Some("web:test".into()),
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1214,6 +1417,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1262,6 +1466,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1294,6 +1499,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1341,6 +1547,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1396,6 +1603,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1454,6 +1662,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1625,6 +1834,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;
@@ -1696,6 +1906,7 @@ mod tests {
                 user_profile_key: None,
                 auto_save_enabled: true,
                 event_tx: None,
+                runtime_trace_sink: None,
             },
         )
         .await;

@@ -2,7 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::io::Write;
 use std::path::Path;
+use synapse_domain::application::services::capability_doctor::CapabilityDoctorSeverity;
 use synapse_domain::config::schema::Config;
+use synapse_domain::ports::route_selection::RouteSelection;
 
 const DAEMON_STALE_SECONDS: i64 = 30;
 const SCHEDULER_STALE_SECONDS: i64 = 120;
@@ -80,12 +82,72 @@ pub fn diagnose(config: &Config) -> Vec<DiagResult> {
     let mut items: Vec<DiagItem> = Vec::new();
 
     check_config_semantics(config, &mut items);
+    check_runtime_capabilities(config, &mut items);
     check_workspace(config, &mut items);
     check_daemon_state(config, &mut items);
     check_environment(&mut items);
     check_cli_tools(&mut items);
 
     items.into_iter().map(DiagItem::into_result).collect()
+}
+
+fn check_runtime_capabilities(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "capability";
+    let provider = config.default_provider.clone().unwrap_or_default();
+    let model = config.default_model.clone().unwrap_or_default();
+    let route = RouteSelection {
+        provider: provider.clone(),
+        model,
+        lane: None,
+        candidate_index: None,
+        last_admission: None,
+        recent_admissions: Vec::new(),
+        last_tool_repair: None,
+        recent_tool_repairs: Vec::new(),
+        context_cache: None,
+        assumptions: Vec::new(),
+        calibrations: Vec::new(),
+        watchdog_alerts: Vec::new(),
+        handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
+    };
+    let provider_capabilities = if provider.trim().is_empty() {
+        Default::default()
+    } else {
+        synapse_providers::create_provider(provider.as_str(), config.api_key.as_deref())
+            .map(|provider| provider.capabilities())
+            .unwrap_or_default()
+    };
+    let report = crate::runtime_routes::build_runtime_capability_doctor_report(
+        crate::runtime_routes::RuntimeCapabilityDoctorInput {
+            route: &route,
+            config,
+            provider_capabilities,
+            provider_plan_denial: None,
+            tool_registry_count: 0,
+            memory_backend_name: None,
+            memory_backend_healthy: None,
+            memory_backend_configured: false,
+            embedding_profile: None,
+            channel_name: None,
+            channel_available: None,
+        },
+    );
+
+    for node in report.nodes {
+        let readiness = crate::runtime_routes::capability_doctor_readiness_name(node.readiness);
+        let subsystem = crate::runtime_routes::capability_doctor_subsystem_name(node.subsystem);
+        let message = if let Some(recommendation) = node.recommendation {
+            format!("{subsystem} {}: {readiness} ({recommendation})", node.subject)
+        } else {
+            format!("{subsystem} {}: {readiness}", node.subject)
+        };
+        match node.severity {
+            CapabilityDoctorSeverity::Ok => items.push(DiagItem::ok(cat, message)),
+            CapabilityDoctorSeverity::Warn => items.push(DiagItem::warn(cat, message)),
+            CapabilityDoctorSeverity::Error => items.push(DiagItem::error(cat, message)),
+        }
+    }
 }
 
 /// Run diagnostics and print human-readable report to stdout.

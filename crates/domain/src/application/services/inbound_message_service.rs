@@ -32,6 +32,8 @@ pub enum RuntimeCommand {
     SetProvider(String),
     /// Show current model.
     ShowModel,
+    /// Show runtime capability readiness graph.
+    ShowDoctor,
     /// Switch to a specific model.
     SetModel(String),
     /// Start a new conversation session.
@@ -81,6 +83,7 @@ pub fn parse_runtime_command(content: &str, caps: &[ChannelCapability]) -> Optio
                 Some(RuntimeCommand::SetModel(model))
             }
         }
+        "/doctor" => Some(RuntimeCommand::ShowDoctor),
         "/new" => Some(RuntimeCommand::NewSession),
         _ => None,
     }
@@ -306,6 +309,8 @@ pub enum CommandEffect {
     SwitchProvider { provider: String },
     /// Display current model info (no state change).
     ShowModel,
+    /// Display runtime capability readiness graph (no state change).
+    ShowDoctor,
     /// Switch to a specific model, optionally with inferred provider from routes.
     SwitchModel {
         model: String,
@@ -356,6 +361,7 @@ fn command_effect_with_alias_resolver(
             provider: raw.clone(),
         },
         RuntimeCommand::ShowModel => CommandEffect::ShowModel,
+        RuntimeCommand::ShowDoctor => CommandEffect::ShowDoctor,
         RuntimeCommand::SetModel(raw) => {
             let model = normalize_model_selector(raw);
             let matched =
@@ -523,6 +529,12 @@ mod tests {
     fn parse_model_set() {
         let cmd = parse_runtime_command("/model test-model", &caps_with_runtime());
         assert_eq!(cmd, Some(RuntimeCommand::SetModel("test-model".into())));
+    }
+
+    #[test]
+    fn parse_doctor_show() {
+        let cmd = parse_runtime_command("/doctor", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::ShowDoctor));
     }
 
     #[test]
@@ -874,6 +886,12 @@ mod tests {
     fn effect_show_model() {
         let cmd = RuntimeCommand::ShowModel;
         assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowModel);
+    }
+
+    #[test]
+    fn effect_show_doctor() {
+        let cmd = RuntimeCommand::ShowDoctor;
+        assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowDoctor);
     }
 
     #[test]
