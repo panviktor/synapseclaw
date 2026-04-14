@@ -284,6 +284,7 @@ mod tests {
                 suggested_action:
                     synapse_domain::domain::tool_repair::ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: Some("No such file or directory".into()),
+                ..ToolRepairTrace::default()
             }),
         }])
         .unwrap();

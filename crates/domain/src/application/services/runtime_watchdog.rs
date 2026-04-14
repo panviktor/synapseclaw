@@ -390,10 +390,14 @@ fn push_repeated_tool_failure_alerts(
             .iter_mut()
             .find(|(kind, _, _)| *kind == repair.failure_kind)
         {
-            *count += 1;
+            *count += usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX);
             *observed_at = (*observed_at).max(repair.observed_at_unix);
         } else {
-            kinds.push((repair.failure_kind, 1, repair.observed_at_unix));
+            kinds.push((
+                repair.failure_kind,
+                usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX),
+                repair.observed_at_unix,
+            ));
         }
     }
 
@@ -631,6 +635,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: None,
+                ..ToolRepairTrace::default()
             },
             ToolRepairTrace {
                 observed_at_unix: 101,
@@ -638,6 +643,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: None,
+                ..ToolRepairTrace::default()
             },
         ];
         let cache = ContextCacheStats::from_compression_config(

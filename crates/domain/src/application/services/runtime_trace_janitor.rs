@@ -229,12 +229,23 @@ fn clean_tool_repairs(history: &[ToolRepairTrace], now_unix: i64) -> Vec<ToolRep
         let signature = tool_repair_signature(trace);
         match by_signature.get_mut(&signature) {
             Some(existing) if existing.observed_at_unix < trace.observed_at_unix => {
-                *existing = trace.clone();
+                let repeat_count = existing
+                    .repeat_count
+                    .max(1)
+                    .saturating_add(trace.repeat_count.max(1));
+                let mut next = trace.clone();
+                next.repeat_count = repeat_count;
+                *existing = next;
+            }
+            Some(existing) => {
+                existing.repeat_count = existing
+                    .repeat_count
+                    .max(1)
+                    .saturating_add(trace.repeat_count.max(1));
             }
             None => {
                 by_signature.insert(signature, trace.clone());
             }
-            Some(_) => {}
         }
     }
 
@@ -350,7 +361,7 @@ fn collect_tool_repair_promotion_candidates(
     for repair in tool_repairs {
         let class = tool_failure_kind_name(repair.failure_kind);
         let entry = classes.entry(class).or_insert((0, repair.observed_at_unix));
-        entry.0 += 1;
+        entry.0 += usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX);
         entry.1 = entry.1.max(repair.observed_at_unix);
     }
 
@@ -459,11 +470,13 @@ fn push_promotion_candidate(
 
 fn tool_repair_signature(trace: &ToolRepairTrace) -> String {
     bounded_signature(&format!(
-        "tool={},failure={},action={},detail={}",
+        "tool={},role={:?},failure={},action={},shape={:?},suppression={:?}",
         trace.tool_name,
+        trace.tool_role,
         tool_failure_kind_name(trace.failure_kind),
         tool_repair_action_name(trace.suggested_action),
-        trace.detail.as_deref().unwrap_or("")
+        trace.argument_shape,
+        trace.suppression_key
     ))
 }
 
@@ -507,6 +520,7 @@ mod tests {
             failure_kind,
             suggested_action: ToolRepairAction::InspectRuntimeFailure,
             detail: detail.map(str::to_string),
+            ..ToolRepairTrace::default()
         }
     }
 

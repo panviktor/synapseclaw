@@ -22,13 +22,16 @@ use crate::config::schema::{CapabilityLane, ModelFeature};
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationAction, MutationDecision, MutationWriteClass};
 use crate::domain::tool_repair::{
-    tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
+    tool_argument_shape_kind_name, tool_failure_kind_name, tool_repair_action_name,
+    tool_repair_attempt_reason_name, tool_repair_outcome_name, ToolArgumentShape, ToolRepairAction,
+    ToolRepairSuppressionKey, ToolRepairTrace,
 };
 use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, context_pressure_state_name,
     turn_admission_action_name, turn_intent_name,
 };
 use crate::ports::route_selection::ContextCacheStats;
+use crate::ports::tool::{tool_runtime_role_name, ToolRuntimeRole};
 
 pub const MAX_RUNTIME_DECISION_TRACE_HISTORY: usize = 8;
 pub const MAX_RUNTIME_DECISION_TRACE_ITEMS: usize = 8;
@@ -137,8 +140,17 @@ pub struct RuntimeTraceContextCacheSnapshot {
 pub struct RuntimeTraceToolDecision {
     pub observed_at_unix: i64,
     pub tool_name: String,
+    pub tool_role: Option<String>,
     pub failure_kind: String,
     pub suggested_action: String,
+    pub route: Option<String>,
+    pub attempt_reason: String,
+    pub argument_shape: Option<String>,
+    pub admission: Option<String>,
+    pub repair_outcome: String,
+    pub expires_at_unix: i64,
+    pub repeat_count: u32,
+    pub suppression_key: Option<String>,
     pub detail: Option<String>,
 }
 
@@ -372,8 +384,34 @@ pub fn runtime_tool_decisions_from_repairs(
         .map(|repair| RuntimeTraceToolDecision {
             observed_at_unix: repair.observed_at_unix,
             tool_name: redact_trace_text(&repair.tool_name),
+            tool_role: repair.tool_role.map(format_tool_runtime_role),
             failure_kind: tool_failure_kind_name(repair.failure_kind).to_string(),
             suggested_action: format_tool_repair_action(repair),
+            route: repair.route.as_ref().map(|route| {
+                let lane = route.lane.map(|lane| lane.as_str()).unwrap_or("none");
+                let candidate = route
+                    .candidate_index
+                    .map(|index| index.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                redact_trace_text(&format!(
+                    "{}/{} lane={} candidate={}",
+                    route.provider, route.model, lane, candidate
+                ))
+            }),
+            attempt_reason: tool_repair_attempt_reason_name(repair.attempt_reason).to_string(),
+            argument_shape: repair.argument_shape.as_ref().map(format_argument_shape),
+            admission: repair.admission_state.as_ref().map(|state| {
+                redact_trace_text(&format!(
+                    "action={} pressure={} reasons={}",
+                    state.action,
+                    state.pressure_state,
+                    state.reasons.join(",")
+                ))
+            }),
+            repair_outcome: tool_repair_outcome_name(repair.repair_outcome).to_string(),
+            expires_at_unix: repair.expires_at_unix,
+            repeat_count: repair.repeat_count,
+            suppression_key: repair.suppression_key.as_ref().map(format_suppression_key),
             detail: repair.detail.as_deref().map(redact_trace_text),
         })
         .collect()
@@ -468,6 +506,41 @@ fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
             lane.as_str()
         ),
         _ => tool_repair_action_name(trace.suggested_action).to_string(),
+    }
+}
+
+fn format_tool_runtime_role(role: ToolRuntimeRole) -> String {
+    tool_runtime_role_name(role).to_string()
+}
+
+fn format_argument_shape(shape: &ToolArgumentShape) -> String {
+    let keys = if shape.top_level_keys.is_empty() {
+        "none".to_string()
+    } else {
+        shape.top_level_keys.join(",")
+    };
+    let missing = if shape.missing_required_keys.is_empty() {
+        "none".to_string()
+    } else {
+        shape.missing_required_keys.join(",")
+    };
+    redact_trace_text(&format!(
+        "root={} keys={} missing_required={} approx_chars={}",
+        tool_argument_shape_kind_name(shape.root_kind),
+        keys,
+        missing,
+        shape.approximate_chars
+    ))
+}
+
+fn format_suppression_key(key: &ToolRepairSuppressionKey) -> String {
+    match key {
+        ToolRepairSuppressionKey::Tool { tool_name } => {
+            redact_trace_text(&format!("tool:{tool_name}"))
+        }
+        ToolRepairSuppressionKey::ToolRole { role } => {
+            format!("tool_role:{}", tool_runtime_role_name(*role))
+        }
     }
 }
 

@@ -25,7 +25,7 @@ pub struct ToolExecution {
 }
 
 /// Description of a tool for the LLM (function-calling spec).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRuntimeRole {
     DirectDelivery,
@@ -36,6 +36,19 @@ pub enum ToolRuntimeRole {
     ProfileMutation,
     MemoryMutation,
     ExternalLookup,
+}
+
+pub fn tool_runtime_role_name(role: ToolRuntimeRole) -> &'static str {
+    match role {
+        ToolRuntimeRole::DirectDelivery => "direct_delivery",
+        ToolRuntimeRole::DelegatedDelivery => "delegated_delivery",
+        ToolRuntimeRole::HistoricalLookup => "historical_lookup",
+        ToolRuntimeRole::WorkspaceDiscovery => "workspace_discovery",
+        ToolRuntimeRole::RuntimeStateInspection => "runtime_state_inspection",
+        ToolRuntimeRole::ProfileMutation => "profile_mutation",
+        ToolRuntimeRole::MemoryMutation => "memory_mutation",
+        ToolRuntimeRole::ExternalLookup => "external_lookup",
+    }
 }
 
 /// Description of a tool for the LLM (function-calling spec).

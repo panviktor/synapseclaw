@@ -12,7 +12,9 @@ use crate::application::services::{
     epistemic_state,
     epistemic_state::{EpistemicEntry, EpistemicSource, EpistemicState},
 };
-use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
+use crate::domain::tool_repair::{
+    ToolFailureKind, ToolRepairAction, ToolRepairSuppressionKey, ToolRepairTrace,
+};
 use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
     CandidateAdmissionReason,
@@ -35,6 +37,7 @@ pub struct ExecutionFailureHint {
     pub tool_name: String,
     pub failure_kind: ToolFailureKind,
     pub suggested_action: ToolRepairAction,
+    pub suppression_key: Option<ToolRepairSuppressionKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,11 +327,13 @@ fn recent_failure_hints(repairs: &[ToolRepairTrace]) -> Vec<ExecutionFailureHint
             tool_name: repair.tool_name.clone(),
             failure_kind: repair.failure_kind,
             suggested_action: repair.suggested_action,
+            suppression_key: repair.suppression_key.clone(),
         };
         if !hints.iter().any(|existing: &ExecutionFailureHint| {
             existing.tool_name == hint.tool_name
                 && existing.failure_kind == hint.failure_kind
                 && existing.suggested_action == hint.suggested_action
+                && existing.suppression_key == hint.suppression_key
         }) {
             hints.push(hint);
         }
@@ -716,6 +721,7 @@ mod tests {
                 tool_name: "message_send".into(),
                 failure_kind: ToolFailureKind::SchemaMismatch,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
+                suppression_key: None,
             }],
             recent_admission_hint: None,
             prefer_answer_from_resolved_state: false,

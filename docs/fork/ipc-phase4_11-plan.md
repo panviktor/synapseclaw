@@ -7,7 +7,7 @@ Phase 4.10: context engine, prompt economy & progressive loading | **Phase
 
 ## Status
 
-Slices 1-2 are closed as of 2026-04-14 after implementation, audit fixes, and
+Slices 1-3 are closed as of 2026-04-14 after implementation, audit fixes, and
 targeted verification. Remaining slices are still implementation-ready draft.
 
 Phase 4.11 should start after the remaining Phase 4.10 validation tails are
@@ -151,7 +151,26 @@ Acceptance tests:
 
 ### Slice 3: Tool Self-Repair Trace
 
+Status: **closed** (2026-04-14).
+
 Promote the current tool repair base into a complete short-lived repair ledger.
+
+Closeout notes:
+
+- expanded `ToolRepairTrace` into a short-lived repair ledger with tool role,
+  route/model, safe argument shape, admission state, attempt reason, repair
+  outcome, repeat count, TTL, and typed suppression key
+- wired enriched traces through live agent and channel/runtime tool loops for
+  hook cancellation, approval denial, duplicate guard, execution errors, and
+  reported tool failures
+- added successful-tool observations that resolve the same tool warning or
+  downgrade same-role alternatives instead of creating durable negative memory
+- kept suppression and janitor promotion behind typed keys/gates, with repair
+  traces remaining ephemeral and excluded from durable memory/profile writes
+- exposed the richer repair ledger through runtime decision traces and shared
+  `/model`/`/providers` diagnostics without raw tool argument values
+- audit pass fixed execution-attempt classification, same-batch failure->success
+  resolution, and diagnostic argument-shape rendering without key lowercasing
 
 Required behavior:
 

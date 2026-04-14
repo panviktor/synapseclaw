@@ -39,7 +39,8 @@ use synapse_domain::application::services::session_handoff::session_handoff_reas
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::memory::EmbeddingProfile;
 use synapse_domain::domain::tool_repair::{
-    tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
+    tool_argument_shape_kind_name, tool_failure_kind_name, tool_repair_action_name,
+    tool_repair_outcome_name, ToolRepairAction, ToolRepairTrace,
 };
 use synapse_domain::domain::turn_admission::{
     admission_repair_hint_name, context_pressure_state_name, turn_admission_action_name,
@@ -51,6 +52,7 @@ use synapse_domain::ports::model_profile_catalog::{
 };
 use synapse_domain::ports::provider::ProviderCapabilities;
 use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection};
+use synapse_domain::ports::tool::tool_runtime_role_name;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
@@ -1100,13 +1102,27 @@ fn write_runtime_decision_trace_diagnostics(
                 .take(3)
                 .map(|tool| {
                     format!(
-                        "{}:{}->{}",
-                        tool.tool_name, tool.failure_kind, tool.suggested_action
+                        "{}:{}->{} outcome={} repeats={} role={}",
+                        tool.tool_name,
+                        tool.failure_kind,
+                        tool.suggested_action,
+                        tool.repair_outcome,
+                        tool.repeat_count.max(1),
+                        tool.tool_role.as_deref().unwrap_or("unknown")
                     )
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(response, "Runtime decision tools: {summary}");
+            for tool in trace.tools.iter().rev().take(3) {
+                if let Some(shape) = tool.argument_shape.as_deref() {
+                    let _ = writeln!(
+                        response,
+                        "Runtime decision tool args: {} / {}",
+                        tool.tool_name, shape
+                    );
+                }
+            }
         }
         if !trace.memory.is_empty() {
             let summary = trace
@@ -1154,10 +1170,19 @@ fn write_tool_repair_diagnostics(response: &mut String, current: &RouteSelection
     if let Some(repair) = current.last_tool_repair.as_ref() {
         let _ = writeln!(
             response,
-            "Last tool repair: {} / {}",
+            "Last tool repair: {} / {} / outcome={} / repeats={} / role={}",
             tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
+            format_tool_repair_action(repair),
+            tool_repair_outcome_name(repair.repair_outcome),
+            repair.repeat_count.max(1),
+            format_tool_repair_role(repair)
         );
+        if let Some(route) = format_tool_repair_route(repair) {
+            let _ = writeln!(response, "Last tool repair route: {route}");
+        }
+        if let Some(shape) = format_tool_repair_argument_shape(repair) {
+            let _ = writeln!(response, "Last tool repair args: {shape}");
+        }
         if let Some(detail) = repair.detail.as_deref() {
             let _ = writeln!(response, "Last tool repair detail: {}", detail);
         }
@@ -1194,15 +1219,68 @@ fn write_recent_tool_repairs(response: &mut String, recent_tool_repairs: &[ToolR
     for repair in recent_tool_repairs.iter().rev().take(3) {
         let _ = writeln!(
             response,
-            "Recent tool repair: {} / {} / {}",
+            "Recent tool repair: {} / {} / {} / outcome={} / repeats={} / role={}",
             repair.tool_name,
             tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
+            format_tool_repair_action(repair),
+            tool_repair_outcome_name(repair.repair_outcome),
+            repair.repeat_count.max(1),
+            format_tool_repair_role(repair)
         );
+        if let Some(route) = format_tool_repair_route(repair) {
+            let _ = writeln!(response, "Recent tool repair route: {route}");
+        }
+        if let Some(shape) = format_tool_repair_argument_shape(repair) {
+            let _ = writeln!(response, "Recent tool repair args: {shape}");
+        }
         if let Some(detail) = repair.detail.as_deref() {
             let _ = writeln!(response, "Recent tool repair detail: {}", detail);
         }
     }
+}
+
+fn format_tool_repair_role(repair: &ToolRepairTrace) -> &'static str {
+    repair
+        .tool_role
+        .map(tool_runtime_role_name)
+        .unwrap_or("unknown")
+}
+
+fn format_tool_repair_route(repair: &ToolRepairTrace) -> Option<String> {
+    repair.route.as_ref().map(|route| {
+        format!(
+            "{}/{} lane={} candidate={}",
+            route.provider,
+            route.model,
+            route.lane.map(|lane| lane.as_str()).unwrap_or("none"),
+            route
+                .candidate_index
+                .map(|index| index.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        )
+    })
+}
+
+fn format_tool_repair_argument_shape(repair: &ToolRepairTrace) -> Option<String> {
+    repair.argument_shape.as_ref().map(|shape| {
+        let keys = if shape.top_level_keys.is_empty() {
+            "none".to_string()
+        } else {
+            shape.top_level_keys.join(",")
+        };
+        let missing = if shape.missing_required_keys.is_empty() {
+            "none".to_string()
+        } else {
+            shape.missing_required_keys.join(",")
+        };
+        format!(
+            "root={} keys={} missing_required={} approx_chars={}",
+            tool_argument_shape_kind_name(shape.root_kind),
+            keys,
+            missing,
+            shape.approximate_chars
+        )
+    })
 }
 
 fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmissionState]) {
@@ -2116,8 +2194,19 @@ mod tests {
                 tools: vec![RuntimeTraceToolDecision {
                     observed_at_unix: 101,
                     tool_name: "web_fetch".into(),
+                    tool_role: Some("external_lookup".into()),
                     failure_kind: "timeout".into(),
                     suggested_action: "retry_with_simpler_request".into(),
+                    route: Some("openai/gpt-test lane=none candidate=none".into()),
+                    attempt_reason: "model_tool_call".into(),
+                    argument_shape: Some(
+                        "root=object keys=url missing_required=none approx_chars=42".into(),
+                    ),
+                    admission: Some("action=proceed pressure=healthy reasons=".into()),
+                    repair_outcome: "failed".into(),
+                    expires_at_unix: 101 + 48 * 60 * 60,
+                    repeat_count: 1,
+                    suppression_key: Some("tool:web_fetch".into()),
                     detail: Some("timed out".into()),
                 }],
                 memory: vec![RuntimeTraceMemoryDecision {
@@ -2305,6 +2394,7 @@ mod tests {
                     failure_kind: ToolFailureKind::ReportedFailure,
                     suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                     detail: Some("missing delivery target".into()),
+                    ..ToolRepairTrace::default()
                 }),
                 recent_tool_repairs: vec![ToolRepairTrace {
                     observed_at_unix: 1_744_243_200,
@@ -2312,6 +2402,7 @@ mod tests {
                     failure_kind: ToolFailureKind::ReportedFailure,
                     suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                     detail: Some("missing delivery target".into()),
+                    ..ToolRepairTrace::default()
                 }],
                 context_cache: None,
                 assumptions: Vec::new(),
@@ -2350,6 +2441,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: Some("missing delivery target".into()),
+                ..ToolRepairTrace::default()
             }),
             recent_tool_repairs: Vec::new(),
             context_cache: None,

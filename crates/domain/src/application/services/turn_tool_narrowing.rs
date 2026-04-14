@@ -4,12 +4,14 @@
 //! guidance. It does not inspect user phrases and does not depend on adapter
 //! internals.
 
-use crate::application::services::execution_guidance::{ExecutionCapability, ExecutionGuidance};
+use crate::application::services::execution_guidance::{
+    ExecutionCapability, ExecutionFailureHint, ExecutionGuidance,
+};
 use crate::application::services::runtime_calibration::{
     should_suppress_tool_choice, RuntimeCalibrationRecord,
 };
 use crate::application::services::turn_model_routing::infer_turn_capability_requirement;
-use crate::domain::tool_repair::ToolRepairAction;
+use crate::domain::tool_repair::{ToolRepairAction, ToolRepairSuppressionKey};
 use crate::domain::turn_defaults::ResolvedTurnDefaults;
 use crate::ports::tool::{ToolRuntimeRole, ToolSpec};
 
@@ -203,7 +205,7 @@ fn suppress_recently_failed_tools(
         .recent_failure_hints
         .iter()
         .filter(|hint| should_suppress_recently_failed_tool(hint.suggested_action))
-        .map(|hint| hint.tool_name.as_str())
+        .filter_map(|hint| recently_failed_tool_name(hint))
         .collect::<Vec<_>>();
 
     if suppressible.is_empty() {
@@ -215,6 +217,14 @@ fn suppress_recently_failed_tools(
         .filter(|spec| !should_drop_tool_spec(spec, &tool_specs, &suppressible))
         .cloned()
         .collect()
+}
+
+fn recently_failed_tool_name(hint: &ExecutionFailureHint) -> Option<&str> {
+    match hint.suppression_key.as_ref() {
+        Some(ToolRepairSuppressionKey::Tool { tool_name }) => Some(tool_name.as_str()),
+        Some(ToolRepairSuppressionKey::ToolRole { .. }) => None,
+        None => Some(hint.tool_name.as_str()),
+    }
 }
 
 fn suppress_calibrated_failed_tools(
@@ -581,6 +591,7 @@ mod tests {
                 suggested_action: ToolRepairAction::SwitchRouteLane(
                     crate::config::schema::CapabilityLane::MultimodalUnderstanding,
                 ),
+                suppression_key: None,
             }],
             ..ExecutionGuidance::default()
         };
@@ -633,6 +644,7 @@ mod tests {
                 suggested_action: ToolRepairAction::SwitchRouteLane(
                     crate::config::schema::CapabilityLane::MultimodalUnderstanding,
                 ),
+                suppression_key: None,
             }],
             ..ExecutionGuidance::default()
         };

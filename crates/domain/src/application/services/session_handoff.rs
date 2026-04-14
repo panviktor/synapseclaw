@@ -517,6 +517,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: Some("missing delivery target".into()),
+                ..ToolRepairTrace::default()
             }],
         })
         .expect("packet");

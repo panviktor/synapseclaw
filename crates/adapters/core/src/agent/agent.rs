@@ -75,6 +75,10 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
     format_scoped_instruction_block,
 };
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::application::services::tool_repair::{
+    append_tool_repair_trace, apply_successful_tool_repair_observation, enrich_tool_repair_trace,
+    latest_tool_repair_trace, ToolRepairTraceContext,
+};
 use synapse_domain::application::services::turn_admission::{
     assess_turn_admission, CandidateAdmissionDecision, TurnAdmissionInput,
 };
@@ -85,7 +89,9 @@ use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
+use synapse_domain::domain::tool_repair::{
+    tool_failure_kind_name, ToolRepairAttemptReason, ToolRepairRoute, ToolRepairTrace,
+};
 use synapse_domain::domain::turn_admission::{
     context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
 };
@@ -1949,9 +1955,14 @@ impl Agent {
         Ok(prompt)
     }
 
-    async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
+    async fn execute_tool_call(
+        &self,
+        call: &ParsedToolCall,
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
+    ) -> ToolExecutionResult {
         let normalized_call = normalize_tool_call(call);
-        let outcome = execute_one_tool(
+        let mut outcome = execute_one_tool(
             &normalized_call.name,
             normalized_call.arguments.clone(),
             &self.tools,
@@ -1973,6 +1984,23 @@ impl Agent {
             tool_facts: Vec::new(),
             repair_trace: Some(classify_tool_execution_error(&normalized_call.name, &error)),
         });
+        let tool_spec = self
+            .tool_specs
+            .iter()
+            .find(|spec| spec.name == normalized_call.name || spec.name == call.name);
+        outcome.repair_trace = outcome.repair_trace.map(|trace| {
+            enrich_tool_repair_trace(
+                trace,
+                ToolRepairTraceContext {
+                    route: repair_route,
+                    attempt_reason: Some(ToolRepairAttemptReason::ToolExecution),
+                    arguments: Some(&normalized_call.arguments),
+                    tool_spec,
+                    admission,
+                    ..Default::default()
+                },
+            )
+        });
 
         ToolExecutionResult {
             name: call.name.clone(),
@@ -1984,18 +2012,26 @@ impl Agent {
         }
     }
 
-    async fn execute_tools(&self, calls: &[ParsedToolCall]) -> Vec<ToolExecutionResult> {
+    async fn execute_tools(
+        &self,
+        calls: &[ParsedToolCall],
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
+    ) -> Vec<ToolExecutionResult> {
         if !self.config.parallel_tools {
             let mut results = Vec::with_capacity(calls.len());
             for call in calls {
-                results.push(self.execute_tool_call(call).await);
+                results.push(
+                    self.execute_tool_call(call, repair_route.clone(), admission)
+                        .await,
+                );
             }
             return results;
         }
 
         let futs: Vec<_> = calls
             .iter()
-            .map(|call| self.execute_tool_call(call))
+            .map(|call| self.execute_tool_call(call, repair_route.clone(), admission))
             .collect();
         futures_util::future::join_all(futs).await
     }
@@ -2038,6 +2074,8 @@ impl Agent {
         &self,
         calls: &[ParsedToolCall],
         cache: &mut HashMap<(String, String), ToolExecutionResult>,
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
     ) -> Vec<ToolExecutionResult> {
         let mut results: Vec<Option<ToolExecutionResult>> = vec![None; calls.len()];
         let mut uncached = Vec::new();
@@ -2074,7 +2112,9 @@ impl Agent {
 
         let pending_calls: Vec<ParsedToolCall> =
             uncached.iter().map(|(_, call, _)| call.clone()).collect();
-        let executed = self.execute_tools(&pending_calls).await;
+        let executed = self
+            .execute_tools(&pending_calls, repair_route, admission)
+            .await;
 
         for (uncached_index, ((index, _, signature), result)) in
             uncached.into_iter().zip(executed.into_iter()).enumerate()
@@ -3067,8 +3107,19 @@ impl Agent {
                 media_artifacts: response.media_artifacts.clone(),
             });
 
+            let repair_route = Some(ToolRepairRoute {
+                provider: effective_provider.clone(),
+                model: effective_model.clone(),
+                lane: effective_lane,
+                candidate_index: effective_candidate_index,
+            });
             let results = self
-                .execute_tools_with_cache(&calls, &mut executed_call_cache)
+                .execute_tools_with_cache(
+                    &calls,
+                    &mut executed_call_cache,
+                    repair_route,
+                    Some(&admission_decision),
+                )
                 .await;
             self.record_tool_calibrations(&results, chrono::Utc::now().timestamp());
             tool_facts_this_turn.extend(
@@ -3076,18 +3127,39 @@ impl Agent {
                     .iter()
                     .flat_map(|result| result.tool_facts.iter().cloned()),
             );
-            if let Some(trace) = results
-                .iter()
-                .filter_map(|result| result.repair_trace.clone())
-                .last()
-            {
-                last_tool_repair_this_turn = Some(trace);
+            for result in &results {
+                if let Some(trace) = result.repair_trace.clone() {
+                    last_tool_repair_this_turn = Some(trace.clone());
+                    tool_repairs_this_turn = append_tool_repair_trace(
+                        &tool_repairs_this_turn,
+                        Some(trace),
+                        chrono::Utc::now().timestamp(),
+                    );
+                }
+                if result.success {
+                    let role = self
+                        .tool_specs
+                        .iter()
+                        .find(|spec| spec.name == result.name)
+                        .and_then(|spec| spec.runtime_role);
+                    let success_observed_at = chrono::Utc::now().timestamp();
+                    self.recent_turn_tool_repairs = apply_successful_tool_repair_observation(
+                        &self.recent_turn_tool_repairs,
+                        &result.name,
+                        role,
+                        success_observed_at,
+                    );
+                    tool_repairs_this_turn = apply_successful_tool_repair_observation(
+                        &tool_repairs_this_turn,
+                        &result.name,
+                        role,
+                        success_observed_at,
+                    );
+                    if let Some(latest) = latest_tool_repair_trace(&tool_repairs_this_turn) {
+                        last_tool_repair_this_turn = Some(latest);
+                    }
+                }
             }
-            tool_repairs_this_turn.extend(
-                results
-                    .iter()
-                    .filter_map(|result| result.repair_trace.clone()),
-            );
             let formatted = self.tool_dispatcher.format_results(&results)?;
             self.history.push(formatted);
             self.trim_history();

@@ -10,12 +10,18 @@ use synapse_domain::application::services::model_capability_support::{
     assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
 };
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
-use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
+use synapse_domain::application::services::tool_repair::{
+    apply_successful_tool_repair_observation, build_tool_repair_trace, enrich_tool_repair_trace,
+    latest_tool_repair_trace, ToolRepairTraceContext,
+};
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
-use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
+use synapse_domain::domain::tool_repair::{
+    ToolFailureKind, ToolRepairAttemptReason, ToolRepairRoute, ToolRepairTrace,
+};
 use synapse_domain::ports::provider::{
     MediaArtifact, ProviderCapabilities, ProviderCapabilityRequirement,
 };
+use synapse_domain::ports::tool::ToolSpec as DomainToolSpec;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -149,6 +155,34 @@ fn progress_hash_for_tool_facts(facts: &[TypedToolFact]) -> Option<u64> {
     subjects.sort();
     subjects.dedup();
     hash_strings(&subjects)
+}
+
+fn enrich_tool_loop_repair_trace(
+    trace: ToolRepairTrace,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    tool_specs: &[DomainToolSpec],
+    provider_name: &str,
+    model: &str,
+    attempt_reason: ToolRepairAttemptReason,
+) -> ToolRepairTrace {
+    let tool_spec = tool_specs.iter().find(|spec| spec.name == tool_name);
+    enrich_tool_repair_trace(
+        trace,
+        ToolRepairTraceContext {
+            tool_role: tool_spec.and_then(|spec| spec.runtime_role),
+            route: Some(ToolRepairRoute {
+                provider: provider_name.to_string(),
+                model: model.to_string(),
+                lane: None,
+                candidate_index: None,
+            }),
+            attempt_reason: Some(attempt_reason),
+            arguments: Some(tool_args),
+            tool_spec,
+            admission: None,
+        },
+    )
 }
 
 pub(crate) async fn execute_one_tool(
@@ -898,10 +932,18 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
-                                repair_trace: Some(build_tool_repair_trace(
+                                repair_trace: Some(enrich_tool_loop_repair_trace(
+                                    build_tool_repair_trace(
+                                        &call.name,
+                                        ToolFailureKind::PolicyBlocked,
+                                        Some(&reason),
+                                    ),
                                     &call.name,
-                                    ToolFailureKind::PolicyBlocked,
-                                    Some(&reason),
+                                    &tool_args,
+                                    &tool_specs,
+                                    provider_name,
+                                    model,
+                                    ToolRepairAttemptReason::HookPolicy,
                                 )),
                             },
                         ));
@@ -967,10 +1009,18 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
-                                repair_trace: Some(build_tool_repair_trace(
+                                repair_trace: Some(enrich_tool_loop_repair_trace(
+                                    build_tool_repair_trace(
+                                        &tool_name,
+                                        ToolFailureKind::PolicyBlocked,
+                                        Some("Denied by user."),
+                                    ),
                                     &tool_name,
-                                    ToolFailureKind::PolicyBlocked,
-                                    Some("Denied by user."),
+                                    &tool_args,
+                                    &tool_specs,
+                                    provider_name,
+                                    model,
+                                    ToolRepairAttemptReason::ApprovalGate,
                                 )),
                             },
                         ));
@@ -1019,10 +1069,18 @@ pub(crate) async fn run_tool_call_loop(
                             Duration::ZERO,
                             Vec::new(),
                         ),
-                        repair_trace: Some(build_tool_repair_trace(
+                        repair_trace: Some(enrich_tool_loop_repair_trace(
+                            build_tool_repair_trace(
+                                &tool_name,
+                                ToolFailureKind::DuplicateInvocation,
+                                Some("duplicate invocation in the same turn"),
+                            ),
                             &tool_name,
-                            ToolFailureKind::DuplicateInvocation,
-                            Some("duplicate invocation in the same turn"),
+                            &tool_args,
+                            &tool_specs,
+                            provider_name,
+                            model,
+                            ToolRepairAttemptReason::DuplicateGuard,
                         )),
                     },
                 ));
@@ -1163,7 +1221,29 @@ pub(crate) async fn run_tool_call_loop(
             }
 
             collected_tool_facts.extend(outcome.tool_facts.clone());
+            if outcome.success {
+                let role = tool_specs
+                    .iter()
+                    .find(|spec| spec.name == call.name)
+                    .and_then(|spec| spec.runtime_role);
+                collected_tool_repairs = apply_successful_tool_repair_observation(
+                    &collected_tool_repairs,
+                    &call.name,
+                    role,
+                    chrono::Utc::now().timestamp(),
+                );
+                last_tool_repair = latest_tool_repair_trace(&collected_tool_repairs);
+            }
             if let Some(trace) = outcome.repair_trace.clone() {
+                let trace = enrich_tool_loop_repair_trace(
+                    trace,
+                    &call.name,
+                    &call.arguments,
+                    &tool_specs,
+                    provider_name,
+                    model,
+                    ToolRepairAttemptReason::ToolExecution,
+                );
                 last_tool_repair = Some(trace.clone());
                 collected_tool_repairs.push(trace);
             }
