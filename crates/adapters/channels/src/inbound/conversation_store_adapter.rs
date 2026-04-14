@@ -200,11 +200,7 @@ mod tests {
                 .unwrap_or_default()
         }
 
-        async fn append(
-            &self,
-            session_key: &str,
-            message: &ChatMessage,
-        ) -> std::io::Result<()> {
+        async fn append(&self, session_key: &str, message: &ChatMessage) -> std::io::Result<()> {
             self.messages
                 .lock()
                 .unwrap()

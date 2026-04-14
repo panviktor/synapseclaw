@@ -3,20 +3,26 @@
 //! Web and channel adapters intentionally keep different transports and
 //! lifecycles, but must not fork the common runtime-command decisions.
 
+use std::sync::Arc;
+
 use synapse_domain::application::services::assistant_output_presentation::{
     AssistantOutputPresenter, OutputDeliveryHints, PresentedOutput,
 };
 use synapse_domain::application::services::capability_doctor::CapabilityDoctorReport;
 use synapse_domain::application::services::inbound_message_service::CommandEffect;
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflight;
 use synapse_domain::application::services::runtime_command_presentation::{
-    format_clear_session_response, format_common_command_effect,
+    format_clear_session_response, format_common_command_effect, format_compact_session_response,
     format_provider_initialization_failure, format_switch_model_blocked,
     format_switch_model_failure, format_switch_model_success, format_switch_provider_success,
     format_unknown_provider, RuntimeCommandPresentationOptions,
 };
 use synapse_domain::config::schema::{CapabilityLane, Config};
+use synapse_domain::ports::conversation_history::ConversationHistoryPort;
+use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::route_selection::RouteSelection;
+use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeAdapterSurface {
@@ -147,6 +153,16 @@ pub(crate) struct RuntimeModelHelpSnapshot {
     pub config: Config,
 }
 
+pub(crate) struct RuntimeSessionCompactionTarget {
+    pub history: Arc<dyn ConversationHistoryPort>,
+    pub conversation_key: String,
+    pub target_profile: ResolvedModelProfile,
+    pub memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    pub agent_id: String,
+    pub surface: crate::runtime_history_hygiene::RuntimeCompactionSurface,
+}
+
 #[async_trait::async_trait]
 pub(crate) trait RuntimeCommandHost {
     fn current_provider(&self) -> String;
@@ -167,6 +183,9 @@ pub(crate) trait RuntimeCommandHost {
         request: RuntimeRouteMutationRequest,
         compacted: bool,
     ) -> anyhow::Result<RuntimeModelSwitchOutcome>;
+
+    async fn session_compaction_target(&mut self)
+        -> anyhow::Result<RuntimeSessionCompactionTarget>;
 
     async fn clear_session(&mut self) -> anyhow::Result<()>;
 }
@@ -296,6 +315,22 @@ where
         CommandEffect::SwitchModelBlocked { .. } => {
             Ok(format_common_command_effect(effect, &presentation_options)
                 .expect("common command formatter should handle blocked model switches"))
+        }
+        CommandEffect::CompactSession { .. } => {
+            let target = host.session_compaction_target().await?;
+            let memory = target.memory.as_ref().map(|memory| memory.as_ref());
+            let run_recipe_store = target.run_recipe_store.as_ref().map(|store| store.as_ref());
+            let outcome = crate::runtime_history_hygiene::compact_history_for_runtime_command(
+                target.history.as_ref(),
+                &target.conversation_key,
+                &target.target_profile,
+                memory,
+                run_recipe_store,
+                &target.agent_id,
+                target.surface,
+            )
+            .await;
+            Ok(format_compact_session_response(outcome.compacted))
         }
         CommandEffect::ClearSession => {
             host.clear_session().await?;
@@ -478,6 +513,7 @@ mod tests {
                 },
                 compacted: true,
             },
+            CommandEffect::CompactSession { compacted: true },
             CommandEffect::ClearSession,
         ];
 
@@ -520,6 +556,7 @@ mod tests {
         show_doctor: usize,
         switched_provider: Option<String>,
         switched_model: Option<String>,
+        compact_target_requests: usize,
         cleared: bool,
     }
 
@@ -598,6 +635,13 @@ mod tests {
                 lane,
                 compacted,
             })
+        }
+
+        async fn session_compaction_target(
+            &mut self,
+        ) -> anyhow::Result<RuntimeSessionCompactionTarget> {
+            self.compact_target_requests += 1;
+            Err(anyhow::anyhow!("mock compaction target unavailable"))
         }
 
         async fn clear_session(&mut self) -> anyhow::Result<()> {

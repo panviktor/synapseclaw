@@ -138,7 +138,10 @@ fn check_runtime_capabilities(config: &Config, items: &mut Vec<DiagItem>) {
         let readiness = crate::runtime_routes::capability_doctor_readiness_name(node.readiness);
         let subsystem = crate::runtime_routes::capability_doctor_subsystem_name(node.subsystem);
         let message = if let Some(recommendation) = node.recommendation {
-            format!("{subsystem} {}: {readiness} ({recommendation})", node.subject)
+            format!(
+                "{subsystem} {}: {readiness} ({recommendation})",
+                node.subject
+            )
         } else {
             format!("{subsystem} {}: {readiness}", node.subject)
         };

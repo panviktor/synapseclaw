@@ -13,10 +13,17 @@ use crate::application::services::channel_presentation::{
 };
 use crate::application::services::dialogue_state_service::{self, DialogueStateStore};
 use crate::application::services::history_compaction::{
-    compact_provider_history_for_session_hygiene, SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+    build_compaction_transcript, compact_provider_history_for_session_hygiene,
+    session_hygiene_dropped_messages_with_indices, HistoryCompressionPolicy,
+    SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
 };
 use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
+};
+use crate::application::services::memory_precompress_handoff::{
+    execute_memory_precompress_handoff, is_precompress_preservation_message,
+    precompress_preservation_message, MemoryPreCompressHandoffInput,
+    MemoryPreCompressHandoffReason,
 };
 use crate::application::services::provider_context_budget::provider_context_input_for_history;
 use crate::application::services::runtime_admission_presentation::format_blocked_turn_admission_response;
@@ -52,6 +59,7 @@ use crate::application::services::turn_markup::{
 };
 use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
 use crate::domain::message::ChatMessage;
+use crate::domain::turn_admission::CandidateAdmissionReason;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
 use crate::ports::channel_output::ChannelOutputPort;
 use crate::ports::channel_registry::ChannelRegistryPort;
@@ -221,6 +229,11 @@ pub async fn handle(
                     // Model route mutation and target-window preflight need the
                     // concrete runtime route backend, provider catalog, and
                     // compaction lifecycle, so adapters own the side effect.
+                }
+                CommandEffect::CompactSession { .. } => {
+                    // Session compaction uses the shared runtime-command host:
+                    // adapters provide the concrete history target, while
+                    // adapter-core owns the compaction algorithm.
                 }
                 CommandEffect::SwitchModelBlocked { .. }
                 | CommandEffect::ShowProviders
@@ -883,22 +896,103 @@ async fn execute_agent_turn(
     ports.routes.set_route(conversation_key, route.clone());
 
     if admission_decision.requires_compaction {
+        let keep_non_system_turns =
+            admission_session_hygiene_keep_non_system_turns(&admission_decision);
+        let dropped =
+            session_hygiene_dropped_messages_with_indices(&history, keep_non_system_turns);
+        let dropped_messages = dropped
+            .iter()
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>();
+        let dropped_indices = dropped.iter().map(|entry| entry.index).collect::<Vec<_>>();
+        let start_index = dropped_indices.first().copied().unwrap_or(0);
+        let end_index = dropped_indices
+            .last()
+            .map(|index| index.saturating_add(1))
+            .unwrap_or(start_index);
+        if !history.is_empty() {
+            let transcript = build_compaction_transcript(
+                &dropped_messages,
+                HistoryCompressionPolicy::default().max_source_chars,
+            );
+            let handoff_report = execute_memory_precompress_handoff(
+                ports.memory.as_ref().map(|memory| memory.as_ref()),
+                MemoryPreCompressHandoffInput {
+                    agent_id: &config.agent_id,
+                    reason: MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+                    start_index,
+                    end_index,
+                    transcript: &transcript,
+                    messages: &dropped_messages,
+                    message_indices: &dropped_indices,
+                    recent_tool_repairs: &handoff_tool_repairs,
+                    run_recipe_store: ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
+                    observed_at_unix,
+                },
+            )
+            .await;
+            let preservation_message =
+                precompress_preservation_message(&handoff_report.preservation_hints);
+            if !handoff_report.runtime_memory_decisions.is_empty() {
+                route.runtime_decision_traces = merge_runtime_decision_trace_update(
+                    &route.runtime_decision_traces,
+                    &runtime_trace_id,
+                    RuntimeDecisionTraceUpdate {
+                        memory: handoff_report.runtime_memory_decisions,
+                        ..Default::default()
+                    },
+                    observed_at_unix,
+                    RUNTIME_TRACE_JANITOR_TTL_SECS,
+                );
+                ports.routes.set_route(conversation_key, route.clone());
+            }
+            if let Some(message) = preservation_message.as_ref() {
+                insert_preservation_message_before_current_user(&mut history, content, message);
+            }
+            if let Some(message) = preservation_message {
+                if ports.history.rollback_last_turn(conversation_key, content) {
+                    ports.history.append_turn(conversation_key, message);
+                    ports
+                        .history
+                        .append_turn(conversation_key, ChatMessage::user(content));
+                }
+            }
+        }
         let stored_compacted = ports
             .history
-            .compact_history(conversation_key, SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS);
-        let provider_history_compacted = compact_provider_history_for_session_hygiene(
-            &mut history,
-            SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
-        );
+            .compact_history(conversation_key, keep_non_system_turns);
+        let provider_history_compacted =
+            compact_provider_history_for_session_hygiene(&mut history, keep_non_system_turns);
+        let precompress_preservation_messages = history
+            .iter()
+            .filter(|message| is_precompress_preservation_message(message))
+            .count();
         tracing::info!(
             conversation_key,
             stored_compacted,
             provider_history_compacted,
+            keep_non_system_turns,
+            precompress_preservation_messages,
             "Compacted channel session before agent execution"
         );
     }
     if let Some(block) = format_runtime_watchdog_context(&runtime_watchdog_digest) {
         history.push(ChatMessage::system(block));
+    }
+    let attached_precompress_preservation_messages =
+        attach_precompress_preservation_messages_to_current_user(&mut history, content);
+    let precompress_preservation_messages = history
+        .iter()
+        .filter(|message| is_precompress_preservation_message(message))
+        .count();
+    if precompress_preservation_messages > 0 || attached_precompress_preservation_messages > 0 {
+        tracing::info!(
+            conversation_key,
+            precompress_preservation_messages,
+            attached_precompress_preservation_messages,
+            provider_history_messages = history.len(),
+            "Channel provider history includes pre-compress handoff"
+        );
     }
 
     // ── Set current conversation context for tools that need "here" ──
@@ -995,6 +1089,16 @@ async fn execute_agent_turn(
     };
 
     // ── #12: Execute agent turn (with #22 timeout) ───────────────
+    let context_recovery_dropped = session_hygiene_dropped_messages_with_indices(&history, 6);
+    let context_recovery_dropped_messages = context_recovery_dropped
+        .iter()
+        .map(|entry| entry.message.clone())
+        .collect::<Vec<_>>();
+    let context_recovery_dropped_indices = context_recovery_dropped
+        .iter()
+        .map(|entry| entry.index)
+        .collect::<Vec<_>>();
+    let context_recovery_history = history.clone();
     let result = ports
         .agent_runtime
         .execute_turn(
@@ -1201,6 +1305,60 @@ async fn execute_agent_turn(
 
             // ── #20: Context overflow recovery ───────────────────
             if matches!(e.kind, AgentRuntimeErrorKind::ContextLimitExceeded) {
+                if !context_recovery_history.is_empty() {
+                    let transcript = build_compaction_transcript(
+                        &context_recovery_dropped_messages,
+                        HistoryCompressionPolicy::default().max_source_chars,
+                    );
+                    let handoff_report = execute_memory_precompress_handoff(
+                        ports.memory.as_ref().map(|memory| memory.as_ref()),
+                        MemoryPreCompressHandoffInput {
+                            agent_id: &config.agent_id,
+                            reason: MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+                            start_index: context_recovery_dropped_indices
+                                .first()
+                                .copied()
+                                .unwrap_or(0),
+                            end_index: context_recovery_dropped_indices
+                                .last()
+                                .map(|index| index.saturating_add(1))
+                                .unwrap_or(0),
+                            transcript: &transcript,
+                            messages: &context_recovery_dropped_messages,
+                            message_indices: &context_recovery_dropped_indices,
+                            recent_tool_repairs: &handoff_tool_repairs,
+                            run_recipe_store: ports
+                                .run_recipe_store
+                                .as_ref()
+                                .map(|store| store.as_ref()),
+                            observed_at_unix,
+                        },
+                    )
+                    .await;
+                    let preservation_message =
+                        precompress_preservation_message(&handoff_report.preservation_hints);
+                    if !handoff_report.runtime_memory_decisions.is_empty() {
+                        route.runtime_decision_traces = merge_runtime_decision_trace_update(
+                            &route.runtime_decision_traces,
+                            &runtime_trace_id,
+                            RuntimeDecisionTraceUpdate {
+                                memory: handoff_report.runtime_memory_decisions,
+                                ..Default::default()
+                            },
+                            observed_at_unix,
+                            RUNTIME_TRACE_JANITOR_TTL_SECS,
+                        );
+                        ports.routes.set_route(conversation_key, route.clone());
+                    }
+                    if let Some(message) = preservation_message {
+                        if ports.history.rollback_last_turn(conversation_key, content) {
+                            ports.history.append_turn(conversation_key, message);
+                            ports
+                                .history
+                                .append_turn(conversation_key, ChatMessage::user(content));
+                        }
+                    }
+                }
                 let compacted = ports.history.compact_history(conversation_key, 6);
                 if compacted {
                     // Reinject summary if available
@@ -1303,6 +1461,78 @@ fn truncate_chars(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max).collect();
         format!("{truncated}…")
     }
+}
+
+fn insert_preservation_message_before_current_user(
+    history: &mut Vec<ChatMessage>,
+    current_user_content: &str,
+    message: &ChatMessage,
+) {
+    let insert_at = history
+        .iter()
+        .rposition(|turn| turn.role == "user" && turn.content == current_user_content)
+        .unwrap_or(history.len());
+    history.insert(insert_at, message.clone());
+}
+
+fn attach_precompress_preservation_messages_to_current_user(
+    history: &mut Vec<ChatMessage>,
+    current_user_content: &str,
+) -> usize {
+    let mut preservation_messages = Vec::new();
+    let mut index = 0;
+    while index < history.len() {
+        if is_precompress_preservation_message(&history[index]) {
+            let message = history.remove(index);
+            if !preservation_messages
+                .iter()
+                .any(|existing: &ChatMessage| existing.content == message.content)
+            {
+                preservation_messages.push(message);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    if preservation_messages.is_empty() {
+        return 0;
+    }
+
+    let Some(current_user_index) = history
+        .iter()
+        .rposition(|turn| turn.role == "user" && turn.content == current_user_content)
+    else {
+        let insert_at = history.len();
+        let count = preservation_messages.len();
+        history.splice(insert_at..insert_at, preservation_messages);
+        return count;
+    };
+
+    let count = preservation_messages.len();
+    let handoff = preservation_messages
+        .into_iter()
+        .map(|message| message.content)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let current = history[current_user_index].content.clone();
+    history[current_user_index].content = format!("{handoff}\n\n[current-user-message]\n{current}");
+    count
+}
+
+fn admission_session_hygiene_keep_non_system_turns(
+    decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
+) -> usize {
+    if decision.reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            CandidateAdmissionReason::ProviderContextOverflowRisk
+                | CandidateAdmissionReason::CandidateWindowExceeded
+        )
+    }) {
+        return (SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS / 3).max(2);
+    }
+
+    SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS
 }
 
 fn channel_user_profile_key(agent_id: &str, envelope: &InboundEnvelope) -> String {
@@ -1675,6 +1905,41 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(non_system.first(), Some(&("user", "user 5")));
         assert_eq!(non_system.last(), Some(&("user", "current")));
+    }
+
+    #[test]
+    fn precompress_handoff_is_attached_to_current_user_after_core_memory() {
+        let preservation = precompress_preservation_message(&[String::from(
+            "stable_project_fact project=Atlas branch=release/hotfix-17 staging=https://staging.atlas.local",
+        )])
+        .expect("preservation message");
+        let mut history = vec![
+            ChatMessage::system("bootstrap"),
+            preservation.clone(),
+            ChatMessage::user("old"),
+            ChatMessage::assistant("old answer"),
+            ChatMessage::system("[core-memory]\nolder project=Legacy"),
+            ChatMessage::user("current"),
+        ];
+
+        let attached =
+            attach_precompress_preservation_messages_to_current_user(&mut history, "current");
+
+        assert_eq!(attached, 1);
+        let current = history
+            .iter()
+            .find(|message| message.role == "user" && message.content.contains("current"))
+            .expect("current user");
+        assert!(current.content.starts_with("[pre-compress-handoff]\n"));
+        assert!(current.content.contains("project=Atlas"));
+        assert!(current.content.contains("[current-user-message]\ncurrent"));
+        assert_eq!(
+            history
+                .iter()
+                .filter(|message| is_precompress_preservation_message(message))
+                .count(),
+            0
+        );
     }
 
     struct MockRegistry;

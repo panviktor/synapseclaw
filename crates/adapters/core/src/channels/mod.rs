@@ -33,7 +33,7 @@ use crate::runtime;
 use crate::runtime_adapter_contract::{
     execute_runtime_command_output, ChannelRuntimeAdapterContract, RuntimeCommandHost,
     RuntimeModelHelpSnapshot, RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome,
-    RuntimeRouteMutationRequest,
+    RuntimeRouteMutationRequest, RuntimeSessionCompactionTarget,
 };
 use crate::runtime_tool_notifications::RuntimeToolNotification;
 use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
@@ -571,7 +571,7 @@ fn channel_history_port(
     )
 }
 
-fn resolve_channel_runtime_route_switch_preflight(
+async fn resolve_channel_runtime_route_switch_preflight(
     ctx: &ChannelRuntimeContext,
     conversation_key: &str,
     target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
@@ -582,7 +582,11 @@ fn resolve_channel_runtime_route_switch_preflight(
         conversation_key,
         target_profile,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(ctx.memory.as_ref()),
+        ctx.run_recipe_store.as_ref().map(|store| store.as_ref()),
+        ctx.agent_id.as_ref(),
     )
+    .await
 }
 
 /// Generate a rolling summary of a channel conversation through the shared inbound summary path.
@@ -703,7 +707,10 @@ fn channel_provider_capabilities_for_route(
     ctx: &ChannelRuntimeContext,
     route: &ChannelRouteSelection,
 ) -> synapse_domain::ports::provider::ProviderCapabilities {
-    if route.provider.eq_ignore_ascii_case(ctx.default_provider.as_str()) {
+    if route
+        .provider
+        .eq_ignore_ascii_case(ctx.default_provider.as_str())
+    {
         return ctx.provider.capabilities();
     }
     ctx.provider_cache
@@ -1143,21 +1150,23 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
         let provider_capabilities = channel_provider_capabilities_for_route(self.ctx, &current);
         let memory_backend_healthy = Some(self.ctx.memory.health_check().await);
         let embedding_profile = self.ctx.memory.embedding_profile();
-        Ok(crate::runtime_routes::build_runtime_capability_doctor_report(
-            crate::runtime_routes::RuntimeCapabilityDoctorInput {
-                route: &current,
-                config: &config,
-                provider_capabilities,
-                provider_plan_denial: None,
-                tool_registry_count: self.ctx.tools_registry.len(),
-                memory_backend_name: Some(self.ctx.memory.name()),
-                memory_backend_healthy,
-                memory_backend_configured: true,
-                embedding_profile: Some(&embedding_profile),
-                channel_name: Some("channel"),
-                channel_available: Some(!self.ctx.channels_by_name.is_empty()),
-            },
-        ))
+        Ok(
+            crate::runtime_routes::build_runtime_capability_doctor_report(
+                crate::runtime_routes::RuntimeCapabilityDoctorInput {
+                    route: &current,
+                    config: &config,
+                    provider_capabilities,
+                    provider_plan_denial: None,
+                    tool_registry_count: self.ctx.tools_registry.len(),
+                    memory_backend_name: Some(self.ctx.memory.name()),
+                    memory_backend_healthy,
+                    memory_backend_configured: true,
+                    embedding_profile: Some(&embedding_profile),
+                    channel_name: Some("channel"),
+                    channel_available: Some(!self.ctx.channels_by_name.is_empty()),
+                },
+            ),
+        )
     }
 
     async fn switch_provider(
@@ -1212,7 +1221,8 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
             self.ctx,
             self.conversation_key,
             &target_profile,
-        );
+        )
+        .await;
         if preflight.preflight.status
             == synapse_domain::application::services::route_switch_preflight::RouteSwitchStatus::TooLarge
         {
@@ -1231,6 +1241,34 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
             provider,
             lane,
             compacted,
+        })
+    }
+
+    async fn session_compaction_target(
+        &mut self,
+    ) -> anyhow::Result<RuntimeSessionCompactionTarget> {
+        let route = get_route_selection(self.ctx, self.conversation_key);
+        let routing_config = channel_runtime_config_snapshot(self.ctx);
+        let catalog = crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+            self.ctx.workspace_dir.as_ref().to_path_buf(),
+            Some(self.ctx.default_provider.as_ref()),
+            self.ctx.api_url.as_deref(),
+        );
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+                &routing_config,
+                &route,
+                Some(&catalog),
+            );
+        let history = channel_history_port(self.ctx);
+        Ok(RuntimeSessionCompactionTarget {
+            history,
+            conversation_key: self.conversation_key.to_string(),
+            target_profile,
+            memory: Some(Arc::clone(&self.ctx.memory)),
+            run_recipe_store: self.ctx.run_recipe_store.clone(),
+            agent_id: self.ctx.agent_id.as_ref().to_string(),
+            surface: crate::runtime_history_hygiene::RuntimeCompactionSurface::Channel,
         })
     }
 

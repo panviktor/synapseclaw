@@ -2,9 +2,6 @@ use crate::outbound_media::{local_media_path, resolve_outbound_media_uri};
 use crate::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
-use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
-use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use matrix_sdk::{
     attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo},
     authentication::matrix::MatrixSession,
@@ -35,6 +32,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use tokio::sync::{mpsc, Mutex, OnceCell, RwLock};
 
 /// Default maximum media download size (50 MB).

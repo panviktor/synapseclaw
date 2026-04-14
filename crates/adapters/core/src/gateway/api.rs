@@ -3455,7 +3455,7 @@ pub async fn handle_api_agent_chat_media_upload_proxy(
                         StatusCode::BAD_REQUEST,
                         format!("Invalid media upload text field: {error}"),
                     )
-                    .into_response()
+                        .into_response()
                 }
             };
             form = form.text(field_name, text);

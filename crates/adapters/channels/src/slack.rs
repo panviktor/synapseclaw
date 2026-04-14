@@ -10,10 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::application::services::media_artifact_delivery::{
     artifact_delivery_uri, strip_media_artifact_markers,
 };
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::MediaArtifact;
 use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -2244,13 +2244,9 @@ impl SlackChannel {
         uri: &str,
     ) -> anyhow::Result<SlackOutboundArtifactUpload> {
         let client = self.http_client();
-        let upload = resolve_outbound_media_artifact(
-            &client,
-            artifact,
-            uri,
-            artifact.kind.marker_label(),
-        )
-        .await?;
+        let upload =
+            resolve_outbound_media_artifact(&client, artifact, uri, artifact.kind.marker_label())
+                .await?;
         Ok(Self::artifact_upload_from_bytes(
             artifact,
             &upload.file_name,
@@ -2359,12 +2355,13 @@ impl SlackChannel {
             .send()
             .await?;
 
-        let ticket =
-            Self::slack_json_payload(resp, "Slack files.getUploadURLExternal").await?;
+        let ticket = Self::slack_json_payload(resp, "Slack files.getUploadURLExternal").await?;
         let upload_url = ticket
             .get("upload_url")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Slack files.getUploadURLExternal omitted upload_url"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Slack files.getUploadURLExternal omitted upload_url")
+            })?;
         let file_id = ticket
             .get("file_id")
             .and_then(|value| value.as_str())
@@ -2463,7 +2460,7 @@ impl Channel for SlackChannel {
             message.thread_ts.as_deref(),
             &message.content,
         )
-            .await
+        .await
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {

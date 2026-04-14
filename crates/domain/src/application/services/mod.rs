@@ -32,6 +32,7 @@ pub mod learning_strength_service;
 pub mod loop_detection;
 pub mod media_artifact_delivery;
 pub mod memory_mutation;
+pub mod memory_precompress_handoff;
 pub mod memory_projection_service;
 pub mod memory_quality_governor;
 pub mod memory_sharing;

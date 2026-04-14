@@ -16,7 +16,7 @@ use crate::runtime::runtime_error_classification::classify_agent_runtime_error;
 use crate::runtime_adapter_contract::{
     execute_runtime_command_output, RuntimeCommandHost, RuntimeModelHelpSnapshot,
     RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
-    WebRuntimeAdapterContract,
+    RuntimeSessionCompactionTarget, WebRuntimeAdapterContract,
 };
 use crate::runtime_routes::{RuntimeCapabilityDoctorInput, WorkspaceModelProfileCatalog};
 use crate::runtime_tool_notifications::RuntimeToolNotification;
@@ -682,10 +682,23 @@ async fn ensure_session(
         Err(_) => (None, 0, 0, 0, None, None, 0),
     };
 
+    let preservation_message =
+        crate::runtime_history_hygiene::precompress_session_hygiene_preservation_message(
+        &web_runtime_history,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
+        synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+    )
+    .await;
     if synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene(
         &mut web_runtime_history,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
     ) {
+        if let Some(message) = preservation_message {
+            web_runtime_history.push(message);
+        }
         tracing::info!(
             session_key = %session_key,
             "Compacted resumed web session before runtime execution"
@@ -1819,6 +1832,33 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         }
     }
 
+    async fn session_compaction_target(
+        &mut self,
+    ) -> anyhow::Result<RuntimeSessionCompactionTarget> {
+        let route = current_web_route_selection(self.state, self.conversation_key)
+            .unwrap_or_else(|_| default_web_route_selection(self.state, self.config));
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+                self.config,
+                &route,
+                Some(&WorkspaceModelProfileCatalog::with_provider_endpoint(
+                    self.config.workspace_dir.clone(),
+                    Some(default_web_provider(self.config).as_str()),
+                    self.config.api_url.as_deref(),
+                )),
+            );
+        let history = web_history_port(self.state);
+        Ok(RuntimeSessionCompactionTarget {
+            history,
+            conversation_key: self.conversation_key.to_string(),
+            target_profile,
+            memory: Some(Arc::clone(&self.state.mem)),
+            run_recipe_store: Some(Arc::clone(&self.state.run_recipe_store)),
+            agent_id: self.state.agent_id.clone(),
+            surface: crate::runtime_history_hygiene::RuntimeCompactionSurface::Web,
+        })
+    }
+
     async fn clear_session(&mut self) -> anyhow::Result<()> {
         clear_web_session_runtime_state(self.state, self.ui_session_key)
     }
@@ -1879,7 +1919,7 @@ async fn apply_web_runtime_route(
     }
 
     let preflight =
-        resolve_web_runtime_route_switch_preflight(state, conversation_key, &target_profile);
+        resolve_web_runtime_route_switch_preflight(state, conversation_key, &target_profile).await;
     if preflight.preflight.status == RouteSwitchStatus::TooLarge {
         return Ok(WebRuntimeRouteApplyOutcome {
             compacted: preflight.compacted,
@@ -1921,7 +1961,7 @@ fn web_history_port(
     )
 }
 
-fn resolve_web_runtime_route_switch_preflight(
+async fn resolve_web_runtime_route_switch_preflight(
     state: &AppState,
     conversation_key: &str,
     target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
@@ -1932,7 +1972,11 @@ fn resolve_web_runtime_route_switch_preflight(
         conversation_key,
         target_profile,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
     )
+    .await
 }
 
 async fn web_route_effective_context_cache_stats(
@@ -1981,10 +2025,28 @@ async fn compact_web_session_after_context_limit(
     state: &AppState,
     session_key: &str,
 ) -> anyhow::Result<bool> {
-    Ok(web_history_port(state).compact_history(
+    let history = web_history_port(state);
+    let current_history = history.get_history(session_key);
+    let preservation_message =
+        crate::runtime_history_hygiene::precompress_session_hygiene_preservation_message(
+        &current_history,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
+        synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+    )
+    .await;
+    let compacted = history.compact_history(
         session_key,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
-    ))
+    );
+    if compacted {
+        if let Some(message) = preservation_message {
+            history.append_turn(session_key, message);
+        }
+    }
+    Ok(compacted)
 }
 
 // ── RPC: chat.abort ─────────────────────────────────────────────────────────

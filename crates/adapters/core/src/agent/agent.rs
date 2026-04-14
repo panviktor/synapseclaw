@@ -20,6 +20,10 @@ use synapse_domain::application::services::dialogue_state_service::DialogueState
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+use synapse_domain::application::services::memory_precompress_handoff::{
+    execute_memory_precompress_handoff, MemoryPreCompressHandoffInput,
+    MemoryPreCompressHandoffReason,
+};
 use synapse_domain::application::services::model_capability_support::{
     assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
 };
@@ -88,6 +92,9 @@ use synapse_domain::application::services::turn_context::{
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
+use synapse_domain::domain::history_projection::{
+    format_projected_assistant_reasoning, format_projected_tool_call,
+};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, ToolRepairAttemptReason, ToolRepairRoute, ToolRepairTrace,
@@ -1606,16 +1613,17 @@ impl Agent {
                     if let Some(reasoning) = reasoning_content.as_deref() {
                         let trimmed = reasoning.trim();
                         if !trimmed.is_empty() {
-                            projected.push(ChatMessage::assistant(format!(
-                                "[assistant-reasoning]\n{trimmed}"
-                            )));
+                            projected.push(ChatMessage::assistant(
+                                format_projected_assistant_reasoning(trimmed),
+                            ));
                             original_indices.push(index);
                         }
                     }
                     for call in tool_calls {
-                        projected.push(ChatMessage::assistant(format!(
-                            "[tool-call {}]\n{} {}",
-                            call.id, call.name, call.arguments
+                        projected.push(ChatMessage::assistant(format_projected_tool_call(
+                            &call.id,
+                            &call.name,
+                            &call.arguments,
                         )));
                         original_indices.push(index);
                     }
@@ -1785,11 +1793,28 @@ impl Agent {
         compression: &ContextCompressionConfig,
         profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     ) -> bool {
-        self.maybe_compact_history_with_route_and_limits(
+        self.maybe_compact_history_with_route_and_limits_and_trace(
             compression,
             profile,
             self.config.max_history_messages,
             self.last_provider_input_tokens(),
+            None,
+        )
+        .await
+    }
+
+    async fn maybe_compact_history_with_route_and_trace(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+        trace_id: Option<&str>,
+    ) -> bool {
+        self.maybe_compact_history_with_route_and_limits_and_trace(
+            compression,
+            profile,
+            self.config.max_history_messages,
+            self.last_provider_input_tokens(),
+            trace_id,
         )
         .await
     }
@@ -1800,6 +1825,24 @@ impl Agent {
         profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
         max_history_messages: usize,
         observed_provider_input_tokens: Option<usize>,
+    ) -> bool {
+        self.maybe_compact_history_with_route_and_limits_and_trace(
+            compression,
+            profile,
+            max_history_messages,
+            observed_provider_input_tokens,
+            None,
+        )
+        .await
+    }
+
+    async fn maybe_compact_history_with_route_and_limits_and_trace(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+        max_history_messages: usize,
+        observed_provider_input_tokens: Option<usize>,
+        trace_id: Option<&str>,
     ) -> bool {
         let policy = HistoryCompressionPolicy::from(compression);
         if !policy.enabled {
@@ -1835,9 +1878,42 @@ impl Agent {
             .get(compact_end.saturating_sub(1))
             .map(|index| index + 1)
             .expect("compaction end should map to original history");
+        let message_indices = original_indices[start..compact_end].to_vec();
 
         let context_window_tokens =
             Self::history_compaction_context_window_tokens_for_profile(profile);
+        let memory = Arc::clone(&self.memory);
+        let observed_at_unix = chrono::Utc::now().timestamp();
+        let handoff_report = execute_memory_precompress_handoff(
+            Some(memory.as_ref()),
+            MemoryPreCompressHandoffInput {
+                agent_id: &self.agent_id,
+                reason: MemoryPreCompressHandoffReason::LiveAgentCompaction,
+                start_index: original_start,
+                end_index: original_end,
+                transcript: &transcript,
+                messages: &projected[start..compact_end],
+                message_indices: &message_indices,
+                recent_tool_repairs: &self.recent_turn_tool_repairs,
+                run_recipe_store: self.run_recipe_store.as_ref().map(|store| store.as_ref()),
+                observed_at_unix,
+            },
+        )
+        .await;
+        if let Some(trace_id) =
+            trace_id.filter(|_| !handoff_report.runtime_memory_decisions.is_empty())
+        {
+            self.recent_runtime_decision_traces = merge_runtime_decision_trace_update(
+                &self.recent_runtime_decision_traces,
+                trace_id,
+                RuntimeDecisionTraceUpdate {
+                    memory: handoff_report.runtime_memory_decisions.clone(),
+                    ..Default::default()
+                },
+                observed_at_unix,
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
+        }
         let cache_key = history_compaction_cache_key(&transcript, &policy, context_window_tokens);
         let summary_raw = if let Some(summary) = match self
             .history_compaction_cache
@@ -1857,11 +1933,12 @@ impl Agent {
             summary
         } else {
             let previous_summary = self.latest_compaction_summary_text();
-            let prompt = history_compaction::compaction_summarizer_prompt_with_policy(
+            let prompt = history_compaction::compaction_summarizer_prompt_with_policy_and_hints(
                 &transcript,
                 previous_summary.as_deref(),
                 &policy,
                 context_window_tokens,
+                &handoff_report.preservation_hints,
             );
             match summary_generator.generate_summary(&prompt).await {
                 Ok(summary) => {
@@ -2728,9 +2805,10 @@ impl Agent {
 
             if admission_decision.requires_compaction
                 && self
-                    .maybe_compact_history_with_route(
+                    .maybe_compact_history_with_route_and_trace(
                         &effective_compression,
                         &effective_model_profile,
+                        Some(&runtime_trace_id),
                     )
                     .await
             {

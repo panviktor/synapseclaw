@@ -1321,6 +1321,9 @@ fn mutation_action_name(action: &crate::domain::memory_mutation::MutationAction)
 fn mutation_source_name(source: &crate::domain::memory_mutation::MutationSource) -> &'static str {
     match source {
         crate::domain::memory_mutation::MutationSource::Consolidation => "consolidation",
+        crate::domain::memory_mutation::MutationSource::PreCompressHandoff => {
+            "pre_compress_handoff"
+        }
         crate::domain::memory_mutation::MutationSource::ExplicitUser => "explicit_user",
         crate::domain::memory_mutation::MutationSource::ToolOutput => "tool_output",
         crate::domain::memory_mutation::MutationSource::Reflection => "reflection",

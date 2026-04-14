@@ -113,6 +113,8 @@ fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
 async fn auto_compact_history(
     history: &mut Vec<ChatMessage>,
     provider: &dyn Provider,
+    memory: &dyn UnifiedMemoryPort,
+    agent_id: &str,
     model: &str,
     max_history: usize,
     max_context_tokens: usize,
@@ -133,9 +135,32 @@ async fn auto_compact_history(
     ) else {
         return Ok(false);
     };
+    let message_indices = (start..compact_end).collect::<Vec<_>>();
 
-    let summarizer_user =
-        compaction::compaction_summarizer_prompt_with_policy(&transcript, None, &policy, None);
+    let handoff_report =
+        synapse_domain::application::services::memory_precompress_handoff::execute_memory_precompress_handoff(
+            Some(memory),
+            synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffInput {
+                agent_id,
+                reason: synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::LiveAgentCompaction,
+                start_index: start,
+                end_index: compact_end,
+                transcript: &transcript,
+                messages: &history[start..compact_end],
+                message_indices: &message_indices,
+                recent_tool_repairs: &[],
+                run_recipe_store: None,
+                observed_at_unix: chrono::Utc::now().timestamp(),
+            },
+        )
+        .await;
+    let summarizer_user = compaction::compaction_summarizer_prompt_with_policy_and_hints(
+        &transcript,
+        None,
+        &policy,
+        None,
+        &handoff_report.preservation_hints,
+    );
 
     let summary_raw = match provider
         .chat_with_system(

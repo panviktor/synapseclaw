@@ -249,7 +249,10 @@ impl ConversationStorePort for CompositeConversationStore {
     }
 
     async fn update_label(&self, key: &str, label: &str) -> anyhow::Result<()> {
-        self.target_for_key(key).await.update_label(key, label).await
+        self.target_for_key(key)
+            .await
+            .update_label(key, label)
+            .await
     }
 
     async fn update_goal(&self, key: &str, goal: &str) -> anyhow::Result<()> {

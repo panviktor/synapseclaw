@@ -9,9 +9,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
 use synapse_domain::config::schema::{Config, StreamMode};
 use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
-use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use synapse_infra::config_io::ConfigIO;
 use synapse_security::pairing::PairingGuard;
@@ -1888,8 +1888,7 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             target
         };
 
-        let path_buf = local_media_path(target)
-            .unwrap_or_else(|| std::path::PathBuf::from(target));
+        let path_buf = local_media_path(target).unwrap_or_else(|| std::path::PathBuf::from(target));
         let path = path_buf.as_path();
         if !path.exists() {
             anyhow::bail!("Telegram attachment path not found: {target}");
@@ -2640,7 +2639,9 @@ impl Channel for TelegramChannel {
         };
 
         let (text_without_markers, mut attachments) = parse_attachment_markers(content);
-        attachments.extend(telegram_media_artifact_attachments(&message.media_artifacts)?);
+        attachments.extend(telegram_media_artifact_attachments(
+            &message.media_artifacts,
+        )?);
 
         if !attachments.is_empty() {
             if !text_without_markers.is_empty() {

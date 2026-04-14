@@ -7,7 +7,7 @@ Phase 4.10: context engine, prompt economy & progressive loading | **Phase
 
 ## Status
 
-Slices 1-3 are closed as of 2026-04-14 after implementation, audit fixes, and
+Slices 1-4 are closed as of 2026-04-14 after implementation, audit fixes, and
 targeted verification. Remaining slices are still implementation-ready draft.
 
 Phase 4.11 should start after the remaining Phase 4.10 validation tails are
@@ -29,6 +29,14 @@ ideas to borrow are:
 - AutoGPT: reusable block/workflow packaging and marketplace-style surfacing
 - LangGraph: durable execution, checkpoints, long-term memory/store, replay, and
   fault-tolerant state management
+- Mem0/Hermes: automatic turn-bound memory prefetch, background memory sync,
+  reranked semantic search, provider lifecycle hooks, and circuit-breaker
+  behavior for memory backends
+- Zep/CrewAI: automatic task-start memory retrieval, task-end storage, and
+  runtime recall without requiring a user phrase
+- EdgeQuake, Graphiti, Cognee, and A-mem: hybrid graph/vector retrieval,
+  temporal/provenance-aware facts, query expansion, and agentic memory linking
+  as benchmarks for recall quality
 
 ---
 
@@ -45,6 +53,8 @@ The phase must answer:
 - what context-window estimate and pressure tier were used
 - whether compaction, condensation, or handoff was required
 - what memory candidates were accepted or rejected and why
+- whether relevant durable memory was considered before broad live discovery,
+  and why it was accepted, rejected, or treated as stale
 - whether a repair trace was stored, when it expires, and whether it may become
   a review candidate
 - which skills and auxiliary lanes were active, shadowed, disabled, or blocked
@@ -198,30 +208,63 @@ Acceptance tests:
 
 ### Slice 4: Memory Pre-Compress Handoff
 
+Status: **closed** (2026-04-14).
+
+Closeout notes:
+
+- added a domain-owned pre-compress handoff service that runs before
+  live-agent compaction or channel session-hygiene trimming drops provider
+  history
+- centralized projected tool-call markers behind a domain formatter/parser so
+  handoff logic is not matching ad hoc local strings
+- limited hot-path extraction to structured runtime artifacts: projected tool
+  sequences and typed `ToolRepairTrace` records; ordinary multilingual text is
+  not promoted to durable memory by local heuristics
+- trusted typed facts now require runtime-projected `system`/`assistant`
+  anchors, and procedural recipes require runtime-projected assistant tool-call
+  anchors; user-supplied marker text is treated as untrusted dialogue
+- routed recipe candidates through precedent similarity, failure patterns
+  through failure similarity, and all other candidates through the existing
+  memory mutation/governor path
+- passed bounded preservation hints into the compactor only when structural
+  candidates exist, while generic dialogue remains a rejected/no-op write class
+- wired handoff memory decisions into runtime decision traces for both
+  live-agent and channel compaction paths
+- audit pass closed bypasses in web resume/context-limit recovery, web/channel
+  route-switch preflight, and legacy interactive CLI auto-compaction
+- reread audit tightened the channel/context-recovery path so candidate
+  extraction receives only the exact dropped messages and provenance records
+  original dropped-message indices
+
 Add a governed memory handoff before provider-facing context is dropped.
 
 Required behavior:
 
 - identify the exact transcript region that will be summarized or discarded
-- extract candidate stable profile facts, task-state facts, successful
-  procedures, failure patterns, unresolved assumptions, and repair summaries
-- pass every candidate through existing `memory_quality_governor`,
-  learning-quality assessment, and durable write-class policy
+- do not infer stable profile facts or task-state facts from arbitrary user or
+  assistant text; those require explicit memory/consolidation or future typed
+  fact sources
+- extract procedural and failure candidates only from standardized projected
+  tool-call history and typed repair traces
+- pass every candidate through existing `memory_quality_governor`, similarity
+  checks, and durable write-class policy
 - feed approved procedural material into recipe/precedent learning where
   appropriate
 - pass compact handoff hints to the compactor so the summary preserves accepted
-  facts even when no durable write is allowed
+  structural candidates even when no durable write is allowed
 - reject generic dialogue, concept-only world-knowledge, raw tool dumps,
   malformed consolidation output, and ephemeral repair traces
 
 Acceptance tests:
 
-- stable project fact from dropped context is accepted with provenance
+- stable-looking multilingual or local-infra text from dropped context is not
+  promoted without a typed source
 - generic dialogue and concept-to-concept graph material are rejected
-- successful repeated procedure becomes precedent/recipe input, not profile
-  prose
-- repair trace becomes a short-lived review candidate, not durable memory
-- forced compaction preserves approved handoff facts in the summary or trace
+- structured tool sequence becomes precedent/recipe input, not profile prose
+- typed repair trace becomes failure-pattern/review input while raw repair trace
+  detail remains ephemeral
+- forced compaction preserves approved structural handoff hints in the summary
+  or trace
 
 ### Slice 5: Skills Governance
 
@@ -331,6 +374,90 @@ Acceptance tests:
 - stale model catalog entry produces a refresh recommendation
 - janitor removes old alerts and handoff artifacts by TTL/count bounds
 
+### Slice 11: Implicit Memory Recall And Verification
+
+Status: **planned**.
+
+Make durable memory a typed retrieval prior before expensive or broad live
+discovery, even when the user does not explicitly say "use memory". The recall
+path must reduce total context and tool work, not add memory text to an already
+large provider prompt.
+
+Motivation from the live Matrix/Tuwunel audit: the agent correctly used
+`memory_recall` when prompted with "use long-term memory", but a neutral prompt
+about the local Matrix server skipped memory and repeated broad shell discovery.
+This slice closes that gap by making recall a runtime policy decision, not a
+phrase-engine behavior.
+
+External benchmark findings:
+
+- Mem0's Hermes integration prefetches relevant memories before the next turn,
+  syncs completed turns in the background, and keeps the chat path non-blocking
+  with circuit-breaker behavior.
+- Local Hermes confirms a pluggable memory provider lifecycle with
+  `prefetch`, `queue_prefetch`, `sync_turn`, and `on_pre_compress` hooks as an
+  interface benchmark.
+- Zep with CrewAI and CrewAI's own memory system both retrieve relevant context
+  automatically at task start and store after task completion, so recall is not
+  dependent on the user asking for memory.
+- LangGraph separates thread-scoped short-term state from cross-thread
+  long-term stores, and supports semantic search/filtering for long-term
+  memory.
+- EdgeQuake, Graphiti, Cognee, and A-mem point toward higher-quality recall:
+  graph+vector retrieval, query expansion, temporal/provenance windows,
+  auto-routing recall, and agentic memory linking/evolution.
+
+Required behavior:
+
+- derive a typed `ImplicitMemoryRecallPlan` from the user turn before broad
+  shell, filesystem, web, or package-discovery tools are planned
+- build recall queries from intent, entities, task family, workspace/session
+  scope, and domain aliases; do not require a magic phrase such as "use memory"
+- query durable memory with hybrid matching: embedding similarity, lexical
+  aliases, stable keys, categories, provenance, and optional graph/entity links
+- scope recall to bounded classes such as `core`, `project`, `local_infra`,
+  `procedural`, and `recent_success`; never dump raw memory into the prompt
+- classify retrieved facts as stable anchors, volatile facts, procedural hints,
+  or rejected candidates before model/tool use
+- keep accepted anchors in typed runtime state for planner/tool admission first,
+  and avoid provider-prompt insertion by default
+- if final answer generation truly needs a memory hint, pass only a tiny
+  bounded pointer or summary with provenance and mutable-fact verification
+  policy; never pass full memory text
+- use accepted memory to narrow subsequent tool plans so the system spends fewer
+  tokens on broad discovery, repeated inventory scans, and redundant evidence
+- use accepted memory as a tool prior: if local-infra memory says
+  `tuwunel.service`, prefer minimal verification of that service/package before
+  wide `ps`, `find`, `systemctl list-units`, or port scans
+- force live verification for stale or mutable facts such as package versions,
+  release versions, service status, paths that may move, and upstream URLs
+- fall back to bounded live discovery when memory is absent, low-confidence,
+  contradictory, out of scope, or expired
+- record recall query, matched keys, confidence, staleness, accepted anchors,
+  rejected candidates, verification policy, and first tool-prior decision in
+  `RuntimeDecisionTrace`
+- keep recall diagnostics available in shared web/channel surfaces without
+  exposing raw memory payloads or secrets
+
+Acceptance tests:
+
+- a stored `local_infra_matrix_homeserver` memory is recalled for "What is our
+  self-hosted Matrix server?" without an explicit memory phrase
+- accepted local-infra memory causes the first verification tool plan to target
+  the remembered service/package, not a wide host inventory scan
+- stale version memory is not trusted as final truth until live package and
+  upstream checks refresh it
+- conflicting memories create a low-confidence or verification-first decision
+  instead of a confident answer
+- no relevant memory produces a bounded discovery plan and a trace entry saying
+  recall was attempted but empty or rejected
+- runtime diagnostics show recall query, accepted/rejected candidate ids,
+  staleness, and verification policy with redacted payloads
+- context-size accounting proves implicit recall reduced or preserved provider
+  prompt size and did not add memory payloads by default
+- web/channel/gateway harness passes the Matrix/Tuwunel scenario without the
+  words "use long-term memory" in the user message
+
 ---
 
 ## Shared Test Plan
@@ -347,6 +474,8 @@ Required deterministic test groups:
   provenance
 - `usage_pressure_insights`: token/cost/cache/compaction/failure aggregation
 - `background_watchdog`: non-mutating alert generation and janitor maintenance
+- `implicit_memory_recall`: pre-tool recall gating, hybrid alias/entity query,
+  stale-fact verification, tool-prior narrowing, diagnostics redaction
 
 Required runtime/harness scenarios:
 
@@ -358,6 +487,10 @@ Required runtime/harness scenarios:
 - stale endpoint-specific model profile repaired by typed context-limit
   observation
 - web/channel route diagnostics parity
+- local-infra memory recall without explicit memory instruction: store a
+  Matrix/Tuwunel fact, ask a neutral Matrix-server question, verify recall
+  happens before shell discovery, and require minimal live verification before
+  final answer
 
 ---
 
@@ -367,12 +500,19 @@ Required runtime/harness scenarios:
   provider/platform details.
 - Do not put Hermes-specific checks or subscription concepts in the core.
 - Do not add phrase-engine routing.
+- Do not make durable memory recall depend on a user phrase; recall must be
+  triggered by typed intent, scope, and bounded retrieval policy.
 - Do not put provider-specific tool dialects in the shared runtime.
 - Do not make repair traces permanent by default.
+- Treat implicit memory as a hypothesis for mutable facts; verify before final
+  answers when service status, installed versions, releases, URLs, or paths can
+  drift.
 - Do not make diagnostics another prompt ballast.
+- Do not solve implicit recall by adding memory blocks to the provider prompt:
+  recall must primarily shape typed planner/tool decisions.
 - Keep web and channel behavior behind the same runtime services.
-- Treat OpenHands, AutoGPT, LangGraph, and Hermes as benchmark sources, not code
-  to copy one-to-one.
+- Treat OpenHands, AutoGPT, LangGraph, Hermes, Mem0, Zep, CrewAI, EdgeQuake,
+  Graphiti, Cognee, and A-mem as benchmark sources, not code to copy one-to-one.
 
 ---
 
@@ -386,9 +526,9 @@ Phase 4.11 is complete only when:
   handoff, skill governance, auxiliary fallback, and watchdog behavior
 - an operator can inspect a failed or degraded turn and answer which route/model
   was selected, which candidates were available, what context pressure existed,
-  why tools were attempted or blocked, which memory writes were accepted or
-  rejected, which skills were active or blocked, and what short-lived repair or
-  watchdog traces exist
+  why tools were attempted or blocked, which memory recalls and writes were
+  accepted or rejected, which skills were active or blocked, and what
+  short-lived repair or watchdog traces exist
 - diagnostics remain bounded and mostly out of provider prompts
 - no slice is closed by adding only a display command or typed struct without
   validating a real runtime decision

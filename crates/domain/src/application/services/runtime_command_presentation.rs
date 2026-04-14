@@ -49,6 +49,9 @@ pub fn format_common_command_effect(
 ) -> Option<String> {
     match effect {
         CommandEffect::ShowProviders | CommandEffect::ShowModel | CommandEffect::ShowDoctor => None,
+        CommandEffect::CompactSession { compacted } => {
+            Some(format_compact_session_response(*compacted))
+        }
         CommandEffect::SwitchProvider { provider } => {
             Some(format_switch_provider_success(provider, options))
         }
@@ -77,6 +80,15 @@ pub fn format_common_command_effect(
             model, provider, *lane, preflight, *compacted, options,
         )),
         CommandEffect::ClearSession => Some(format_clear_session_response()),
+    }
+}
+
+pub fn format_compact_session_response(compacted: bool) -> String {
+    if compacted {
+        "Conversation context compacted. Long-term memory and route selection were preserved."
+            .to_string()
+    } else {
+        "Conversation context is already compact enough. No history was dropped.".to_string()
     }
 }
 
@@ -268,6 +280,16 @@ mod tests {
         assert_eq!(
             format_common_command_effect(&CommandEffect::ClearSession, &options),
             Some("Conversation history cleared. Starting fresh.".to_string())
+        );
+        assert_eq!(
+            format_common_command_effect(
+                &CommandEffect::CompactSession { compacted: false },
+                &options
+            ),
+            Some(
+                "Conversation context is already compact enough. No history was dropped."
+                    .to_string()
+            )
         );
     }
 

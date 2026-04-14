@@ -279,7 +279,10 @@ pub fn assess_memory_mutation_candidate(candidate: &MutationCandidate) -> Memory
         return MemoryMutationVerdict::Reject(MemoryMutationRejectReason::LowInformationRepetition);
     }
 
-    if matches!(candidate.source, MutationSource::Consolidation) {
+    if matches!(
+        candidate.source,
+        MutationSource::Consolidation | MutationSource::PreCompressHandoff
+    ) {
         if matches!(write_class, MutationWriteClass::GenericDialogue) {
             return MemoryMutationVerdict::Reject(
                 MemoryMutationRejectReason::GenericDialogueNotDurable,
@@ -359,6 +362,9 @@ fn infer_memory_write_class(candidate: &MutationCandidate) -> MutationWriteClass
         (_, MutationSource::ToolOutput) => MutationWriteClass::FactAnchor,
         (_, MutationSource::ExplicitUser) => MutationWriteClass::FactAnchor,
         (MemoryCategory::Core, MutationSource::Consolidation) => {
+            MutationWriteClass::GenericDialogue
+        }
+        (MemoryCategory::Core, MutationSource::PreCompressHandoff) => {
             MutationWriteClass::GenericDialogue
         }
         _ => MutationWriteClass::FactAnchor,

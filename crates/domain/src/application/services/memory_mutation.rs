@@ -5,7 +5,8 @@
 //! point where long-term memory mutation policy lives.
 //!
 //! Design:
-//! - Accepts candidates from consolidation, explicit user signals, or tools.
+//! - Accepts candidates from consolidation, pre-compress handoff, explicit user
+//!   signals, or tools.
 //! - Fetches a small shortlist of similar existing memories.
 //! - Applies deterministic similarity thresholds (not per-fact LLM calls).
 //! - Emits decisions that callers apply through memory ports.
@@ -325,6 +326,7 @@ fn category_prefix(cat: &MemoryCategory) -> &'static str {
 fn source_tag(source: &MutationSource) -> &'static str {
     match source {
         MutationSource::Consolidation => "cons",
+        MutationSource::PreCompressHandoff => "handoff",
         MutationSource::ExplicitUser => "user",
         MutationSource::ToolOutput => "tool",
         MutationSource::Reflection => "refl",

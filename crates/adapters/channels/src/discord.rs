@@ -8,8 +8,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -184,7 +184,6 @@ impl DiscordAttachmentKind {
             _ => None,
         }
     }
-
 }
 
 fn discord_attachment_kind_for_artifact(kind: MediaArtifactKind) -> DiscordAttachmentKind {
@@ -523,7 +522,9 @@ impl Channel for DiscordChannel {
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let content = message.content.as_str();
         let (cleaned_content, mut parsed_attachments) = parse_attachment_markers(content);
-        parsed_attachments.extend(discord_media_artifact_attachments(&message.media_artifacts)?);
+        parsed_attachments.extend(discord_media_artifact_attachments(
+            &message.media_artifacts,
+        )?);
 
         let client = self.http_client();
         let mut uploads = Vec::new();
@@ -1560,5 +1561,4 @@ mod tests {
         assert_eq!(cleaned, input);
         assert!(attachments.is_empty());
     }
-
 }

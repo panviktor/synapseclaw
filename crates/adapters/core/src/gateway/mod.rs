@@ -971,7 +971,7 @@ pub async fn run_gateway(
             agent_runner: Some(agent_runner.clone()),
             cron_db: shared_surreal.clone(),
             conversation_context: Some(shared_conversation_context.clone()),
-                conversation_store: runtime_conversation_store.clone(),
+            conversation_store: runtime_conversation_store.clone(),
             channel_registry: Some(Arc::clone(&channel_registry)),
             standing_order_store: None,
             user_profile_store: Some(Arc::clone(&user_profile_store)),

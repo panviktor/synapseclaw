@@ -4,6 +4,7 @@
 //! The summarization step requires calling an LLM provider, so callers
 //! pass a callback for that operation.
 
+use crate::domain::history_projection::is_projected_tool_call;
 use crate::domain::message::ChatMessage;
 use crate::domain::util::truncate_with_ellipsis;
 use crate::ports::provider::{ConversationMessage, ToolResultMessage};
@@ -144,6 +145,67 @@ pub fn compact_provider_history_for_session_hygiene(
     true
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionHygieneDroppedMessage {
+    pub index: usize,
+    pub message: ChatMessage,
+}
+
+pub fn session_hygiene_dropped_messages(
+    history: &[ChatMessage],
+    keep_non_system_turns: usize,
+) -> Vec<ChatMessage> {
+    session_hygiene_dropped_messages_with_indices(history, keep_non_system_turns)
+        .into_iter()
+        .map(|entry| entry.message)
+        .collect()
+}
+
+pub fn session_hygiene_dropped_messages_with_indices(
+    history: &[ChatMessage],
+    keep_non_system_turns: usize,
+) -> Vec<SessionHygieneDroppedMessage> {
+    let non_system_count = history.iter().filter(|msg| msg.role != "system").count();
+    if non_system_count <= keep_non_system_turns {
+        return Vec::new();
+    }
+
+    let mut remaining_non_system = keep_non_system_turns;
+    let mut retained = Vec::with_capacity(history.len());
+    let mut dropped = Vec::new();
+    for (index, message) in history.iter().enumerate().rev() {
+        let entry = SessionHygieneDroppedMessage {
+            index,
+            message: message.clone(),
+        };
+        if message.role == "system" {
+            retained.push(entry);
+        } else if remaining_non_system > 0 {
+            remaining_non_system -= 1;
+            retained.push(entry);
+        } else {
+            dropped.push(entry);
+        }
+    }
+    retained.reverse();
+    dropped.reverse();
+
+    loop {
+        let Some(first_non_system) = retained
+            .iter()
+            .position(|entry| entry.message.role != "system")
+        else {
+            break;
+        };
+        if retained[first_non_system].message.role == "user" {
+            break;
+        }
+        dropped.push(retained.remove(first_non_system));
+    }
+    dropped.sort_by_key(|entry| entry.index);
+    dropped
+}
+
 fn drop_leading_non_user_provider_messages(history: &mut Vec<ChatMessage>) {
     loop {
         let Some(first_non_system) = history.iter().position(|message| message.role != "system")
@@ -274,7 +336,7 @@ fn scaled_tokens(tokens: usize, ratio: f64) -> usize {
     ((tokens as f64) * ratio).round() as usize
 }
 
-fn build_compaction_transcript(messages: &[ChatMessage], max_source_chars: usize) -> String {
+pub fn build_compaction_transcript(messages: &[ChatMessage], max_source_chars: usize) -> String {
     let mut transcript = String::new();
     for msg in messages {
         let role = msg.role.to_uppercase();
@@ -528,7 +590,7 @@ fn boundary_splits_tool_group(history: &[ChatMessage], boundary: usize) -> bool 
 
 fn is_tool_call_message(message: &ChatMessage) -> bool {
     message.role == "assistant"
-        && (message.content.contains("<tool_call") || message.content.starts_with("[tool-call "))
+        && (message.content.contains("<tool_call") || is_projected_tool_call(&message.content))
 }
 
 fn is_tool_result_message(message: &ChatMessage) -> bool {
@@ -554,6 +616,22 @@ pub fn compaction_summarizer_prompt_with_policy(
     policy: &HistoryCompressionPolicy,
     context_window_tokens: Option<usize>,
 ) -> String {
+    compaction_summarizer_prompt_with_policy_and_hints(
+        transcript,
+        previous_summary,
+        policy,
+        context_window_tokens,
+        &[],
+    )
+}
+
+pub fn compaction_summarizer_prompt_with_policy_and_hints(
+    transcript: &str,
+    previous_summary: Option<&str>,
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+    preservation_hints: &[String],
+) -> String {
     let content_tokens = transcript.chars().count().div_ceil(4);
     let summary_budget =
         history_compression_summary_budget_tokens(content_tokens, context_window_tokens, policy);
@@ -561,6 +639,14 @@ pub fn compaction_summarizer_prompt_with_policy(
         .map(str::trim)
         .filter(|summary| !summary.is_empty())
         .unwrap_or("(none)");
+    let preservation_hints = crate::application::services::memory_precompress_handoff::format_precompress_preservation_hints(
+        preservation_hints,
+    );
+    let preservation_hints = if preservation_hints.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{preservation_hints}")
+    };
     format!(
         "Update the compacted conversation context for future turns.\n\
          Target summary budget: about {summary_budget} tokens.\n\n\
@@ -575,7 +661,7 @@ pub fn compaction_summarizer_prompt_with_policy(
          ## Relevant Files\n\
          ## Next Steps\n\
          ## Critical Context\n\n\
-         Previous compacted context:\n{previous_summary}\n\n\
+         Previous compacted context:\n{previous_summary}{preservation_hints}\n\n\
          New history to merge:\n{transcript}"
     )
 }
@@ -713,6 +799,7 @@ mod tests {
     use crate::config::schema::{
         CapabilityLane, ContextCompressionConfig, ContextCompressionRouteOverrideConfig,
     };
+    use crate::domain::history_projection::format_projected_tool_call;
     use crate::ports::provider::{ToolCall, ToolResultMessage};
 
     #[test]
@@ -745,6 +832,49 @@ mod tests {
         let mut history = vec![ChatMessage::user("1"), ChatMessage::assistant("2")];
         trim_history(&mut history, 5);
         assert_eq!(history.len(), 2); // unchanged
+    }
+
+    #[test]
+    fn session_hygiene_reports_exact_dropped_messages() {
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("old user"),
+            ChatMessage::assistant("old assistant"),
+            ChatMessage::assistant("orphan assistant"),
+            ChatMessage::user("recent user"),
+            ChatMessage::assistant("recent assistant"),
+        ];
+
+        let dropped = session_hygiene_dropped_messages(&history, 3);
+        assert_eq!(
+            dropped
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old user", "old assistant", "orphan assistant"]
+        );
+        let dropped_with_indices = session_hygiene_dropped_messages_with_indices(&history, 3);
+        assert_eq!(
+            dropped_with_indices
+                .iter()
+                .map(|entry| entry.index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let mut compacted = history;
+        assert!(compact_provider_history_for_session_hygiene(
+            &mut compacted,
+            3
+        ));
+        assert_eq!(
+            compacted
+                .iter()
+                .filter(|message| message.role != "system")
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recent user", "recent assistant"]
+        );
     }
 
     #[test]
@@ -830,7 +960,11 @@ mod tests {
         let mut history = vec![
             ChatMessage::system("sys"),
             ChatMessage::user("inspect file"),
-            ChatMessage::assistant("[tool-call call-1]\nfile_read {\"path\":\"a.rs\"}"),
+            ChatMessage::assistant(format_projected_tool_call(
+                "call-1",
+                "file_read",
+                "{\"path\":\"a.rs\"}",
+            )),
             ChatMessage::tool("tool output"),
         ];
         for i in 0..12 {
@@ -883,7 +1017,7 @@ mod tests {
     fn compaction_transcript_prunes_large_tool_results() {
         let history = vec![
             ChatMessage::user("inspect output"),
-            ChatMessage::assistant("[tool-call call-1]\nshell {}"),
+            ChatMessage::assistant(format_projected_tool_call("call-1", "shell", "{}")),
             ChatMessage::tool(format!("head{}tail", "x".repeat(2_000))),
             ChatMessage::user("next"),
         ];
@@ -954,6 +1088,29 @@ mod tests {
         assert!(prompt.contains("Keep the project stable"));
         assert!(prompt.contains("Target summary budget"));
         assert!(prompt.contains("## Critical Context"));
+    }
+
+    #[test]
+    fn summarizer_prompt_adds_handoff_hints_only_when_present() {
+        let policy = HistoryCompressionPolicy::default();
+        let without_hints = compaction_summarizer_prompt_with_policy_and_hints(
+            "USER: continue",
+            None,
+            &policy,
+            None,
+            &[],
+        );
+        assert!(!without_hints.contains("Authoritative compacted-context facts"));
+
+        let with_hints = compaction_summarizer_prompt_with_policy_and_hints(
+            "USER: continue",
+            None,
+            &policy,
+            None,
+            &["recipe: tool_sequence=rg -> systemctl".to_string()],
+        );
+        assert!(with_hints.contains("Authoritative compacted-context facts"));
+        assert!(with_hints.contains("recipe: tool_sequence=rg -> systemctl"));
     }
 
     #[test]
