@@ -282,7 +282,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace directory"
+        "Execute a shell command in the workspace directory. Keep commands simple and shell-policy friendly: avoid redirection (`>`, `<`, `2>/dev/null`), subshells, `set -o pipefail`, background jobs, and `tee`. Use short pipelines of allowed commands or split discovery into separate tool calls."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -291,7 +291,7 @@ impl Tool for ShellTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute. Do not use redirection (`>`, `<`, `2>/dev/null`), subshells, `set -o pipefail`, background jobs, or `tee`; retry blocked discovery commands by removing redirection and splitting pipelines."
                 },
                 "approved": {
                     "type": "boolean",

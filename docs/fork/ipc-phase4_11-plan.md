@@ -171,6 +171,9 @@ Closeout notes:
   `/model`/`/providers` diagnostics without raw tool argument values
 - audit pass fixed execution-attempt classification, same-batch failure->success
   resolution, and diagnostic argument-shape rendering without key lowercasing
+- live CLI audit with a neutral local Matrix homeserver discovery task fixed
+  repairable shell-policy hints and raised the no-progress hard cap enough for
+  bounded local inventory turns
 
 Required behavior:
 
