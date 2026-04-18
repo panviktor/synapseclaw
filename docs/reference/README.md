@@ -1,24 +1,16 @@
-# Reference Catalogs
+# Reference
 
-Structured reference index for commands, providers, channels, config, and integration guides.
+Reference pages are exact lookup material for commands, APIs, config keys, lifecycle rules, and protocol contracts. Use [../start/](../start/) and [../use/](../use/) for tutorials.
 
-## Core References
+## Current References
 
-- Commands by workflow: [cli/commands-reference.md](cli/commands-reference.md)
-- Provider IDs / aliases / env vars: [api/providers-reference.md](api/providers-reference.md)
-- Channel setup + allowlists: [api/channels-reference.md](api/channels-reference.md)
-- Config defaults and keys: [api/config-reference.md](api/config-reference.md)
-- Local model catalog override workflow: [cli/commands-reference.md#models](cli/commands-reference.md#models)
+- [CLI](cli.md) - current command map, with Skills commands called out.
+- [API](api.md) - gateway API groups.
+- [Config](config.md) - important config locations and settings.
+- [Skills API](skills-api.md) - Skills gateway endpoints.
+- [Skill lifecycle](skill-lifecycle.md) - states, transitions, patch apply, rollback, and package porting.
+- [Tool contracts](tool-contracts.md) - typed tool protocol, privacy, and replay rules.
 
-## Provider & Integration Extensions
+## Archived References
 
-- Custom provider endpoints: [../contributing/custom-providers.md](../contributing/custom-providers.md)
-- Z.AI / GLM provider onboarding: [../setup-guides/zai-glm-setup.md](../setup-guides/zai-glm-setup.md)
-- Nextcloud Talk bot integration: [../setup-guides/nextcloud-talk-setup.md](../setup-guides/nextcloud-talk-setup.md)
-- LangGraph-based integration patterns: [../contributing/langgraph-integration.md](../contributing/langgraph-integration.md)
-
-## Usage
-
-Use this collection when you need precise CLI/config details or provider integration patterns rather than step-by-step tutorials.
-
-When adding a new reference/integration doc, make sure it is linked in both [../SUMMARY.md](../SUMMARY.md) and [../maintainers/docs-inventory.md](../maintainers/docs-inventory.md).
+Older reference catalogs are preserved under [../deprecated/reference/](../deprecated/reference/). They may still be useful for archaeology, but current user-facing docs should link to the new reference pages above.

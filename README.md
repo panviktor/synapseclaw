@@ -17,17 +17,16 @@
   <a href="#quick-start">Getting Started</a> |
   <a href="docs/README.md">Docs Hub</a> |
   <a href="docs/SUMMARY.md">Docs TOC</a> |
-  <a href="docs/fork/README.md">Architecture & Roadmap</a>
+  <a href="docs/use/skills/quickstart.md">Skills Quickstart</a>
 </p>
 
 <p align="center">
   <strong>Quick Routes:</strong>
   <a href="docs/reference/README.md">Reference</a> ·
-  <a href="docs/ops/README.md">Operations</a> ·
-  <a href="docs/ops/troubleshooting.md">Troubleshoot</a> ·
-  <a href="docs/security/README.md">Security</a> ·
-  <a href="docs/fork/README.md">Fork Docs</a> ·
-  <a href="docs/contributing/README.md">Contribute</a>
+  <a href="docs/operate/README.md">Operations</a> ·
+  <a href="docs/use/skills/troubleshooting.md">Skills Troubleshooting</a> ·
+  <a href="docs/understand/architecture.md">Architecture</a> ·
+  <a href="docs/extend/README.md">Extend</a>
 </p>
 
 ---
@@ -68,9 +67,8 @@ synapse_domain (24K LOC)         composition root (55K LOC)      ├── gatew
 
 **Dependency rules** — domain depends on nothing; adapters depend on domain; the binary composes everything.
 
-For the full architecture plans, phase history, and roadmap: [`docs/fork/README.md`](docs/fork/README.md).
-For the latest updates: [`docs/fork/news.md`](docs/fork/news.md).
-For known documentation discrepancies: [`docs/fork/doc-discrepancies.md`](docs/fork/doc-discrepancies.md).
+For current architecture docs, start with [`docs/understand/architecture.md`](docs/understand/architecture.md).
+Historical phase plans, audits, and fork-era notes are archived under [`docs/deprecated/`](docs/deprecated/README.md).
 
 ## Prerequisites
 
@@ -312,13 +310,15 @@ synapseclaw agent --provider anthropic -m "hello"
 
 - Documentation hub: [`docs/README.md`](docs/README.md)
 - Docs TOC: [`docs/SUMMARY.md`](docs/SUMMARY.md)
-- Commands reference: [`docs/reference/cli/commands-reference.md`](docs/reference/cli/commands-reference.md)
-- Config reference: [`docs/reference/api/config-reference.md`](docs/reference/api/config-reference.md)
-- Providers reference: [`docs/reference/api/providers-reference.md`](docs/reference/api/providers-reference.md)
-- Channels reference: [`docs/reference/api/channels-reference.md`](docs/reference/api/channels-reference.md)
-- Operations runbook: [`docs/ops/operations-runbook.md`](docs/ops/operations-runbook.md)
-- Troubleshooting: [`docs/ops/troubleshooting.md`](docs/ops/troubleshooting.md)
-- Architecture & roadmap: [`docs/fork/README.md`](docs/fork/README.md)
+- Start guide: [`docs/start/what-is-synapseclaw.md`](docs/start/what-is-synapseclaw.md)
+- User guide: [`docs/use/README.md`](docs/use/README.md)
+- Skills quickstart: [`docs/use/skills/quickstart.md`](docs/use/skills/quickstart.md)
+- Skills lifecycle: [`docs/reference/skill-lifecycle.md`](docs/reference/skill-lifecycle.md)
+- Skills API: [`docs/reference/skills-api.md`](docs/reference/skills-api.md)
+- Operations: [`docs/operate/README.md`](docs/operate/README.md)
+- Architecture: [`docs/understand/architecture.md`](docs/understand/architecture.md)
+- Developer guide: [`docs/extend/README.md`](docs/extend/README.md)
+- Archived historical docs: [`docs/deprecated/README.md`](docs/deprecated/README.md)
 - Security: [`SECURITY.md`](SECURITY.md)
 
 ## License
@@ -330,11 +330,11 @@ SynapseClaw is dual-licensed:
 | [MIT](LICENSE-MIT) | Open-source, research, academic, personal use |
 | [Apache 2.0](LICENSE-APACHE) | Patent protection, institutional, commercial deployment |
 
-You may choose either license. See [CLA.md](docs/contributing/cla.md) for the contributor agreement.
+You may choose either license. See [CLA.md](docs/deprecated/contributing/cla.md) for the archived contributor agreement.
 
 ### Trademark
 
-The **SynapseClaw** name and logo are trademarks of SynapseClaw Labs. See [TRADEMARK.md](docs/maintainers/trademark.md) for permitted and prohibited uses.
+The **SynapseClaw** name and logo are trademarks of SynapseClaw Labs. See [TRADEMARK.md](docs/deprecated/maintainers/trademark.md) for permitted and prohibited uses.
 
 ## Contributing
 

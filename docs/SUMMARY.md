@@ -1,86 +1,73 @@
-# SynapseClaw Docs Summary (Unified TOC)
+# Synapseclaw Docs Summary
 
-This file is the canonical table of contents for the documentation system.
+This is the main table of contents for the current English documentation.
 
-Last refreshed: **April 12, 2026**.
+## Start
 
-## Language Entry
+- [What is Synapseclaw?](start/what-is-synapseclaw.md)
+- [Install](start/install.md)
+- [First run](start/first-run.md)
+- [First agent](start/first-agent.md)
 
-- Docs Structure Map: [maintainers/structure-README.md](maintainers/structure-README.md)
-- English README: [../README.md](../README.md)
-- English Docs Hub: [README.md](README.md)
-- i18n Status: [i18n/README.md](i18n/README.md)
+## Use
 
-## Collections
+- [User guide](use/README.md)
+- [Chat](use/chat.md)
+- [Web UI](use/web-ui.md)
+- [Matrix](use/matrix.md)
+- [Memory](use/memory.md)
+- [Automations](use/automations.md)
 
-### 1) Getting Started
+### Skills
 
-- [setup-guides/README.md](setup-guides/README.md)
-- [macos-update-uninstall.md](setup-guides/macos-update-uninstall.md)
-- [one-click-bootstrap.md](setup-guides/one-click-bootstrap.md)
+- [Skills overview](use/skills/README.md)
+- [Skills quickstart](use/skills/quickstart.md)
+- [Concepts](use/skills/concepts.md)
+- [Create a user skill](use/skills/create-user-skill.md)
+- [Generated skills](use/skills/generated-skills.md)
+- [Review, apply, and rollback](use/skills/review-apply-rollback.md)
+- [Import and export packages](use/skills/import-export-packages.md)
+- [Health and auto-promotion](use/skills/health-and-autopromote.md)
+- [Troubleshooting](use/skills/troubleshooting.md)
 
-### 2) Command/Config References & Integrations
+## Extend
 
-- [reference/README.md](reference/README.md)
-- [commands-reference.md](reference/cli/commands-reference.md)
-- [providers-reference.md](reference/api/providers-reference.md)
-- [channels-reference.md](reference/api/channels-reference.md)
-- [nextcloud-talk-setup.md](setup-guides/nextcloud-talk-setup.md)
-- [config-reference.md](reference/api/config-reference.md)
-- [custom-providers.md](contributing/custom-providers.md)
-- [zai-glm-setup.md](setup-guides/zai-glm-setup.md)
-- [langgraph-integration.md](contributing/langgraph-integration.md)
+- [Developer guide](extend/README.md)
+- [Add a tool](extend/add-tool.md)
+- [Tool contracts](extend/tool-contracts.md)
+- [Add skill support](extend/add-skill-support.md)
+- [Add a channel](extend/add-channel.md)
+- [Add a provider](extend/add-provider.md)
+- [Gateway API](extend/gateway-api.md)
 
-### 3) Operations & Deployment
+## Operate
 
-- [ops/README.md](ops/README.md)
-- [operations-runbook.md](ops/operations-runbook.md)
-- [release-process.md](contributing/release-process.md)
-- [troubleshooting.md](ops/troubleshooting.md)
-- [network-deployment.md](ops/network-deployment.md)
-- [mattermost-setup.md](setup-guides/mattermost-setup.md)
+- [Operations guide](operate/README.md)
+- [Config](operate/config.md)
+- [Deploy](operate/deploy.md)
+- [Services](operate/services.md)
+- [Health and logs](operate/health-and-logs.md)
+- [Backup and restore](operate/backup-and-restore.md)
+- [Security](operate/security.md)
 
-### 4) Security Design & Proposals
+## Understand
 
-- [security/README.md](security/README.md)
-- [agnostic-security.md](security/agnostic-security.md)
-- [frictionless-security.md](security/frictionless-security.md)
-- [sandboxing.md](security/sandboxing.md)
-- [resource-limits.md](ops/resource-limits.md)
-- [audit-logging.md](security/audit-logging.md)
-- [security-roadmap.md](security/security-roadmap.md)
+- [Architecture](understand/architecture.md)
+- [Skills runtime](understand/skills-runtime.md)
+- [Memory and compaction](understand/memory-and-compaction.md)
+- [Channels and web](understand/channels-and-web.md)
+- [Privacy and replay](understand/privacy-and-replay.md)
 
-### 5) Contribution & CI
+## Reference
 
-- [contributing/README.md](contributing/README.md)
-- [../CONTRIBUTING.md](../CONTRIBUTING.md)
-- [pr-workflow.md](contributing/pr-workflow.md)
-- [reviewer-playbook.md](contributing/reviewer-playbook.md)
-- [ci-map.md](contributing/ci-map.md)
-- [actions-source-policy.md](contributing/actions-source-policy.md)
-- [extension-examples.md](contributing/extension-examples.md)
-- [testing.md](contributing/testing.md)
+- [Reference index](reference/README.md)
+- [CLI](reference/cli.md)
+- [API](reference/api.md)
+- [Config](reference/config.md)
+- [Skills API](reference/skills-api.md)
+- [Skill lifecycle](reference/skill-lifecycle.md)
+- [Tool contracts](reference/tool-contracts.md)
 
-### 6) Project Status & Snapshot
+## Historical Material
 
-- [maintainers/README.md](maintainers/README.md)
-- [project-triage-snapshot-2026-02-18.md](maintainers/project-triage-snapshot-2026-02-18.md)
-- [docs-inventory.md](maintainers/docs-inventory.md)
-
-### 7) Fork Architecture & IPC
-
-- [fork/README.md](fork/README.md)
-- [fork/news.md](fork/news.md)
-- [fork/doc-discrepancies.md](fork/doc-discrepancies.md)
-- [delta-registry.md](fork/delta-registry.md)
-- [ipc-plan.md](fork/ipc-plan.md)
-- [ipc-quickstart.md](fork/ipc-quickstart.md)
-- [memory-learning-foundation-plan.md](fork/memory-learning-foundation-plan.md)
-- [memory-unification-plan.md](fork/memory-unification-plan.md)
-- [ipc-phase4_6-plan.md](fork/ipc-phase4_6-plan.md)
-- [ipc-phase4_6-research.md](fork/ipc-phase4_6-research.md)
-- [ipc-phase4_7-plan.md](fork/ipc-phase4_7-plan.md)
-- [ipc-phase4_8-plan.md](fork/ipc-phase4_8-plan.md)
-- [ipc-phase4_9-plan.md](fork/ipc-phase4_9-plan.md)
-- [ideas/README.md](fork/ideas/README.md)
-- [multi-agent-memory-ui-plan.md](fork/multi-agent-memory-ui-plan.md)
+- [Deprecated documentation](deprecated/README.md)
