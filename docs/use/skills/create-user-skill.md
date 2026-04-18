@@ -35,3 +35,56 @@ A good skill covers one repeatable task. It should have a clear trigger, concret
 
 Do not store tokens, passwords, OAuth callbacks, device codes, or private customer data in a skill. A skill should describe how to do work, not contain secrets needed to do it.
 
+## Recommended Template
+
+```markdown
+# Skill name
+
+Use this when...
+
+Inputs:
+- ...
+
+Steps:
+1. ...
+2. ...
+3. ...
+
+Report:
+- ...
+
+Do not:
+- ...
+```
+
+## Strong Example
+
+```markdown
+# Matrix release check
+
+Use this when asked whether a local Matrix server checkout is behind upstream.
+
+Inputs:
+- Local repository path, if provided.
+- Upstream repository URL, if not already known.
+
+Steps:
+1. Find the local Matrix repository.
+2. Read the current local tag or release version.
+3. Read upstream release tags.
+4. Compare semantic versions.
+5. Report whether the local checkout is current, outdated, or unknown.
+
+Do not:
+- Pull, checkout, or restart services unless the user explicitly asks.
+```
+
+## Weak Example
+
+```markdown
+# Be careful with Matrix
+
+Always inspect the repository and make a good decision.
+```
+
+This is weak because it has no trigger, no concrete steps, no expected output, and no safety boundary. Use [authoring-patterns.md](authoring-patterns.md) for more examples.

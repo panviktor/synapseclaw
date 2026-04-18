@@ -47,3 +47,8 @@ synapseclaw skills health --limit 20 --trace-limit 100
 
 Health output shows compact utility counters such as selected, read, helped, failed, repaired, blocked, and rollbacks. These signals help decide whether a skill is useful, stale, or needs review.
 
+## What This Proves
+
+This quickstart proves the full user-authored path: plain Markdown becomes a governed memory-backed skill, the skill can be discovered through compact metadata, the full body is loaded only when relevant, and later health checks can inspect compact usage evidence.
+
+It does not prove generated self-improvement. Generated candidates and patch review are covered in [generated-skills.md](generated-skills.md) and [review-apply-rollback.md](review-apply-rollback.md).
