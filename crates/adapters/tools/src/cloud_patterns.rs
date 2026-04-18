@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::domain::util::truncate_with_ellipsis;
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 
 /// A cloud architecture pattern with metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +116,18 @@ impl Tool for CloudPatternsTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::HistoricalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values(["match", "list"]),
+            ToolArgumentPolicy::replayable("workload"),
+            ToolArgumentPolicy::replayable("cloud"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

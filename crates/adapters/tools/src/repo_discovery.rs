@@ -231,7 +231,7 @@ impl Tool for RepoDiscoveryTool {
 
     fn tool_contract(&self) -> ToolContract {
         ToolContract::replayable(self.runtime_role()).with_arguments(vec![
-            ToolArgumentPolicy::replayable("root_path"),
+            ToolArgumentPolicy::workspace_local("root_path"),
             ToolArgumentPolicy::replayable("max_depth"),
             ToolArgumentPolicy::replayable("limit"),
             ToolArgumentPolicy::replayable("name_contains"),

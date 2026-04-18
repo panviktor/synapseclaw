@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::mcp_deferred::{ActivatedToolSet, DeferredMcpToolSet};
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolResult, ToolRuntimeRole,
+};
 
 /// Default maximum number of search results.
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -58,6 +60,21 @@ impl Tool for ToolSearchTool {
             },
             "required": ["query"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::RuntimeActivation,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("query").user_private(),
+            ToolArgumentPolicy::replayable("max_results"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

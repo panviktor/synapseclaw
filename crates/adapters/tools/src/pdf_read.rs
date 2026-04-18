@@ -6,6 +6,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 
 /// Maximum PDF file size (50 MB).
 const MAX_PDF_BYTES: u64 = 50 * 1024 * 1024;
@@ -60,6 +61,17 @@ impl Tool for PdfReadTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::workspace_local("path"),
+            ToolArgumentPolicy::replayable("max_chars"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

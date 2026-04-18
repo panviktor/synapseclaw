@@ -12,6 +12,9 @@ use synapse_domain::application::services::session_handoff::{
 use synapse_domain::config::schema::DelegateAgentConfig;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use synapse_providers::{self, ChatMessage, Provider};
 
@@ -205,6 +208,23 @@ impl Tool for DelegateTool {
             },
             "required": ["agent", "prompt"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("agent"),
+            ToolArgumentPolicy::sensitive("prompt").user_private(),
+            ToolArgumentPolicy::sensitive("context").user_private(),
+            ToolArgumentPolicy::sensitive("handoff_packet").session_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -548,6 +568,14 @@ impl Tool for ToolArcRef {
         self.inner.parameters_schema()
     }
 
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        self.inner.runtime_role()
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        self.inner.tool_contract()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
@@ -642,6 +670,10 @@ mod tests {
                 },
                 "required": ["value"]
             })
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
         }
 
         async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -1248,6 +1280,10 @@ mod tests {
 
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
         }
 
         async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {

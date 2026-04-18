@@ -13,7 +13,9 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolResult, ToolRuntimeRole,
+};
 
 /// Maximum download size for OneDrive files (10 MB).
 const MAX_ONEDRIVE_DOWNLOAD_SIZE: usize = 10 * 1024 * 1024;
@@ -484,6 +486,35 @@ impl Tool for Microsoft365Tool {
                 }
             }
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action"),
+            ToolArgumentPolicy::sensitive("folder").user_private(),
+            ToolArgumentPolicy::sensitive("to").user_private(),
+            ToolArgumentPolicy::sensitive("subject").user_private(),
+            ToolArgumentPolicy::sensitive("body").user_private(),
+            ToolArgumentPolicy::sensitive("team_id").user_private(),
+            ToolArgumentPolicy::sensitive("channel_id").user_private(),
+            ToolArgumentPolicy::sensitive("start").user_private(),
+            ToolArgumentPolicy::sensitive("end").user_private(),
+            ToolArgumentPolicy::sensitive("attendees").user_private(),
+            ToolArgumentPolicy::sensitive("event_id").user_private(),
+            ToolArgumentPolicy::workspace_local("path"),
+            ToolArgumentPolicy::sensitive("item_id").user_private(),
+            ToolArgumentPolicy::replayable("max_size"),
+            ToolArgumentPolicy::sensitive("query").user_private(),
+            ToolArgumentPolicy::replayable("top"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -6,6 +6,10 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolNonReplayableReason,
+    ToolRuntimeRole,
+};
 
 /// Open approved HTTPS URLs in the system default browser (no scraping, no DOM automation).
 pub struct BrowserOpenTool {
@@ -77,6 +81,19 @@ impl Tool for BrowserOpenTool {
             },
             "required": ["url"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![ToolArgumentPolicy::replayable("url")
+            .with_transform(ToolArgumentTransform::UrlOriginPath)])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use synapse_domain::domain::tool_fact::{
     ToolFactPayload, TypedToolFact, WorkspaceAction, WorkspaceFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use tokio::fs;
 
 /// Workspace data lifecycle tool: retention status, time-based purge, and
@@ -136,6 +139,22 @@ impl Tool for DataManagementTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("command").with_values([
+                    "retention_status",
+                    "purge",
+                    "stats",
+                ]),
+                ToolArgumentPolicy::replayable("dry_run"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

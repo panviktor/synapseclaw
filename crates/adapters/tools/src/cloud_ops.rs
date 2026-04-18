@@ -12,6 +12,7 @@ use synapse_domain::domain::tool_fact::{
     SecurityAction, SecurityFact, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::domain::util::truncate_with_ellipsis;
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 
 /// Read-only cloud operations advisory tool.
 ///
@@ -126,6 +127,23 @@ impl Tool for CloudOpsTool {
             },
             "required": ["action", "input"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values([
+                "review_iac",
+                "assess_migration",
+                "cost_analysis",
+                "architecture_review",
+            ]),
+            ToolArgumentPolicy::replayable("input"),
+            ToolArgumentPolicy::replayable("cloud"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

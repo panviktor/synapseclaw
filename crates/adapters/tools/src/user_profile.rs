@@ -18,7 +18,9 @@ use synapse_domain::domain::tool_fact::{
 };
 use synapse_domain::domain::user_profile::normalize_fact_key;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolResult, ToolRuntimeRole,
+};
 use synapse_domain::ports::user_profile_context::UserProfileContextPort;
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 
@@ -117,8 +119,18 @@ impl Tool for UserProfileTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::ProfileMutation)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ProfileMutation)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action")
+                    .with_values(["get", "upsert", "clear", "delete"]),
+                ToolArgumentPolicy::sensitive("facts").user_private(),
+                ToolArgumentPolicy::sensitive("clear_keys").user_private(),
+            ])
     }
 
     fn extract_facts(

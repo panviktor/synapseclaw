@@ -2849,6 +2849,7 @@ pub struct UserSkillPackageExportOutcome {
     pub version: u32,
     pub package_dir: PathBuf,
     pub skill_file: PathBuf,
+    pub diff_summary: String,
     pub audit_files_scanned: usize,
 }
 
@@ -2923,13 +2924,14 @@ pub async fn export_user_skill_package(
         .with_context(|| format!("failed to create {}", package_dir.display()))?;
     let previous = if skill_file.exists() {
         Some(
-            std::fs::read(&skill_file)
+            std::fs::read_to_string(&skill_file)
                 .with_context(|| format!("failed to read {}", skill_file.display()))?,
         )
     } else {
         None
     };
     let rendered = render_memory_skill_package_markdown(&skill)?;
+    let diff_summary = skill_package_export_diff_summary(previous.as_deref(), &rendered);
     std::fs::write(&skill_file, rendered)
         .with_context(|| format!("failed to write {}", skill_file.display()))?;
 
@@ -2954,6 +2956,7 @@ pub async fn export_user_skill_package(
         version: skill.version,
         package_dir,
         skill_file,
+        diff_summary,
         audit_files_scanned: audit.files_scanned,
     })
 }
@@ -4213,7 +4216,7 @@ pub fn format_user_skill_package_export_outcome_text(
     outcome: &UserSkillPackageExportOutcome,
 ) -> String {
     format!(
-        "Exported skill package '{}' ({}) for agent {}: origin={} status={} v{}\nPackage: {}\nSkill file: {}\nAudit: passed ({} files scanned).",
+        "Exported skill package '{}' ({}) for agent {}: origin={} status={} v{}\nPackage: {}\nSkill file: {}\nDiff: {}\nAudit: passed ({} files scanned).",
         outcome.skill_name,
         outcome.skill_id,
         outcome.agent_id,
@@ -4222,6 +4225,7 @@ pub fn format_user_skill_package_export_outcome_text(
         outcome.version,
         outcome.package_dir.display(),
         outcome.skill_file.display(),
+        outcome.diff_summary,
         outcome.audit_files_scanned
     )
 }
@@ -4947,6 +4951,20 @@ fn render_memory_skill_package_markdown(skill: &MemorySkill) -> Result<String> {
         .trim_end();
     let body = skill.content.trim();
     Ok(format!("---\n{yaml}\n---\n\n{body}\n"))
+}
+
+fn skill_package_export_diff_summary(previous: Option<&str>, rendered: &str) -> String {
+    let Some(previous) = previous else {
+        return format!("create SKILL.md ({} chars)", rendered.chars().count());
+    };
+    if previous == rendered {
+        return "overwrite SKILL.md with no content changes".to_string();
+    }
+    format!(
+        "overwrite SKILL.md (old {} chars, new {} chars)",
+        previous.chars().count(),
+        rendered.chars().count()
+    )
 }
 
 fn render_skill_package_scaffold_markdown(request: &SkillPackageScaffoldRequest) -> String {
@@ -7275,6 +7293,7 @@ command = "echo hello"
         );
         assert!(exported.skill_file.is_file());
         assert_eq!(exported.audit_files_scanned, 2);
+        assert!(exported.diff_summary.starts_with("create SKILL.md"));
         let rendered = fs::read_to_string(&exported.skill_file).unwrap();
         assert!(rendered.contains("source_skill_id:"));
         assert!(rendered.contains("task_family: release-audit"));
@@ -7291,6 +7310,41 @@ command = "echo hello"
             .prompts
             .first()
             .is_some_and(|body| body.contains("compare release tags")));
+
+        let updated = update_user_skill(
+            &memory,
+            "test",
+            UserSkillUpdateRequest {
+                skill_ref: created.skill_id.clone(),
+                description: None,
+                body: Some(
+                    "# Matrix release check\n\nCompare release tags and verify changelog.".into(),
+                ),
+                task_family: None,
+                tool_pattern: None,
+                tags: None,
+                status: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.new_version, 2);
+        let overwritten = export_user_skill_package(
+            &memory,
+            "test",
+            &workspace,
+            UserSkillPackageExportRequest {
+                skill_ref: created.skill_id.clone(),
+                destination: None,
+                package_name: Some("matrix-release-check".into()),
+                overwrite: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(overwritten.diff_summary.starts_with("overwrite SKILL.md"));
+        let overwritten_body = fs::read_to_string(&overwritten.skill_file).unwrap();
+        assert!(overwritten_body.contains("verify changelog"));
     }
 
     #[tokio::test]
@@ -7336,6 +7390,21 @@ command = "echo hello"
         assert!(stored.tags.iter().any(|tag| tag == "ported-skill-package"));
         assert!(stored.content.contains("Compare local tags"));
         assert!(load_skills(&workspace).is_empty());
+
+        let second_report = port_workspace_skill_packages_to_memory(&memory, "test", &workspace)
+            .await
+            .unwrap();
+        assert_eq!(second_report.scanned, 0);
+        assert_eq!(second_report.imported, 0);
+        assert_eq!(second_report.moved, 0);
+        let stored_again = memory
+            .list_skills(&"test".to_string(), 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|skill| skill.name == "legacy-release-check")
+            .collect::<Vec<_>>();
+        assert_eq!(stored_again.len(), 1);
     }
 
     #[tokio::test]

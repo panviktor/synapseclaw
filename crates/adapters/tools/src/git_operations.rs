@@ -754,7 +754,7 @@ impl Tool for GitOperationsTool {
             ToolArgumentPolicy::replayable("files"),
             ToolArgumentPolicy::replayable("cached"),
             ToolArgumentPolicy::replayable("limit"),
-            ToolArgumentPolicy::replayable("repo_path"),
+            ToolArgumentPolicy::workspace_local("repo_path"),
             ToolArgumentPolicy::replayable("remote"),
             ToolArgumentPolicy::replayable("tag_prefix"),
             ToolArgumentPolicy::blocked("message"),

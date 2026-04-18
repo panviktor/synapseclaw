@@ -374,6 +374,7 @@ mod tests {
     use super::*;
     use crate::tools::traits::Tool;
     use async_trait::async_trait;
+    use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
 
     struct TestTool;
 
@@ -389,6 +390,10 @@ mod tests {
 
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
         }
 
         async fn execute(

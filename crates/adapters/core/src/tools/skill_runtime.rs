@@ -464,7 +464,7 @@ mod tests {
         parse_skill_activation_trace_entry, skill_activation_trace_memory_category,
     };
     use synapse_domain::config::schema::{Config, MemoryConfig, SkillsConfig};
-    use synapse_domain::domain::memory::{Skill, SkillOrigin, SkillStatus};
+    use synapse_domain::domain::memory::{Skill, SkillOrigin, SkillStatus, SkillUpdate};
     use synapse_memory::SkillMemoryPort;
 
     fn open_skills_env_lock() -> &'static Mutex<()> {
@@ -822,6 +822,63 @@ mod tests {
         let error = result.error.unwrap();
         assert!(error.contains("state=candidate"), "{error}");
         assert!(error.contains("operator_review_required"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn generated_new_skill_loads_only_after_operator_promotion() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = learned_skill("matrix-generated", SkillStatus::Candidate);
+        let skill_id = skill.id.clone();
+        let memory = memory_with_skill(dir.path(), skill).await;
+        let config = Arc::new(test_config(dir.path().to_path_buf()));
+        let tool = SkillReadTool::new(
+            config,
+            memory.clone(),
+            vec![
+                "skill_read".into(),
+                "repo_discovery".into(),
+                "git_operations".into(),
+            ],
+            Vec::new(),
+            Arc::new(Mutex::new(HashSet::new())),
+        );
+
+        let blocked = tool
+            .execute(json!({ "skill": "matrix-generated" }))
+            .await
+            .unwrap();
+        assert!(!blocked.success);
+        assert!(blocked
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("state=candidate")));
+
+        memory
+            .update_skill(
+                &skill_id,
+                SkillUpdate {
+                    increment_success: false,
+                    increment_fail: false,
+                    new_description: None,
+                    new_content: None,
+                    new_task_family: None,
+                    new_tool_pattern: None,
+                    new_lineage_task_families: None,
+                    new_tags: None,
+                    new_status: Some(SkillStatus::Active),
+                },
+                &"agent".to_string(),
+            )
+            .await
+            .unwrap();
+
+        let loaded = tool
+            .execute(json!({ "skill": "matrix-generated" }))
+            .await
+            .unwrap();
+        assert!(loaded.success, "{:?}", loaded.error);
+        assert!(loaded.output.contains("source=\"learned\""));
+        assert!(loaded.output.contains("Matrix release_status recipe"));
     }
 
     #[tokio::test]

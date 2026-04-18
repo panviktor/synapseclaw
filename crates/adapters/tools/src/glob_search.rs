@@ -214,7 +214,7 @@ impl Tool for GlobSearchTool {
 
     fn tool_contract(&self) -> ToolContract {
         ToolContract::replayable(self.runtime_role())
-            .with_arguments(vec![ToolArgumentPolicy::replayable("pattern")])
+            .with_arguments(vec![ToolArgumentPolicy::workspace_local("pattern")])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

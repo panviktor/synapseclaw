@@ -439,7 +439,9 @@ mod tests {
         parse_skill_use_trace_entry, skill_use_trace_memory_category,
     };
     use synapse_domain::domain::memory::{SkillOrigin, SkillStatus};
-    use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
+    use synapse_domain::ports::tool::{
+        ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+    };
     use synapse_memory::{EpisodicMemoryPort, SkillMemoryPort, UnifiedMemoryPort};
 
     struct ProbeTool;
@@ -508,8 +510,51 @@ mod tests {
             Some(ToolRuntimeRole::WorkspaceDiscovery)
         }
 
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(
+                self.runtime_role(),
+                ToolNonReplayableReason::Other("test_tool".into()),
+            )
+        }
+
         async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
             panic!("non-replayable tool must not execute from replay harness")
+        }
+    }
+
+    struct PrivateReplayProbeTool;
+
+    #[async_trait]
+    impl Tool for PrivateReplayProbeTool {
+        fn name(&self) -> &str {
+            "probe"
+        }
+
+        fn description(&self) -> &str {
+            "test private probe"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" }
+                },
+                "required": ["query"]
+            })
+        }
+
+        fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+            Some(ToolRuntimeRole::HistoricalLookup)
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::replayable(self.runtime_role())
+                .with_arguments(vec![ToolArgumentPolicy::replayable("query").user_private()])
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
+            panic!("private replay args must not execute from replay harness")
         }
     }
 
@@ -616,6 +661,26 @@ mod tests {
 
         let result = harness
             .run_replay_case(&candidate(), &case(Some(serde_json::json!({"ok": true}))))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, SkillReplayEvalStatus::Failed);
+        assert!(result
+            .evidence
+            .as_deref()
+            .is_some_and(|value| value.contains("typed tool contract")));
+    }
+
+    #[tokio::test]
+    async fn tool_replay_rejects_private_replay_args_before_execution() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(PrivateReplayProbeTool)];
+        let harness = RuntimeSkillReplayHarness::new(&tools, None);
+
+        let result = harness
+            .run_replay_case(
+                &candidate(),
+                &case(Some(serde_json::json!({"query": "private session text"}))),
+            )
             .await
             .unwrap();
 

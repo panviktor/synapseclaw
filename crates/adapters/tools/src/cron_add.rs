@@ -11,7 +11,9 @@ use synapse_domain::domain::tool_fact::{
     ScheduleAction, ScheduleFact, ScheduleJobType, ScheduleTarget, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::ports::conversation_context::ConversationContextPort;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 pub struct CronAddTool {
     config: Arc<Config>,
@@ -529,6 +531,26 @@ impl Tool for CronAddTool {
             },
             "required": ["schedule"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::sensitive("name").user_private(),
+                ToolArgumentPolicy::sensitive("schedule").user_private(),
+                ToolArgumentPolicy::replayable("job_type").with_values(["shell", "agent"]),
+                ToolArgumentPolicy::sensitive("command").user_private(),
+                ToolArgumentPolicy::sensitive("prompt").user_private(),
+                ToolArgumentPolicy::replayable("session_target").with_values(["isolated", "main"]),
+                ToolArgumentPolicy::sensitive("model").user_private(),
+                ToolArgumentPolicy::blocked("approved"),
+                ToolArgumentPolicy::sensitive("delivery").user_private(),
+                ToolArgumentPolicy::replayable("delete_after_run"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

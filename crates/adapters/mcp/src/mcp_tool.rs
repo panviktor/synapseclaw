@@ -7,7 +7,9 @@ use async_trait::async_trait;
 
 use crate::mcp_client::McpRegistry;
 use crate::mcp_protocol::McpToolDef;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolContract, ToolNonReplayableReason, ToolResult, ToolRuntimeRole,
+};
 
 /// A synapseclaw [`Tool`] backed by an MCP server tool.
 ///
@@ -49,6 +51,14 @@ impl Tool for McpToolWrapper {
 
     fn parameters_schema(&self) -> serde_json::Value {
         self.input_schema.clone()
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::ProviderNative)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

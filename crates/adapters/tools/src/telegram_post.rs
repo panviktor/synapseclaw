@@ -8,6 +8,9 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
 const TELEGRAM_REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -118,6 +121,27 @@ impl Tool for TelegramPostTool {
             },
             "required": ["chat_id", "text"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("chat_id").user_private(),
+            ToolArgumentPolicy::sensitive("text").user_private(),
+            ToolArgumentPolicy::replayable("parse_mode").with_values([
+                "HTML",
+                "Markdown",
+                "MarkdownV2",
+            ]),
+            ToolArgumentPolicy::replayable("disable_web_page_preview"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

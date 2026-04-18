@@ -6,7 +6,9 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolRuntimeRole,
+};
 
 const MAX_RUN_OUTPUT_CHARS: usize = 500;
 
@@ -127,6 +129,17 @@ impl Tool for CronRunsTool {
             },
             "required": ["job_id"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("job_id"),
+            ToolArgumentPolicy::replayable("limit"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

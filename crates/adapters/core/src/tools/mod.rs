@@ -51,7 +51,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::runtime::RuntimeAdapter;
 use synapse_domain::ports::tool::{
     tool_contract_inventory_row, tool_runtime_role_name, validate_tool_contract,
-    ToolContractInventoryRow, ToolContractIssue,
+    ToolContractInventoryRow, ToolContractIssue, ToolProtocolImplementation,
 };
 use synapse_memory::UnifiedMemoryPort;
 use synapse_tools::core_memory_update::CoreMemoryUpdateTool;
@@ -93,6 +93,13 @@ pub use synapse_domain::ports::tool::ArcToolRef;
 pub fn audit_tool_contracts(tools: &[Box<dyn Tool>]) -> Vec<ToolContractIssue> {
     let mut issues = Vec::new();
     for tool in tools {
+        let protocol = tool.protocol_contract();
+        if !protocol.is_classified() {
+            issues.push(ToolContractIssue {
+                tool_name: protocol.tool_name,
+                message: "tool protocol contract is not classified".into(),
+            });
+        }
         issues.extend(validate_tool_contract(
             tool.name(),
             &tool.parameters_schema(),

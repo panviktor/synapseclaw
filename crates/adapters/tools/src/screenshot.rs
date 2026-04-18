@@ -9,6 +9,9 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Maximum time to wait for a screenshot command to complete.
 const SCREENSHOT_TIMEOUT_SECS: u64 = 15;
@@ -242,6 +245,21 @@ impl Tool for ScreenshotTool {
                 }
             }
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::LargeOrPrivatePayload,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::workspace_local("filename"),
+            ToolArgumentPolicy::sensitive("region").session_private(),
+        ])
     }
 
     fn extract_facts(

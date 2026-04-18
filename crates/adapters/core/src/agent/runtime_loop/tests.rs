@@ -54,6 +54,11 @@ use synapse_domain::application::services::model_lane_resolution::{
 };
 use synapse_domain::config::schema::ModelFeature;
 use synapse_domain::domain::memory::{Skill as MemorySkill, SkillOrigin, SkillStatus};
+use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
+
+fn test_tool_contract() -> ToolContract {
+    ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
+}
 
 #[test]
 fn scrub_credentials_redacts_bearer_token() {
@@ -518,6 +523,10 @@ impl Tool for CountingTool {
         })
     }
 
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<crate::tools::ToolResult> {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let value = args
@@ -575,6 +584,10 @@ impl Tool for DelayTool {
         })
     }
 
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<crate::tools::ToolResult> {
         let now_active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(now_active, Ordering::SeqCst);
@@ -629,6 +642,10 @@ impl Tool for FailingTool {
                 "command": { "type": "string" }
             }
         })
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
 
     async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<crate::tools::ToolResult> {

@@ -3629,6 +3629,13 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
+        fn tool_contract(&self) -> synapse_domain::ports::tool::ToolContract {
+            synapse_domain::ports::tool::ToolContract::non_replayable(
+                None,
+                synapse_domain::ports::tool::ToolNonReplayableReason::Other("test_tool".into()),
+            )
+        }
+
         async fn execute(&self, _args: serde_json::Value) -> Result<crate::tools::ToolResult> {
             Ok(crate::tools::ToolResult {
                 success: true,

@@ -13,6 +13,9 @@ use synapse_domain::config::schema::SecurityOpsConfig;
 use synapse_domain::domain::tool_fact::{
     SecurityAction, SecurityFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_security::playbook::{
     evaluate_step, load_playbooks, severity_level, Playbook, StepStatus,
 };
@@ -409,6 +412,30 @@ impl Tool for SecurityOpsTool {
                 }
             }
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::PendingPrivacyPolicy,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action"),
+            ToolArgumentPolicy::sensitive("alert").user_private(),
+            ToolArgumentPolicy::sensitive("playbook").user_private(),
+            ToolArgumentPolicy::replayable("step"),
+            ToolArgumentPolicy::sensitive("alert_severity").user_private(),
+            ToolArgumentPolicy::sensitive("scan_data").user_private(),
+            ToolArgumentPolicy::sensitive("client_name").user_private(),
+            ToolArgumentPolicy::sensitive("period").user_private(),
+            ToolArgumentPolicy::sensitive("alert_stats").user_private(),
+            ToolArgumentPolicy::sensitive("vuln_summary").user_private(),
+            ToolArgumentPolicy::sensitive("alerts").user_private(),
+        ])
     }
 
     fn extract_facts(

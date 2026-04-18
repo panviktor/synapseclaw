@@ -12,7 +12,9 @@ use synapse_domain::domain::tool_fact::{
 };
 use synapse_domain::domain::turn_defaults::TurnDefaultSource;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
-use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolResult,
+};
 use synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort;
 
 pub struct MessageSendTool {
@@ -158,6 +160,17 @@ impl Tool for MessageSendTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("content").user_private(),
+            ToolArgumentPolicy::sensitive("target").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

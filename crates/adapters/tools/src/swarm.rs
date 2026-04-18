@@ -10,6 +10,9 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     RoutingAction, RoutingFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_providers::{self, Provider};
 
 /// Default timeout for individual agent calls within a swarm.
@@ -495,6 +498,22 @@ impl Tool for SwarmTool {
             },
             "required": ["swarm", "prompt"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("swarm"),
+            ToolArgumentPolicy::sensitive("prompt").user_private(),
+            ToolArgumentPolicy::sensitive("context").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

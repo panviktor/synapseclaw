@@ -6,7 +6,9 @@ use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Let the agent forget/delete a memory entry
 pub struct MemoryForgetTool {
@@ -105,8 +107,13 @@ impl Tool for MemoryForgetTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::MemoryMutation)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::MemoryMutation)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![ToolArgumentPolicy::sensitive("key").user_private()])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

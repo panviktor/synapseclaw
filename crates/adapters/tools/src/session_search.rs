@@ -184,7 +184,7 @@ impl Tool for SessionSearchTool {
             ToolNonReplayableReason::PendingPrivacyPolicy,
         )
         .with_arguments(vec![
-            ToolArgumentPolicy::sensitive("query"),
+            ToolArgumentPolicy::sensitive("query").session_private(),
             ToolArgumentPolicy::blocked("limit"),
             ToolArgumentPolicy::blocked("kind"),
         ])

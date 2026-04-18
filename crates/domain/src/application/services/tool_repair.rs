@@ -281,13 +281,11 @@ pub fn apply_successful_tool_repair_observation_with_args(
 }
 
 pub fn sanitized_tool_replay_args(
-    tool_name: &str,
-    arguments: &Value,
-    tool_spec: Option<&ToolSpec>,
+    _tool_name: &str,
+    _arguments: &Value,
+    _tool_spec: Option<&ToolSpec>,
 ) -> Option<Value> {
-    let tool_spec = tool_spec?;
-    let contract = ToolContract::from_schema(tool_spec.runtime_role, &tool_spec.parameters);
-    sanitized_tool_replay_args_with_contract(tool_name, arguments, tool_spec, &contract)
+    None
 }
 
 pub fn sanitized_tool_replay_args_with_contract(
@@ -436,7 +434,9 @@ fn sanitize_replay_value(
                     },
                     None => None,
                 };
-                if child_policy.is_some_and(|policy| !policy.replayable || policy.sensitive) {
+                if child_policy.is_some_and(|policy| {
+                    !policy.replayable || policy.sensitive || !policy.privacy.replay_safe()
+                }) {
                     continue;
                 }
                 if let Some(value) = values.get(key).and_then(|value| {

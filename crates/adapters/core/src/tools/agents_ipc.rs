@@ -11,6 +11,9 @@ use std::time::Duration;
 use synapse_domain::application::services::session_handoff::{
     format_session_handoff_packet, parse_session_handoff_packet_value, SessionHandoffPacket,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use uuid;
 
 /// Resolve the ~/.synapseclaw directory for persisting sender_seq.
@@ -421,8 +424,15 @@ impl Tool for AgentsListTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::RuntimeActivation,
+        )
     }
 
     async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -507,8 +517,22 @@ impl Tool for AgentsSendTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("to").user_private(),
+            ToolArgumentPolicy::replayable("kind").with_values(["text", "task", "result", "query"]),
+            ToolArgumentPolicy::sensitive("payload").user_private(),
+            ToolArgumentPolicy::sensitive("session_id").session_private(),
+            ToolArgumentPolicy::replayable("priority"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -632,8 +656,20 @@ impl Tool for AgentsInboxTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::RuntimeActivation,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("quarantine"),
+            ToolArgumentPolicy::replayable("limit"),
+            ToolArgumentPolicy::replayable("unfiltered"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -755,8 +791,20 @@ impl Tool for AgentsReplyTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::RuntimeStateInspection)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("to").user_private(),
+            ToolArgumentPolicy::sensitive("session_id").session_private(),
+            ToolArgumentPolicy::sensitive("payload").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -843,8 +891,16 @@ impl Tool for StateGetTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::RuntimeStateInspection)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::PendingPrivacyPolicy,
+        )
+        .with_arguments(vec![ToolArgumentPolicy::sensitive("key").session_private()])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -918,6 +974,18 @@ impl Tool for StateSetTool {
             },
             "required": ["key", "value"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::sensitive("key").session_private(),
+                ToolArgumentPolicy::sensitive("value").session_private(),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -1098,6 +1166,27 @@ impl Tool for AgentsSpawnTool {
             },
             "required": ["prompt"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DelegatedDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("prompt").user_private(),
+            ToolArgumentPolicy::sensitive("name").user_private(),
+            ToolArgumentPolicy::sensitive("model").user_private(),
+            ToolArgumentPolicy::replayable("trust_level"),
+            ToolArgumentPolicy::replayable("wait"),
+            ToolArgumentPolicy::replayable("timeout"),
+            ToolArgumentPolicy::sensitive("workload").user_private(),
+            ToolArgumentPolicy::sensitive("handoff_packet").session_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

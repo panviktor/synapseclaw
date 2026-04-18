@@ -17,7 +17,10 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolNonReplayableReason,
+    ToolResult, ToolRuntimeRole,
+};
 use tokio::time::{timeout, Duration};
 
 // Re-export from synapse_domain::config — single source of truth.
@@ -172,6 +175,24 @@ impl Tool for BrowserDelegateTool {
             },
             "required": ["task"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::RuntimeActivation,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("task").user_private(),
+            ToolArgumentPolicy::replayable("url")
+                .with_transform(ToolArgumentTransform::UrlOriginPath),
+            ToolArgumentPolicy::replayable("extract_format")
+                .with_values(["text", "json", "summary"]),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

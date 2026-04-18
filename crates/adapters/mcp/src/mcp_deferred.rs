@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn activated_set_tracks_activation() {
         use async_trait::async_trait;
-        use synapse_domain::ports::tool::ToolResult;
+        use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason, ToolResult};
 
         struct FakeTool;
         #[async_trait]
@@ -293,6 +293,12 @@ mod tests {
             }
             fn parameters_schema(&self) -> serde_json::Value {
                 serde_json::json!({})
+            }
+            fn tool_contract(&self) -> ToolContract {
+                ToolContract::non_replayable(
+                    None,
+                    ToolNonReplayableReason::Other("test_tool".into()),
+                )
             }
             async fn execute(&self, _: serde_json::Value) -> anyhow::Result<ToolResult> {
                 Ok(ToolResult {
@@ -314,7 +320,7 @@ mod tests {
     #[test]
     fn activated_set_resolves_unique_suffix() {
         use async_trait::async_trait;
-        use synapse_domain::ports::tool::ToolResult;
+        use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason, ToolResult};
 
         struct FakeTool;
         #[async_trait]
@@ -327,6 +333,12 @@ mod tests {
             }
             fn parameters_schema(&self) -> serde_json::Value {
                 serde_json::json!({})
+            }
+            fn tool_contract(&self) -> ToolContract {
+                ToolContract::non_replayable(
+                    None,
+                    ToolNonReplayableReason::Other("test_tool".into()),
+                )
             }
             async fn execute(&self, _: serde_json::Value) -> anyhow::Result<ToolResult> {
                 Ok(ToolResult {
@@ -345,7 +357,7 @@ mod tests {
     #[test]
     fn activated_set_rejects_ambiguous_suffix() {
         use async_trait::async_trait;
-        use synapse_domain::ports::tool::ToolResult;
+        use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason, ToolResult};
 
         struct FakeTool(&'static str);
         #[async_trait]
@@ -358,6 +370,12 @@ mod tests {
             }
             fn parameters_schema(&self) -> serde_json::Value {
                 serde_json::json!({})
+            }
+            fn tool_contract(&self) -> ToolContract {
+                ToolContract::non_replayable(
+                    None,
+                    ToolNonReplayableReason::Other("test_tool".into()),
+                )
             }
             async fn execute(&self, _: serde_json::Value) -> anyhow::Result<ToolResult> {
                 Ok(ToolResult {

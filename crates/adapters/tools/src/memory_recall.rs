@@ -207,7 +207,7 @@ impl Tool for MemoryRecallTool {
             ToolNonReplayableReason::PendingPrivacyPolicy,
         )
         .with_arguments(vec![
-            ToolArgumentPolicy::sensitive("query"),
+            ToolArgumentPolicy::sensitive("query").user_private(),
             ToolArgumentPolicy::blocked("limit"),
         ])
     }

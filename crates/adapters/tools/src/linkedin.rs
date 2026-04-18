@@ -10,6 +10,10 @@ use synapse_domain::domain::tool_fact::{
     NotificationChannel, NotificationFact, ResourceFact, ResourceKind, ResourceMetadata,
     ResourceOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolNonReplayableReason,
+    ToolRuntimeRole,
+};
 
 pub struct LinkedInTool {
     security: Arc<SecurityPolicy>,
@@ -339,6 +343,31 @@ impl Tool for LinkedInTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action"),
+            ToolArgumentPolicy::sensitive("text").user_private(),
+            ToolArgumentPolicy::replayable("visibility").with_values(["PUBLIC", "CONNECTIONS"]),
+            ToolArgumentPolicy::replayable("article_url")
+                .with_transform(ToolArgumentTransform::UrlOriginPath),
+            ToolArgumentPolicy::sensitive("article_title").user_private(),
+            ToolArgumentPolicy::sensitive("post_id").user_private(),
+            ToolArgumentPolicy::replayable("reaction_type"),
+            ToolArgumentPolicy::replayable("count"),
+            ToolArgumentPolicy::replayable("generate_image"),
+            ToolArgumentPolicy::sensitive("image_prompt").user_private(),
+            ToolArgumentPolicy::sensitive("scheduled_at").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -8,6 +8,9 @@ use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact,
     ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Default `gws` command execution time before kill (overridden by config).
 const DEFAULT_GWS_TIMEOUT_SECS: u64 = 30;
@@ -251,6 +254,28 @@ impl Tool for GoogleWorkspaceTool {
             },
             "required": ["service", "resource", "method"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("service"),
+            ToolArgumentPolicy::replayable("resource"),
+            ToolArgumentPolicy::replayable("method"),
+            ToolArgumentPolicy::sensitive("sub_resource").user_private(),
+            ToolArgumentPolicy::sensitive("params").user_private(),
+            ToolArgumentPolicy::sensitive("body").user_private(),
+            ToolArgumentPolicy::replayable("format"),
+            ToolArgumentPolicy::replayable("page_all"),
+            ToolArgumentPolicy::replayable("page_limit"),
+        ])
     }
 
     /// Execute a Google Workspace CLI command with input validation and security enforcement.

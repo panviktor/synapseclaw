@@ -89,11 +89,45 @@ impl ToolNonReplayableReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPrivacyClass {
+    Public,
+    WorkspaceLocal,
+    UserPrivate,
+    SessionPrivate,
+    Secret,
+    Unknown,
+}
+
+impl ToolPrivacyClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::WorkspaceLocal => "workspace_local",
+            Self::UserPrivate => "user_private",
+            Self::SessionPrivate => "session_private",
+            Self::Secret => "secret",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn replay_safe(self) -> bool {
+        matches!(self, Self::Public | Self::WorkspaceLocal)
+    }
+}
+
+fn default_tool_privacy_class() -> ToolPrivacyClass {
+    ToolPrivacyClass::Unknown
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolArgumentPolicy {
     pub name: String,
     pub replayable: bool,
     pub sensitive: bool,
+    #[serde(default = "default_tool_privacy_class")]
+    pub privacy: ToolPrivacyClass,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replayable_values: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -106,6 +140,18 @@ impl ToolArgumentPolicy {
             name: name.into(),
             replayable: true,
             sensitive: false,
+            privacy: ToolPrivacyClass::Public,
+            replayable_values: Vec::new(),
+            transform: None,
+        }
+    }
+
+    pub fn workspace_local(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            replayable: true,
+            sensitive: false,
+            privacy: ToolPrivacyClass::WorkspaceLocal,
             replayable_values: Vec::new(),
             transform: None,
         }
@@ -116,6 +162,7 @@ impl ToolArgumentPolicy {
             name: name.into(),
             replayable: false,
             sensitive: false,
+            privacy: ToolPrivacyClass::Unknown,
             replayable_values: Vec::new(),
             transform: None,
         }
@@ -126,9 +173,27 @@ impl ToolArgumentPolicy {
             name: name.into(),
             replayable: false,
             sensitive: true,
+            privacy: ToolPrivacyClass::Secret,
             replayable_values: Vec::new(),
             transform: None,
         }
+    }
+
+    pub fn user_private(mut self) -> Self {
+        self.privacy = ToolPrivacyClass::UserPrivate;
+        self
+    }
+
+    pub fn session_private(mut self) -> Self {
+        self.privacy = ToolPrivacyClass::SessionPrivate;
+        self
+    }
+
+    pub fn secret(mut self) -> Self {
+        self.privacy = ToolPrivacyClass::Secret;
+        self.sensitive = true;
+        self.replayable = false;
+        self
     }
 
     pub fn with_values(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -153,15 +218,6 @@ pub struct ToolContract {
 }
 
 impl ToolContract {
-    pub fn new(runtime_role: Option<ToolRuntimeRole>) -> Self {
-        Self {
-            runtime_role,
-            replayable: false,
-            non_replayable_reason: Some(ToolNonReplayableReason::NotReplayableByDefault),
-            arguments: Vec::new(),
-        }
-    }
-
     pub fn replayable(runtime_role: Option<ToolRuntimeRole>) -> Self {
         Self {
             runtime_role,
@@ -192,8 +248,47 @@ impl ToolContract {
         self.arguments.iter().find(|argument| argument.name == name)
     }
 
-    pub fn from_schema(runtime_role: Option<ToolRuntimeRole>, _schema: &serde_json::Value) -> Self {
-        Self::new(runtime_role)
+    pub fn is_default_unclassified(&self) -> bool {
+        !self.replayable
+            && self.non_replayable_reason == Some(ToolNonReplayableReason::NotReplayableByDefault)
+            && self.arguments.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolProtocolContract {
+    pub tool_name: String,
+    pub runtime_role: Option<ToolRuntimeRole>,
+    pub contract: ToolContract,
+}
+
+impl ToolProtocolContract {
+    pub fn from_tool<T>(tool: &T) -> Self
+    where
+        T: Tool + ?Sized,
+    {
+        Self {
+            tool_name: tool.name().to_string(),
+            runtime_role: tool.runtime_role(),
+            contract: tool.tool_contract(),
+        }
+    }
+
+    pub fn is_classified(&self) -> bool {
+        !self.contract.is_default_unclassified()
+    }
+}
+
+pub trait ToolProtocolImplementation {
+    fn protocol_contract(&self) -> ToolProtocolContract;
+}
+
+impl<T> ToolProtocolImplementation for T
+where
+    T: Tool + ?Sized,
+{
+    fn protocol_contract(&self) -> ToolProtocolContract {
+        ToolProtocolContract::from_tool(self)
     }
 }
 
@@ -212,6 +307,7 @@ pub struct ToolContractInventoryRow {
     pub replayable_args: Vec<String>,
     pub blocked_args: Vec<String>,
     pub sensitive_args: Vec<String>,
+    pub privacy_args: Vec<String>,
 }
 
 impl ToolContractInventoryRow {
@@ -222,10 +318,11 @@ impl ToolContractInventoryRow {
             .unwrap_or("none");
         if self.replayable {
             format!(
-                "{} | role={} | replayable | args={}",
+                "{} | role={} | replayable | args={} | privacy={}",
                 self.tool_name,
                 role,
-                csv_or_dash(&self.replayable_args)
+                csv_or_dash(&self.replayable_args),
+                csv_or_dash(&self.privacy_args)
             )
         } else {
             let reason = self
@@ -234,8 +331,10 @@ impl ToolContractInventoryRow {
                 .map(ToolNonReplayableReason::label)
                 .unwrap_or_else(|| "unspecified".into());
             format!(
-                "{} | role={} | non_replayable | reason={reason}",
-                self.tool_name, role
+                "{} | role={} | non_replayable | reason={reason} | privacy={}",
+                self.tool_name,
+                role,
+                csv_or_dash(&self.privacy_args)
             )
         }
     }
@@ -249,8 +348,10 @@ pub fn tool_contract_inventory_row(
     let mut replayable_args = Vec::new();
     let mut blocked_args = Vec::new();
     let mut sensitive_args = Vec::new();
+    let mut privacy_args = Vec::new();
 
     for argument in &contract.arguments {
+        privacy_args.push(format!("{}:{}", argument.name, argument.privacy.label()));
         if argument.sensitive {
             sensitive_args.push(argument.name.clone());
         } else if argument.replayable {
@@ -262,6 +363,7 @@ pub fn tool_contract_inventory_row(
     replayable_args.sort();
     blocked_args.sort();
     sensitive_args.sort();
+    privacy_args.sort();
 
     ToolContractInventoryRow {
         tool_name: tool_name.to_string(),
@@ -271,6 +373,7 @@ pub fn tool_contract_inventory_row(
         replayable_args,
         blocked_args,
         sensitive_args,
+        privacy_args,
     }
 }
 
@@ -301,6 +404,14 @@ pub fn validate_tool_contract(
                 "contract runtime_role {:?} does not match tool runtime_role {:?}",
                 contract.runtime_role, runtime_role
             ),
+        );
+    }
+
+    if contract.is_default_unclassified() {
+        push_issue(
+            &mut issues,
+            tool_name,
+            "tool contract is using the default unclassified policy",
         );
     }
 
@@ -370,6 +481,16 @@ pub fn validate_tool_contract(
                 ),
             );
         }
+        if argument.replayable && !argument.privacy.replay_safe() {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "replayable argument '{}' must declare public or workspace_local privacy",
+                    argument.name
+                ),
+            );
+        }
         if !argument.replayable && !argument.replayable_values.is_empty() {
             push_issue(
                 &mut issues,
@@ -410,16 +531,13 @@ pub fn validate_tool_contract(
                 "replayable contract uses a runtime role that is not replay-safe",
             );
         }
-        if replayable_arg_count == 0 {
-            push_issue(
-                &mut issues,
-                tool_name,
-                "replayable contract must declare at least one replayable argument",
-            );
-        }
+        let _ = replayable_arg_count;
         for required in required_schema_properties(schema) {
             match contract.argument(&required) {
-                Some(argument) if argument.replayable && !argument.sensitive => {}
+                Some(argument)
+                    if argument.replayable
+                        && !argument.sensitive
+                        && argument.privacy.replay_safe() => {}
                 Some(_) => push_issue(
                     &mut issues,
                     tool_name,
@@ -621,8 +739,35 @@ mod tests {
 
         assert_eq!(
             row.line(),
-            "file_read | role=workspace_discovery | replayable | args=path"
+            "file_read | role=workspace_discovery | replayable | args=path | privacy=path:public"
         );
+    }
+
+    #[test]
+    fn audit_rejects_replayable_private_arguments() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" }
+            },
+            "required": ["query"]
+        });
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::HistoricalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("query").user_private()]);
+
+        let issues = validate_tool_contract(
+            "memory_recall",
+            &schema,
+            Some(ToolRuntimeRole::HistoricalLookup),
+            &contract,
+        );
+
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("public or workspace_local privacy")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("required schema argument 'query'")));
     }
 }
 
@@ -657,9 +802,7 @@ pub trait Tool: Send + Sync {
     ///
     /// JSON schema remains the provider-facing function-call shape; this
     /// contract is the programmatic source for replay and safety policy.
-    fn tool_contract(&self) -> ToolContract {
-        ToolContract::from_schema(self.runtime_role(), &self.parameters_schema())
-    }
+    fn tool_contract(&self) -> ToolContract;
 
     /// Execute the tool with given arguments.
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult>;

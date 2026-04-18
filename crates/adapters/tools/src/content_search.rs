@@ -391,7 +391,7 @@ impl Tool for ContentSearchTool {
     fn tool_contract(&self) -> ToolContract {
         ToolContract::replayable(self.runtime_role()).with_arguments(vec![
             ToolArgumentPolicy::replayable("pattern"),
-            ToolArgumentPolicy::replayable("path"),
+            ToolArgumentPolicy::workspace_local("path"),
             ToolArgumentPolicy::replayable("output_mode").with_values([
                 "content",
                 "files_with_matches",

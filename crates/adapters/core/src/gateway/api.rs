@@ -2646,6 +2646,7 @@ pub async fn handle_api_skills_export(
                 "version": outcome.version,
                 "package_dir": package_dir,
                 "skill_file": skill_file,
+                "diff_summary": outcome.diff_summary.clone(),
                 "output": output,
                 "export": outcome,
             }))

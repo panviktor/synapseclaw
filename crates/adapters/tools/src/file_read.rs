@@ -59,7 +59,7 @@ impl Tool for FileReadTool {
 
     fn tool_contract(&self) -> ToolContract {
         ToolContract::replayable(self.runtime_role()).with_arguments(vec![
-            ToolArgumentPolicy::replayable("path"),
+            ToolArgumentPolicy::workspace_local("path"),
             ToolArgumentPolicy::replayable("offset"),
             ToolArgumentPolicy::replayable("limit"),
         ])
