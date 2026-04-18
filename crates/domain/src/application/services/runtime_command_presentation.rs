@@ -48,7 +48,22 @@ pub fn format_common_command_effect(
     options: &RuntimeCommandPresentationOptions,
 ) -> Option<String> {
     match effect {
-        CommandEffect::ShowProviders | CommandEffect::ShowModel | CommandEffect::ShowDoctor => None,
+        CommandEffect::ShowProviders
+        | CommandEffect::ShowModel
+        | CommandEffect::ShowDoctor
+        | CommandEffect::ShowSkills { .. }
+        | CommandEffect::CreateUserSkill { .. }
+        | CommandEffect::UpdateUserSkill { .. }
+        | CommandEffect::ShowSkillTools
+        | CommandEffect::ShowSkillTraces
+        | CommandEffect::ShowSkillHealth { .. }
+        | CommandEffect::ShowSkillDiff { .. }
+        | CommandEffect::ApplySkillPatch { .. }
+        | CommandEffect::ShowSkillVersions { .. }
+        | CommandEffect::RollbackSkillPatch { .. }
+        | CommandEffect::AutoPromoteSkills { .. }
+        | CommandEffect::ReviewSkills { .. }
+        | CommandEffect::UpdateSkillStatus { .. } => None,
         CommandEffect::CompactSession { compacted } => {
             Some(format_compact_session_response(*compacted))
         }

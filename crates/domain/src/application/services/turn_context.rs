@@ -33,6 +33,7 @@ use crate::domain::turn_admission::{AdmissionRepairHint, CandidateAdmissionReaso
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
+use std::collections::HashSet;
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -1425,17 +1426,13 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
         }
     }
 
+    let mut seen_skill_refs = HashSet::new();
     for skill in &ctx.skills {
-        if skill.content.trim().is_empty() {
+        let skill_ref = skill_prompt_ref(skill);
+        if !seen_skill_refs.insert(normalize_skill_ref(&skill_ref)) {
             continue;
         }
-        section.push_str(&format!(
-            "<skill name=\"{}\" origin=\"{}\" status=\"{}\">\n{}\n</skill>\n",
-            skill.name,
-            skill.origin,
-            skill.status,
-            skill.content.trim(),
-        ));
+        append_compact_skill_catalog_entry(&mut section, skill, &skill_ref);
     }
 
     for entity in &ctx.entities {
@@ -1463,6 +1460,95 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
     } else {
         Some(section)
     }
+}
+
+fn append_compact_skill_catalog_entry(section: &mut String, skill: &Skill, skill_ref: &str) {
+    section.push_str(&format!(
+        "<skill id=\"{}\" name=\"{}\" origin=\"{}\" status=\"{}\" version=\"{}\">\n",
+        escape_xml(skill_ref),
+        escape_xml(skill.name.trim()),
+        skill.origin,
+        skill.status,
+        skill.version
+    ));
+
+    if !skill.description.trim().is_empty() {
+        section.push_str("description: ");
+        section.push_str(&escape_xml(&truncate_chars(skill.description.trim(), 320)));
+        section.push('\n');
+    }
+    if let Some(task_family) = skill
+        .task_family
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        section.push_str("task_family: ");
+        section.push_str(&escape_xml(task_family));
+        section.push('\n');
+    }
+    if !skill.tool_pattern.is_empty() {
+        section.push_str("tool_pattern: ");
+        section.push_str(&escape_xml(&bounded_join(&skill.tool_pattern, 8)));
+        section.push('\n');
+    }
+    if !skill.tags.is_empty() {
+        section.push_str("tags: ");
+        section.push_str(&escape_xml(&bounded_join(&skill.tags, 8)));
+        section.push('\n');
+    }
+    section.push_str("activation: call skill_read with skill=\"");
+    section.push_str(&escape_xml(skill_ref));
+    section.push_str("\" before using full instructions.\n");
+    section.push_str("</skill>\n");
+}
+
+fn skill_prompt_ref(skill: &Skill) -> String {
+    if !skill.id.trim().is_empty() {
+        skill.id.trim().to_string()
+    } else {
+        skill.name.trim().to_string()
+    }
+}
+
+fn normalize_skill_ref(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn bounded_join(values: &[String], max_values: usize) -> String {
+    let mut shown = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .take(max_values)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = values
+        .iter()
+        .filter(|value| !value.trim().is_empty())
+        .count()
+        .saturating_sub(max_values);
+    if remaining > 0 {
+        shown.push_str(&format!(", +{remaining} more"));
+    }
+    shown
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn append_memory_line(section: &mut String, entry: &MemoryEntry, max_chars: usize) {
@@ -2229,6 +2315,9 @@ mod tests {
         let mut skill = make_skill("deploy", "Run cargo build --release");
         skill.origin = crate::domain::memory::SkillOrigin::Manual;
         skill.status = crate::domain::memory::SkillStatus::Active;
+        skill.description = "Release deployment procedure".into();
+        skill.task_family = Some("release_deploy".into());
+        skill.tool_pattern = vec!["git_operations".into(), "shell".into()];
         let ctx = TurnMemoryContext {
             recalled_entries: vec![], // empty recall
             skills: vec![skill],
@@ -2238,9 +2327,44 @@ mod tests {
         assert!(!fmt.enrichment_prefix.contains("[Memory context]"));
         assert!(fmt
             .enrichment_prefix
-            .contains("<skill name=\"deploy\" origin=\"manual\" status=\"active\">"));
-        assert!(fmt.enrichment_prefix.contains("Run cargo build --release"));
+            .contains("<skill id=\"deploy\" name=\"deploy\" origin=\"manual\" status=\"active\""));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("description: Release deployment procedure"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("task_family: release_deploy"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("tool_pattern: git_operations, shell"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("activation: call skill_read with skill=\"deploy\""));
+        assert!(!fmt.enrichment_prefix.contains("Run cargo build --release"));
         assert!(fmt.enrichment_prefix.contains("</skill>"));
+    }
+
+    #[test]
+    fn format_skills_dedupes_compact_catalog_entries() {
+        let mut first = make_skill("matrix-upgrade", "First body");
+        first.id = "skill:matrix-upgrade".into();
+        first.origin = crate::domain::memory::SkillOrigin::Manual;
+        first.description = "Matrix upgrade procedure".into();
+        let mut duplicate = make_skill("matrix-upgrade-copy", "Duplicate body");
+        duplicate.id = "skill:matrix-upgrade".into();
+        duplicate.origin = crate::domain::memory::SkillOrigin::Learned;
+
+        let ctx = TurnMemoryContext {
+            skills: vec![first, duplicate],
+            ..Default::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+
+        assert_eq!(fmt.enrichment_prefix.matches("<skill id=").count(), 1);
+        assert!(fmt.enrichment_prefix.contains("Matrix upgrade procedure"));
+        assert!(!fmt.enrichment_prefix.contains("First body"));
+        assert!(!fmt.enrichment_prefix.contains("Duplicate body"));
     }
 
     // ── format_turn_context: entities independent of recall ──

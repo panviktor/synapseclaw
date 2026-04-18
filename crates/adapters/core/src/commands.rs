@@ -2,6 +2,7 @@
 
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Gateway management subcommands
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -165,6 +166,262 @@ Examples:
 pub enum SkillCommands {
     /// List all installed skills
     List,
+    /// List learned/runtime-generated skills from memory
+    Learned {
+        /// Agent id whose learned skills should be listed
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of learned skills to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+    /// List memory-backed user-authored/manual skills
+    Authored {
+        /// Agent id whose user-authored skills should be listed
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of user-authored skills to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+    /// Create a memory-backed user-authored skill from markdown text or file
+    Create {
+        /// Skill name. Optional when --from-file SKILL.md has frontmatter name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Short skill description. Optional; inferred from body when omitted.
+        #[arg(long)]
+        description: Option<String>,
+        /// Markdown skill body. Use --from-file for larger skills.
+        #[arg(long)]
+        body: Option<String>,
+        /// Read markdown skill body and optional frontmatter from a file.
+        #[arg(long = "from-file")]
+        from_file: Option<PathBuf>,
+        /// Optional task family hint used by retrieval/governance.
+        #[arg(long)]
+        task_family: Option<String>,
+        /// Tool hint; repeat for ordered tool patterns.
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// Tag; repeat for multiple tags.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Initial status: active or candidate.
+        #[arg(long, default_value = "active")]
+        status: String,
+        /// Agent id that should own the skill.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Export a memory-backed skill as an editable SKILL.md package
+    Export {
+        /// Skill id or exact skill name to export
+        skill: String,
+        /// Agent id that owns the memory-backed skill
+        #[arg(long)]
+        agent: Option<String>,
+        /// Optional package directory path. Defaults to workspace/skills/<skill-name>.
+        #[arg(long = "to")]
+        to: Option<PathBuf>,
+        /// Optional package directory name under the workspace skills directory.
+        #[arg(long = "name")]
+        package_name: Option<String>,
+        /// Overwrite an existing SKILL.md in the destination directory.
+        #[arg(long)]
+        overwrite: bool,
+    },
+    /// Update a memory-backed manual/learned skill and record a rollback version
+    Update {
+        /// Skill id or exact skill name to update
+        skill: String,
+        /// New short skill description
+        #[arg(long)]
+        description: Option<String>,
+        /// New markdown skill body. Use --from-file for larger skills.
+        #[arg(long)]
+        body: Option<String>,
+        /// Read replacement markdown body and optional frontmatter from a file.
+        #[arg(long = "from-file")]
+        from_file: Option<PathBuf>,
+        /// Replacement task family hint.
+        #[arg(long)]
+        task_family: Option<String>,
+        /// Replacement tool hint; repeat for ordered tool patterns.
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// Replacement tag; repeat for multiple tags.
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Replacement status: active, candidate, or deprecated.
+        #[arg(long)]
+        status: Option<String>,
+        /// Agent id that owns the skill.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Create a safe editable SKILL.md package skeleton
+    Scaffold {
+        /// Package directory name or skill name
+        name: String,
+        /// Short skill description
+        #[arg(long)]
+        description: Option<String>,
+        /// Optional task family hint to include in frontmatter
+        #[arg(long)]
+        task_family: Option<String>,
+        /// Tool hint; repeat for multiple tools
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// Tag; repeat for multiple tags
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Overwrite an existing empty/new scaffold SKILL.md
+        #[arg(long)]
+        overwrite: bool,
+    },
+    /// Review learned skills and print deterministic promotion/deprecation decisions
+    Review {
+        /// Agent id whose learned skills should be reviewed
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of learned skills to review
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Apply deterministic review decisions to memory
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Promote a learned skill candidate to active
+    Promote {
+        /// Skill id or exact skill name
+        skill: String,
+        /// Agent id that owns the learned skill
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Move a learned skill back to candidate status
+    Demote {
+        /// Skill id or exact skill name
+        skill: String,
+        /// Agent id that owns the learned skill
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Reject a learned skill by marking it deprecated
+    Reject {
+        /// Skill id or exact skill name
+        skill: String,
+        /// Agent id that owns the learned skill
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Show runtime governance status for installed skills
+    Status,
+    /// Show installed skills that are blocked by runtime governance
+    Blocked,
+    /// Show installed and learned skill candidates awaiting review
+    Candidates {
+        /// Agent id whose learned candidates should be listed
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of learned candidates to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+    /// Run replay/eval checks for a generated skill patch candidate
+    Test {
+        /// Skill patch candidate id or memory key
+        candidate: String,
+        /// Agent id whose patch candidate should be tested
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of patch candidates to search
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+    /// Show the runtime tool replay contract inventory used by skill replay/eval
+    Tools,
+    /// Show compact skill use traces recorded after live/replay skill execution
+    Traces {
+        /// Agent id whose skill use traces should be listed
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of traces to show
+        #[arg(long, default_value = "25")]
+        limit: usize,
+    },
+    /// Show read-only skill catalog health and cleanup recommendations
+    Health {
+        /// Agent id whose skill catalog should be inspected
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of skills to inspect
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Maximum number of recent skill use traces to fold into the report
+        #[arg(long = "trace-limit", default_value = "100")]
+        trace_limit: usize,
+        /// Apply eligible learned-skill cleanup lifecycle changes
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Show a compact diff/review view for a generated skill patch candidate
+    Diff {
+        /// Skill patch candidate id or memory key
+        candidate: String,
+        /// Agent id whose patch candidate should be inspected
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of patch candidates to search
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+    /// Apply a generated skill patch candidate after replay/eval gates pass
+    Apply {
+        /// Skill patch candidate id or memory key
+        candidate: String,
+        /// Agent id whose patch candidate should be applied
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of patch candidates to search
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+    /// Show skill version records from patch applies, manual updates, and rollbacks
+    Versions {
+        /// Optional skill id or exact skill name to filter version records
+        skill: Option<String>,
+        /// Agent id whose skill versions should be inspected
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of change and rollback records to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
+    /// Roll back a skill change using its change record or rollback snapshot id
+    Rollback {
+        /// Apply record id, candidate id, rollback snapshot id, or memory key
+        rollback: String,
+        /// Agent id whose skill should be rolled back
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of change records to search
+        #[arg(long, default_value = "100")]
+        limit: usize,
+    },
+    /// Evaluate or apply generated patch candidates through auto-promotion policy
+    Autopromote {
+        /// Agent id whose patch candidates should be inspected
+        #[arg(long)]
+        agent: Option<String>,
+        /// Maximum number of patch candidates to inspect
+        #[arg(long, default_value = "100")]
+        limit: usize,
+        /// Apply eligible patches; requires [skills.auto_promotion].enabled=true
+        #[arg(long)]
+        apply: bool,
+    },
     /// Audit a skill source directory or installed skill name
     Audit {
         /// Skill path or installed skill name

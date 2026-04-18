@@ -178,6 +178,7 @@ pub fn build_skill_update(
         new_task_family: Some(Some(recipe.task_family.clone())),
         new_tool_pattern: Some(recipe.tool_pattern.clone()),
         new_lineage_task_families: Some(merged_skill_lineage_task_families(existing, recipe)),
+        new_tags: None,
         new_status: Some(assessment.target_status.clone()),
     }
 }

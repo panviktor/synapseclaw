@@ -27,13 +27,25 @@ use crate::application::services::runtime_decision_trace::{
 };
 use crate::application::services::runtime_trace_janitor::RUNTIME_TRACE_JANITOR_TTL_SECS;
 use crate::application::services::skill_feedback_service;
+use crate::application::services::skill_governance_service::{
+    SkillPatchCandidate, SkillUseOutcome,
+};
+use crate::application::services::skill_patch_candidate_service::{
+    self, build_skill_patch_candidates_from_repairs, SkillPatchCandidatePolicy,
+};
 use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
+use crate::application::services::skill_trace_service::{
+    build_skill_use_trace_from_live_turn, parse_skill_activation_trace_entry,
+    skill_activation_trace_memory_category, skill_activation_trace_memory_key_prefix,
+    skill_use_trace_memory_category, skill_use_trace_memory_key, skill_use_trace_to_memory_entry,
+};
 use crate::application::services::user_profile_service;
-use crate::domain::memory::MemoryCategory;
+use crate::domain::memory::{MemoryCategory, Skill, SkillOrigin, SkillStatus, SkillUpdate};
 use crate::domain::memory_mutation::{
     MutationCandidate, MutationDecision, MutationSource, MutationThresholds, MutationWriteClass,
 };
 use crate::domain::tool_fact::TypedToolFact;
+use crate::domain::tool_repair::ToolRepairTrace;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::route_selection::RouteSelectionPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
@@ -50,6 +62,9 @@ pub struct PostTurnInput {
     pub assistant_response: String,
     pub tools_used: Vec<String>,
     pub tool_facts: Vec<TypedToolFact>,
+    /// Bounded current/recent repair traces from the live route. Used to propose
+    /// reviewable skill patches without editing active skills directly.
+    pub tool_repairs: Vec<ToolRepairTrace>,
     pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     pub user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     pub user_profile_key: Option<String>,
@@ -97,6 +112,14 @@ pub struct PostTurnReport {
     pub skills_upserted: usize,
     /// Count of learned skills cooled down by accepted failure evidence.
     pub skills_penalized: usize,
+    /// Count of compact live skill use traces written from typed turn evidence.
+    pub skill_use_traces_recorded: usize,
+    /// Count of learned skill success/failure counters updated from live traces.
+    pub skill_use_feedback_updates: usize,
+    /// Reviewable skill patch candidates generated from repeated repair traces.
+    pub skill_patch_candidates: Vec<SkillPatchCandidate>,
+    /// Count of generated skill patch candidates queued for operator review.
+    pub skill_patch_candidates_queued: usize,
     /// Whether a dynamic user profile patch was applied.
     pub user_profile_updated: bool,
     /// Redacted runtime memory decisions for the matching turn trace.
@@ -192,6 +215,10 @@ pub async fn execute_post_turn_learning(
         skill_promotion_assessments: Vec::new(),
         skills_upserted: 0,
         skills_penalized: 0,
+        skill_use_traces_recorded: 0,
+        skill_use_feedback_updates: 0,
+        skill_patch_candidates: Vec::new(),
+        skill_patch_candidates_queued: 0,
         user_profile_updated: false,
         runtime_memory_decisions: Vec::new(),
         runtime_auxiliary_decisions: Vec::new(),
@@ -331,6 +358,7 @@ pub async fn execute_post_turn_learning(
                                 new_task_family: None,
                                 new_tool_pattern: None,
                                 new_lineage_task_families: None,
+                                new_tags: None,
                                 new_status: None,
                             },
                             &input.agent_id,
@@ -606,6 +634,39 @@ pub async fn execute_post_turn_learning(
         }
     }
 
+    // ── 1e2. Repair trace -> skill patch candidate queue ──
+    if !signal.is_explicit()
+        && input.auto_save_enabled
+        && allow_background_learning
+        && !input.tool_repairs.is_empty()
+    {
+        let patch_candidates = build_repair_patch_candidates_for_live_skills(
+            mem,
+            &input.agent_id,
+            &input.tool_repairs,
+            &SkillPatchCandidatePolicy::default(),
+        )
+        .await;
+        let queued = queue_skill_patch_candidates(mem, &patch_candidates, &input.agent_id).await;
+        report.skill_patch_candidates_queued += queued.len();
+        report.skill_patch_candidates.extend(queued);
+    }
+
+    // ── 1e3. Active skill use trace from typed live-turn evidence ──
+    if !signal.is_explicit() && input.auto_save_enabled {
+        let live_skill_use_report = record_live_skill_use_traces(
+            mem,
+            &input.agent_id,
+            &input.tools_used,
+            &input.tool_facts,
+            &input.tool_repairs,
+            chrono::Utc::now(),
+        )
+        .await;
+        report.skill_use_traces_recorded = live_skill_use_report.traces_recorded;
+        report.skill_use_feedback_updates = live_skill_use_report.skill_stats_updated;
+    }
+
     // ── 1f. Cheap structured profile path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let (Some(store), Some(user_key)) = (
@@ -735,12 +796,343 @@ pub async fn execute_post_turn_learning(
             "skill_promotion_assessments": report.skill_promotion_assessments,
             "skills_upserted": report.skills_upserted,
             "skills_penalized": report.skills_penalized,
+            "skill_use_traces_recorded": report.skill_use_traces_recorded,
+            "skill_use_feedback_updates": report.skill_use_feedback_updates,
+            "skill_patch_candidate_count": report.skill_patch_candidates.len(),
+            "skill_patch_candidates_queued": report.skill_patch_candidates_queued,
+            "skill_patch_candidates": report.skill_patch_candidates,
             "user_profile_updated": report.user_profile_updated,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
 
     report
+}
+
+async fn build_repair_patch_candidates_for_live_skills(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    tool_repairs: &[ToolRepairTrace],
+    policy: &SkillPatchCandidatePolicy,
+) -> Vec<SkillPatchCandidate> {
+    let skills = match mem.list_skills(&agent_id.to_string(), 128).await {
+        Ok(skills) => skills,
+        Err(e) => {
+            tracing::warn!(
+                target: "post_turn",
+                error = %e,
+                "Skill lookup failed during repair patch candidate generation"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for skill in skills
+        .iter()
+        .filter(|skill| skill_allows_patch_candidate(skill))
+    {
+        let relevant_repairs = relevant_repairs_for_skill(skill, tool_repairs);
+        if relevant_repairs.is_empty() {
+            continue;
+        }
+        for candidate in build_skill_patch_candidates_from_repairs(skill, &relevant_repairs, policy)
+        {
+            if seen.insert(candidate.id.clone()) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates
+}
+
+async fn queue_skill_patch_candidates(
+    mem: &dyn UnifiedMemoryPort,
+    candidates: &[SkillPatchCandidate],
+    agent_id: &str,
+) -> Vec<SkillPatchCandidate> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let category = skill_patch_candidate_service::skill_patch_candidate_memory_category();
+    let existing_keys = mem
+        .list(Some(&category), None, 512)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect::<HashSet<_>>();
+
+    let mut queued = Vec::new();
+    for candidate in candidates {
+        let key = skill_patch_candidate_service::skill_patch_candidate_memory_key(candidate);
+        if existing_keys.contains(&key) {
+            continue;
+        }
+        let entry = match skill_patch_candidate_service::skill_patch_candidate_to_memory_entry(
+            candidate,
+            chrono::Utc::now(),
+        ) {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(
+                    target: "post_turn",
+                    error = %e,
+                    candidate = %candidate.id,
+                    "Skill patch candidate serialization failed"
+                );
+                continue;
+            }
+        };
+        match mem.store_episode(entry).await {
+            Ok(_) => queued.push(candidate.clone()),
+            Err(e) => tracing::warn!(
+                target: "post_turn",
+                error = %e,
+                agent_id = %agent_id,
+                candidate = %candidate.id,
+                "Skill patch candidate queue write failed"
+            ),
+        }
+    }
+    queued
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LiveSkillUseTraceReport {
+    traces_recorded: usize,
+    skill_stats_updated: usize,
+}
+
+async fn record_live_skill_use_traces(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    tools_used: &[String],
+    tool_facts: &[TypedToolFact],
+    tool_repairs: &[ToolRepairTrace],
+    observed_at: chrono::DateTime<chrono::Utc>,
+) -> LiveSkillUseTraceReport {
+    if tools_used.is_empty() && tool_repairs.is_empty() {
+        return LiveSkillUseTraceReport::default();
+    }
+
+    let activation_category = skill_activation_trace_memory_category();
+    let activation_prefix = skill_activation_trace_memory_key_prefix(agent_id);
+    let activation_entries = match mem.list(Some(&activation_category), None, 32).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!(
+                target: "post_turn",
+                error = %e,
+                agent_id = %agent_id,
+                "Skill activation trace lookup failed"
+            );
+            return LiveSkillUseTraceReport::default();
+        }
+    };
+    let activation_traces = activation_entries
+        .iter()
+        .filter(|entry| entry.key.starts_with(&activation_prefix))
+        .filter_map(parse_skill_activation_trace_entry)
+        .collect::<Vec<_>>();
+    if activation_traces.is_empty() {
+        return LiveSkillUseTraceReport::default();
+    }
+
+    let skills = match mem.list_skills(&agent_id.to_string(), 128).await {
+        Ok(skills) => skills,
+        Err(e) => {
+            tracing::warn!(
+                target: "post_turn",
+                error = %e,
+                agent_id = %agent_id,
+                "Skill lookup failed during live use trace recording"
+            );
+            return LiveSkillUseTraceReport::default();
+        }
+    };
+    if skills.is_empty() {
+        return LiveSkillUseTraceReport::default();
+    }
+
+    let use_category = skill_use_trace_memory_category();
+    let mut existing_keys = mem
+        .list(Some(&use_category), None, 256)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect::<HashSet<_>>();
+
+    let observed_at_unix = observed_at.timestamp();
+    let mut report = LiveSkillUseTraceReport::default();
+    let mut seen_skill_ids = HashSet::new();
+
+    for activation in activation_traces {
+        for activation_id in &activation.loaded_skill_ids {
+            let Some(skill) = find_memory_skill_by_activation_id(&skills, activation_id) else {
+                continue;
+            };
+            if !seen_skill_ids.insert(skill.id.clone()) {
+                continue;
+            }
+            if !skill_was_exercised_this_turn(skill, tools_used, tool_repairs) {
+                continue;
+            }
+
+            let trace = build_skill_use_trace_from_live_turn(
+                skill,
+                &activation,
+                tools_used,
+                tool_facts,
+                tool_repairs,
+                observed_at_unix,
+            );
+            let key = skill_use_trace_memory_key(agent_id, &trace);
+            if existing_keys.contains(&key) {
+                continue;
+            }
+            let entry = match skill_use_trace_to_memory_entry(agent_id, &trace, observed_at, None) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "post_turn",
+                        error = %e,
+                        skill = %skill.name,
+                        "Skill use trace serialization failed"
+                    );
+                    continue;
+                }
+            };
+            match mem.store_episode(entry).await {
+                Ok(_) => {
+                    existing_keys.insert(key);
+                    report.traces_recorded += 1;
+                    if apply_live_skill_use_feedback(mem, agent_id, skill, trace.outcome).await {
+                        report.skill_stats_updated += 1;
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    target: "post_turn",
+                    error = %e,
+                    agent_id = %agent_id,
+                    skill = %skill.name,
+                    "Skill use trace write failed"
+                ),
+            }
+        }
+    }
+
+    report
+}
+
+async fn apply_live_skill_use_feedback(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    skill: &Skill,
+    outcome: SkillUseOutcome,
+) -> bool {
+    if skill.origin != SkillOrigin::Learned || skill.status != SkillStatus::Active {
+        return false;
+    }
+    let (increment_success, increment_fail) = match outcome {
+        SkillUseOutcome::Succeeded | SkillUseOutcome::Repaired => (true, false),
+        SkillUseOutcome::Failed => (false, true),
+    };
+    match mem
+        .update_skill(
+            &skill.id,
+            SkillUpdate {
+                increment_success,
+                increment_fail,
+                new_description: None,
+                new_content: None,
+                new_task_family: None,
+                new_tool_pattern: None,
+                new_lineage_task_families: None,
+                new_tags: None,
+                new_status: None,
+            },
+            &agent_id.to_string(),
+        )
+        .await
+    {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                target: "post_turn",
+                error = %e,
+                agent_id = %agent_id,
+                skill = %skill.name,
+                outcome = ?outcome,
+                "Skill use feedback update failed"
+            );
+            false
+        }
+    }
+}
+
+fn skill_allows_patch_candidate(skill: &Skill) -> bool {
+    skill.origin == SkillOrigin::Learned && skill.status != SkillStatus::Deprecated
+}
+
+fn relevant_repairs_for_skill(
+    skill: &Skill,
+    tool_repairs: &[ToolRepairTrace],
+) -> Vec<ToolRepairTrace> {
+    if skill.tool_pattern.is_empty() {
+        return Vec::new();
+    }
+    let skill_tools = skill
+        .tool_pattern
+        .iter()
+        .map(|tool| tool.trim().to_lowercase())
+        .collect::<HashSet<_>>();
+    tool_repairs
+        .iter()
+        .filter(|trace| skill_tools.contains(&trace.tool_name.trim().to_lowercase()))
+        .cloned()
+        .collect()
+}
+
+fn find_memory_skill_by_activation_id<'a>(
+    skills: &'a [Skill],
+    activation_id: &str,
+) -> Option<&'a Skill> {
+    let normalized_activation_id = normalize_tool_match_value(activation_id);
+    skills.iter().find(|skill| {
+        normalize_tool_match_value(&skill.id) == normalized_activation_id
+            || (skill.id.trim().is_empty()
+                && normalize_tool_match_value(&skill.name) == normalized_activation_id)
+    })
+}
+
+fn skill_was_exercised_this_turn(
+    skill: &Skill,
+    tools_used: &[String],
+    tool_repairs: &[ToolRepairTrace],
+) -> bool {
+    if skill.tool_pattern.is_empty() {
+        return false;
+    }
+    let skill_tools = skill
+        .tool_pattern
+        .iter()
+        .map(|tool| normalize_tool_match_value(tool))
+        .filter(|tool| !tool.is_empty())
+        .collect::<HashSet<_>>();
+    tools_used
+        .iter()
+        .any(|tool| skill_tools.contains(&normalize_tool_match_value(tool)))
+        || tool_repairs
+            .iter()
+            .any(|trace| skill_tools.contains(&normalize_tool_match_value(&trace.tool_name)))
+}
+
+fn normalize_tool_match_value(value: &str) -> String {
+    value.trim().to_lowercase()
 }
 
 async fn apply_decision_with_runtime_trace(
@@ -872,6 +1264,24 @@ fn build_runtime_auxiliary_decisions(
             None,
         ));
     }
+    if report.skill_use_traces_recorded > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "skill_use_trace",
+            "recorded",
+            report.skill_use_traces_recorded,
+            None,
+        ));
+    }
+    if report.skill_use_feedback_updates > 0 {
+        decisions.push(runtime_auxiliary_decision(
+            observed_at_unix,
+            "skill_use_feedback",
+            "updated",
+            report.skill_use_feedback_updates,
+            None,
+        ));
+    }
     if report.user_profile_updated {
         decisions.push(runtime_auxiliary_decision(
             observed_at_unix,
@@ -959,8 +1369,8 @@ mod tests {
     use crate::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingDistanceMetric, EmbeddingProfile,
         Entity, HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId,
-        MemoryQuery, Reflection, SearchResult, SessionId, Skill, SkillUpdate, TemporalFact,
-        Visibility,
+        MemoryQuery, Reflection, SearchResult, SessionId, Skill, SkillOrigin, SkillStatus,
+        SkillUpdate, TemporalFact, Visibility,
     };
     use crate::domain::tool_fact::{
         OutcomeStatus, ProfileOperation, ResourceFact, ResourceKind, ResourceMetadata,
@@ -1016,8 +1426,14 @@ mod tests {
 
     #[async_trait]
     impl EpisodicMemoryPort for StubMemory {
-        async fn store_episode(&self, _: MemoryEntry) -> Result<MemoryId, MemoryError> {
-            Err(MemoryError::Storage("not used in test".into()))
+        async fn store_episode(&self, entry: MemoryEntry) -> Result<MemoryId, MemoryError> {
+            let id = if entry.id.trim().is_empty() {
+                entry.key.clone()
+            } else {
+                entry.id.clone()
+            };
+            self.entries.write().push(entry);
+            Ok(id)
         }
 
         async fn get_recent(&self, _: &AgentId, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
@@ -1270,6 +1686,276 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repeated_live_repair_traces_queue_skill_patch_candidate() {
+        let memory = StubMemory::default();
+        memory
+            .store_skill(Skill {
+                id: "skill-matrix-upgrade".into(),
+                name: "Matrix Upgrade".into(),
+                description: "Upgrade self-hosted Matrix safely".into(),
+                content: "# Matrix Upgrade\n\nCheck the current version first.".into(),
+                task_family: Some("matrix-upgrade".into()),
+                tool_pattern: vec!["shell".into()],
+                lineage_task_families: Vec::new(),
+                tags: vec!["ops".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 2,
+                origin: SkillOrigin::Learned,
+                status: SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let repair = |observed_at_unix| crate::domain::tool_repair::ToolRepairTrace {
+            observed_at_unix,
+            tool_name: "shell".into(),
+            failure_kind: crate::domain::tool_repair::ToolFailureKind::MissingResource,
+            suggested_action: crate::domain::tool_repair::ToolRepairAction::AdjustArgumentsOrTarget,
+            repair_outcome: crate::domain::tool_repair::ToolRepairOutcome::Resolved,
+            detail: Some("matrix repository path had moved before upgrade".into()),
+            ..crate::domain::tool_repair::ToolRepairTrace::default()
+        };
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message:
+                    "Please remember the repeated Matrix upgrade repair path after this run".into(),
+                assistant_response:
+                    "The Matrix upgrade completed after adjusting the repository path.".into(),
+                tools_used: vec!["shell".into()],
+                tool_facts: Vec::new(),
+                tool_repairs: vec![repair(100), repair(200)],
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+                runtime_trace_sink: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.skill_patch_candidates_queued, 1);
+        assert_eq!(report.skill_patch_candidates.len(), 1);
+        let category = skill_patch_candidate_service::skill_patch_candidate_memory_category();
+        let entries = memory.list(Some(&category), None, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let queued = skill_patch_candidate_service::parse_skill_patch_candidate_entry(&entries[0])
+            .expect("queued patch candidate");
+        assert_eq!(queued.status, SkillStatus::Candidate);
+        assert_eq!(queued.target_skill_id, "skill-matrix-upgrade");
+    }
+
+    #[tokio::test]
+    async fn active_skill_use_trace_records_live_typed_outcome() {
+        let memory = StubMemory::default();
+        memory
+            .store_skill(Skill {
+                id: "skill-matrix-upgrade".into(),
+                name: "Matrix Upgrade".into(),
+                description: "Upgrade self-hosted Matrix safely".into(),
+                content: "# Matrix Upgrade\n\nCheck the current version first.".into(),
+                task_family: Some("matrix-upgrade".into()),
+                tool_pattern: vec!["shell".into()],
+                lineage_task_families: Vec::new(),
+                tags: vec!["ops".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 2,
+                origin: SkillOrigin::Learned,
+                status: SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let activation =
+            crate::application::services::skill_governance_service::SkillActivationTrace {
+                selected_skill_ids: vec!["skill-matrix-upgrade".into()],
+                loaded_skill_ids: vec!["skill-matrix-upgrade".into()],
+                blocked_skill_ids: Vec::new(),
+                blocked_reasons: Vec::new(),
+                budget_catalog_entries: 1,
+                budget_preloaded_skills: 0,
+                route_model: Some("deepseek".into()),
+                outcome: Some("loaded".into()),
+            };
+        let activation_entry =
+            crate::application::services::skill_trace_service::skill_activation_trace_to_memory_entry(
+                "agent",
+                &activation,
+                chrono::Utc::now(),
+                None,
+            )
+            .unwrap();
+        memory.store_episode(activation_entry).await.unwrap();
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message:
+                    "Check the Matrix deployment version and report whether it needs an upgrade"
+                        .into(),
+                assistant_response:
+                    "The version check completed after adjusting the repository path.".into(),
+                tools_used: vec!["shell".into()],
+                tool_facts: vec![TypedToolFact::outcome(
+                    "shell",
+                    OutcomeStatus::Succeeded,
+                    Some(40),
+                )],
+                tool_repairs: vec![crate::domain::tool_repair::ToolRepairTrace {
+                    observed_at_unix: 200,
+                    tool_name: "shell".into(),
+                    failure_kind: crate::domain::tool_repair::ToolFailureKind::MissingResource,
+                    suggested_action:
+                        crate::domain::tool_repair::ToolRepairAction::AdjustArgumentsOrTarget,
+                    repair_outcome: crate::domain::tool_repair::ToolRepairOutcome::Resolved,
+                    ..crate::domain::tool_repair::ToolRepairTrace::default()
+                }],
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+                runtime_trace_sink: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.skill_use_traces_recorded, 1);
+        assert_eq!(report.skill_use_feedback_updates, 1);
+        assert!(report.runtime_auxiliary_decisions.iter().any(|decision| {
+            decision.kind == "skill_use_trace"
+                && decision.action == "recorded"
+                && decision.count == 1
+        }));
+        assert!(report.runtime_auxiliary_decisions.iter().any(|decision| {
+            decision.kind == "skill_use_feedback"
+                && decision.action == "updated"
+                && decision.count == 1
+        }));
+        assert_eq!(memory.skills.read()[0].success_count, 4);
+        assert_eq!(memory.skills.read()[0].fail_count, 0);
+        let category =
+            crate::application::services::skill_trace_service::skill_use_trace_memory_category();
+        let entries = memory.list(Some(&category), None, 10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        let parsed =
+            crate::application::services::skill_trace_service::parse_skill_use_trace_entry(
+                &entries[0],
+            )
+            .expect("skill use trace");
+        assert_eq!(parsed.skill_id, "skill-matrix-upgrade");
+        assert_eq!(
+            parsed.outcome,
+            crate::application::services::skill_governance_service::SkillUseOutcome::Repaired
+        );
+        assert_eq!(parsed.route_model.as_deref(), Some("deepseek"));
+        assert!(!entries[0].content.contains("# Matrix Upgrade"));
+    }
+
+    #[tokio::test]
+    async fn active_skill_use_trace_failure_updates_learned_skill_fail_count() {
+        let memory = StubMemory::default();
+        memory
+            .store_skill(Skill {
+                id: "skill-matrix-upgrade".into(),
+                name: "Matrix Upgrade".into(),
+                description: "Upgrade self-hosted Matrix safely".into(),
+                content: "# Matrix Upgrade\n\nCheck the current version first.".into(),
+                task_family: Some("matrix-upgrade".into()),
+                tool_pattern: vec!["shell".into()],
+                lineage_task_families: Vec::new(),
+                tags: vec!["ops".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 2,
+                origin: SkillOrigin::Learned,
+                status: SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+
+        let activation =
+            crate::application::services::skill_governance_service::SkillActivationTrace {
+                selected_skill_ids: vec!["skill-matrix-upgrade".into()],
+                loaded_skill_ids: vec!["skill-matrix-upgrade".into()],
+                blocked_skill_ids: Vec::new(),
+                blocked_reasons: Vec::new(),
+                budget_catalog_entries: 1,
+                budget_preloaded_skills: 0,
+                route_model: None,
+                outcome: Some("loaded".into()),
+            };
+        let activation_entry =
+            crate::application::services::skill_trace_service::skill_activation_trace_to_memory_entry(
+                "agent",
+                &activation,
+                chrono::Utc::now(),
+                None,
+            )
+            .unwrap();
+        memory.store_episode(activation_entry).await.unwrap();
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Check the Matrix deployment version again".into(),
+                assistant_response: "The typed shell outcome reported a runtime failure.".into(),
+                tools_used: vec!["shell".into()],
+                tool_facts: vec![TypedToolFact::outcome(
+                    "shell",
+                    OutcomeStatus::RuntimeError,
+                    Some(40),
+                )],
+                tool_repairs: Vec::new(),
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+                runtime_trace_sink: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.skill_use_traces_recorded, 1);
+        assert_eq!(report.skill_use_feedback_updates, 1);
+        assert_eq!(memory.skills.read()[0].success_count, 3);
+        assert_eq!(memory.skills.read()[0].fail_count, 1);
+        let category =
+            crate::application::services::skill_trace_service::skill_use_trace_memory_category();
+        let entries = memory.list(Some(&category), None, 10).await.unwrap();
+        let parsed =
+            crate::application::services::skill_trace_service::parse_skill_use_trace_entry(
+                &entries[0],
+            )
+            .expect("skill use trace");
+        assert_eq!(
+            parsed.outcome,
+            crate::application::services::skill_governance_service::SkillUseOutcome::Failed
+        );
+        assert!(parsed
+            .verification
+            .as_deref()
+            .is_some_and(|value| value.contains("failure_outcomes=1")));
+    }
+
+    #[tokio::test]
     async fn auto_updates_structured_user_profile_from_learning_candidates() {
         let memory = StubMemory::default();
         let store = Arc::new(InMemoryUserProfileStore::new());
@@ -1289,6 +1975,7 @@ mod tests {
                         value: Some("Borealis".into()),
                     }),
                 }],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: Some(store.clone()),
                 user_profile_key: Some("web:test".into()),
@@ -1335,6 +2022,7 @@ mod tests {
                         value: Some("Borealis".into()),
                     }),
                 }],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: Some(store),
                 user_profile_key: Some("web:test".into()),
@@ -1378,6 +2066,7 @@ mod tests {
                         }),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: Some(store.clone()),
                 user_profile_key: Some("web:test".into()),
@@ -1412,6 +2101,7 @@ mod tests {
                     OutcomeStatus::RuntimeError,
                     Some(220),
                 )],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1461,6 +2151,7 @@ mod tests {
                         Vec::new(),
                     ),
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: Some(run_recipe_store),
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1494,6 +2185,7 @@ mod tests {
                         .into(),
                 tools_used: vec![],
                 tool_facts: vec![],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1542,6 +2234,7 @@ mod tests {
                         ),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: Some(run_recipe_store),
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1598,6 +2291,7 @@ mod tests {
                         ),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: None,
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1657,6 +2351,7 @@ mod tests {
                         ),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: Some(run_recipe_store),
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1829,6 +2524,7 @@ mod tests {
                         ),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: Some(run_recipe_store.clone()),
                 user_profile_store: None,
                 user_profile_key: None,
@@ -1901,6 +2597,7 @@ mod tests {
                         ),
                     },
                 ],
+                tool_repairs: Vec::new(),
                 run_recipe_store: Some(run_recipe_store),
                 user_profile_store: None,
                 user_profile_key: None,

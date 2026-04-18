@@ -102,6 +102,7 @@ DEFINE FIELD IF NOT EXISTS created_by    ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at    ON skill TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at    ON skill TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS embedding     ON skill TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS visibility    ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS shared_with   ON skill TYPE option<array<string>>;
 

@@ -10,7 +10,9 @@ use synapse_domain::application::services::retrieval_service;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
-use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolResult,
+};
 
 pub struct PrecedentSearchTool {
     memory: Arc<dyn UnifiedMemoryPort>,
@@ -154,6 +156,13 @@ impl Tool for PrecedentSearchTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("query"),
+            ToolArgumentPolicy::replayable("limit"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -399,6 +408,27 @@ mod tests {
         assert!(result.success);
         assert!(result.output.contains("deploy"));
         assert!(result.output.contains("Tool pattern: shell, git"));
+    }
+
+    #[test]
+    fn precedent_schema_is_replayable_recipe_lookup() {
+        let store = InMemoryRunRecipeStore::new();
+        let tool = PrecedentSearchTool::new(Arc::new(TestMemory), Arc::new(store), "agent".into());
+        let schema = tool.parameters_schema();
+
+        assert!(schema["properties"]["query"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert!(contract.argument("query").unwrap().replayable);
+        assert!(contract.argument("limit").unwrap().replayable);
+        assert!(schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("query")));
+        assert_eq!(
+            tool.runtime_role(),
+            Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,15 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use synapse_domain::application::services::{
+    skill_governance_service::SkillPatchCandidate,
+    skill_patch_candidate_service,
+    skill_trace_service::{
+        parse_skill_use_trace_entry, skill_use_trace_memory_category,
+        skill_use_trace_memory_key_prefix,
+    },
+};
+use synapse_domain::domain::memory::{Skill, SkillOrigin, SkillStatus};
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -61,6 +70,106 @@ pub struct MemoryProjectionQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillListQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillHealthQuery {
+    pub limit: Option<usize>,
+    pub trace_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillHealthApplyBody {
+    pub limit: Option<usize>,
+    pub trace_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillVersionsQuery {
+    pub skill: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillReviewApplyBody {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillAutoPromotionApplyBody {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillCreateBody {
+    pub name: String,
+    pub description: Option<String>,
+    pub body: String,
+    pub task_family: Option<String>,
+    #[serde(default)]
+    pub tool_pattern: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillExportBody {
+    pub skill: String,
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillUpdateBody {
+    pub skill: String,
+    pub description: Option<String>,
+    pub body: Option<String>,
+    pub task_family: Option<String>,
+    pub tool_pattern: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillRefBody {
+    pub skill: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillStatusBody {
+    pub skill: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateTestBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateDiffBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateApplyBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchRollbackBody {
+    pub rollback: String,
+    pub limit: Option<usize>,
+}
+
 fn skill_origin_priority(origin: &str) -> u8 {
     match origin {
         "manual" => 3,
@@ -71,7 +180,7 @@ fn skill_origin_priority(origin: &str) -> u8 {
 }
 
 fn normalize_skill_name(name: &str) -> String {
-    name.trim().to_ascii_lowercase()
+    name.trim().to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2105,6 +2214,1066 @@ fn resolution_source_name(
             "long_term_memory"
         }
     }
+}
+
+fn parse_skill_status_strict(raw: &str) -> Option<SkillStatus> {
+    match raw.trim().to_lowercase().as_str() {
+        "active" => Some(SkillStatus::Active),
+        "candidate" => Some(SkillStatus::Candidate),
+        "deprecated" | "rejected" | "reject" => Some(SkillStatus::Deprecated),
+        _ => None,
+    }
+}
+
+fn learned_skill_json(skill: &Skill) -> serde_json::Value {
+    serde_json::json!({
+        "id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "task_family": skill.task_family,
+        "lineage_task_families": skill.lineage_task_families,
+        "tool_pattern": skill.tool_pattern,
+        "tags": skill.tags,
+        "success_count": skill.success_count,
+        "fail_count": skill.fail_count,
+        "version": skill.version,
+        "origin": skill.origin.to_string(),
+        "status": skill.status.to_string(),
+        "created_by": skill.created_by,
+        "updated_at": skill.updated_at.to_rfc3339(),
+        "projection": synapse_domain::application::services::memory_projection_service::format_skill_projection(skill),
+    })
+}
+
+fn skill_patch_candidate_json(candidate: &SkillPatchCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "id": candidate.id,
+        "target_skill_id": candidate.target_skill_id,
+        "target_version": candidate.target_version,
+        "diff_summary": candidate.diff_summary,
+        "proposed_body_chars": candidate.proposed_body.chars().count(),
+        "procedure_claims": candidate.procedure_claims,
+        "replay_criteria": candidate.replay_criteria,
+        "eval_results": candidate.eval_results,
+        "status": candidate.status.to_string(),
+    })
+}
+
+fn skill_use_outcome_json_name(
+    outcome: &synapse_domain::application::services::skill_governance_service::SkillUseOutcome,
+) -> &'static str {
+    match outcome {
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Succeeded => {
+            "succeeded"
+        }
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Failed => {
+            "failed"
+        }
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Repaired => {
+            "repaired"
+        }
+    }
+}
+
+fn skill_use_trace_json(
+    trace: &synapse_domain::application::services::skill_governance_service::SkillUseTrace,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": trace.id,
+        "skill_id": trace.skill_id,
+        "task_family": trace.task_family,
+        "route_model": trace.route_model,
+        "tool_pattern": trace.tool_pattern,
+        "outcome": skill_use_outcome_json_name(&trace.outcome),
+        "verification": trace.verification,
+        "repair_evidence_count": trace.repair_evidence.len(),
+        "observed_at_unix": trace.observed_at_unix,
+    })
+}
+
+async fn load_skill_patch_candidates_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<SkillPatchCandidate>, String> {
+    let category = skill_patch_candidate_service::skill_patch_candidate_memory_category();
+    let entries = state
+        .mem
+        .list(Some(&category), None, limit)
+        .await
+        .map_err(|error| format!("failed to list skill patch candidates: {error}"))?;
+    Ok(entries
+        .iter()
+        .filter_map(skill_patch_candidate_service::parse_skill_patch_candidate_entry)
+        .collect())
+}
+
+async fn load_skill_use_traces_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<
+    Vec<synapse_domain::application::services::skill_governance_service::SkillUseTrace>,
+    String,
+> {
+    let limit = limit.max(1);
+    let category = skill_use_trace_memory_category();
+    let prefix = skill_use_trace_memory_key_prefix(&state.agent_id);
+    let entries = state
+        .mem
+        .list(Some(&category), None, limit.saturating_mul(4))
+        .await
+        .map_err(|error| format!("failed to list skill use traces: {error}"))?;
+    let mut traces = entries
+        .iter()
+        .filter(|entry| entry.key.starts_with(&prefix))
+        .filter_map(parse_skill_use_trace_entry)
+        .collect::<Vec<_>>();
+    traces.sort_by(|left, right| {
+        right
+            .observed_at_unix
+            .cmp(&left.observed_at_unix)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    traces.truncate(limit);
+    Ok(traces)
+}
+
+fn skill_matches_ref(skill: &Skill, skill_ref: &str) -> bool {
+    let needle = skill_ref.trim();
+    !needle.is_empty() && (skill.id == needle || skill.name.to_lowercase() == needle.to_lowercase())
+}
+
+fn skill_filter_fetch_limit(limit: usize) -> usize {
+    limit.max(100).saturating_mul(4).min(1000)
+}
+
+async fn load_learned_skills_for_api(state: &AppState, limit: usize) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| skill.origin == SkillOrigin::Learned)
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn load_user_authored_skills_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| skill.origin == SkillOrigin::Manual)
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn load_local_memory_skills_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| matches!(skill.origin, SkillOrigin::Manual | SkillOrigin::Learned))
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn resolve_learned_skill_for_api(state: &AppState, skill_ref: &str) -> Result<Skill, String> {
+    let needle = skill_ref.trim();
+    if needle.is_empty() {
+        return Err("skill id/name must not be empty".into());
+    }
+
+    let skills = load_local_memory_skills_for_api(state, 512).await?;
+    skills
+        .into_iter()
+        .find(|skill| skill_matches_ref(skill, needle))
+        .ok_or_else(|| {
+            format!(
+                "learned skill not found for agent {}: {needle}",
+                state.agent_id
+            )
+        })
+}
+
+async fn update_learned_skill_status_for_api(
+    state: &AppState,
+    skill_ref: &str,
+    target_status: SkillStatus,
+) -> Result<serde_json::Value, String> {
+    let skill = resolve_learned_skill_for_api(state, skill_ref).await?;
+    let previous_status = skill.status.clone();
+    let outcome = crate::skills::update_user_skill(
+        state.mem.as_ref(),
+        &state.agent_id,
+        crate::skills::UserSkillUpdateRequest {
+            skill_ref: skill.id.clone(),
+            description: None,
+            body: None,
+            task_family: None,
+            tool_pattern: None,
+            tags: None,
+            status: Some(target_status.clone()),
+        },
+    )
+    .await
+    .map_err(|error| format!("failed to update skill status: {error}"))?;
+
+    Ok(serde_json::json!({
+        "agent_id": state.agent_id,
+        "skill_id": skill.id,
+        "skill_name": skill.name,
+        "previous_status": previous_status.to_string(),
+        "target_status": target_status.to_string(),
+        "previous_version": outcome.previous_version,
+        "new_version": outcome.new_version,
+        "apply_record_id": outcome.apply_record_id,
+        "rollback_skill_id": outcome.rollback_skill_id,
+    }))
+}
+
+async fn build_skill_review_decisions_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<
+    Vec<synapse_domain::application::services::skill_review_service::SkillReviewDecision>,
+    String,
+> {
+    let maintenance_config =
+        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
+    let recent_cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(maintenance_config.activity_window.as_secs() as i64);
+    let learned_skills = state
+        .mem
+        .list_recent_skills(&state.agent_id, limit, recent_cutoff)
+        .await
+        .map_err(|error| format!("failed to list recent skills: {error}"))?;
+    let now_secs = chrono::Utc::now().timestamp().max(0) as u64;
+    let mut recent_run_recipes = state.run_recipe_store.list_recent(
+        &state.agent_id,
+        now_secs.saturating_sub(maintenance_config.activity_window.as_secs()),
+    );
+    recent_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let failure_clusters = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
+        state.mem.as_ref(),
+        &state.agent_id,
+        synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+        limit,
+        6,
+        0.96,
+        Some(recent_cutoff),
+    )
+    .await
+    .unwrap_or_default();
+
+    Ok(synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
+        &learned_skills,
+        &recent_run_recipes,
+        &failure_clusters,
+    ))
+}
+
+/// GET /api/skills/learned — list learned/runtime-generated skills owned by this agent.
+pub async fn handle_api_skills_learned(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match load_learned_skills_for_api(&state, limit).await {
+        Ok(skills) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skills": skills.iter().map(learned_skill_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/authored — list memory-backed user-authored skills owned by this agent.
+pub async fn handle_api_skills_authored(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match load_user_authored_skills_for_api(&state, limit).await {
+        Ok(skills) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skills": skills.iter().map(learned_skill_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/create — create a memory-backed user-authored skill.
+pub async fn handle_api_skills_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillCreateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let status = match body
+        .status
+        .as_deref()
+        .unwrap_or("active")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "active" => SkillStatus::Active,
+        "candidate" => SkillStatus::Candidate,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid skill status; expected active or candidate"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let request = crate::skills::UserAuthoredSkillCreateRequest {
+        name: body.name,
+        description: body.description,
+        body: body.body,
+        task_family: body.task_family,
+        tool_pattern: body.tool_pattern,
+        tags: body.tags,
+        status,
+    };
+
+    match crate::skills::create_user_authored_skill(state.mem.as_ref(), &state.agent_id, request)
+        .await
+    {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_authored_skill_create_outcome_text(&outcome);
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "status": outcome.status.to_string(),
+                "origin": outcome.origin.to_string(),
+                "version": outcome.version,
+                "output": output,
+                "skill": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/export — export a memory-backed skill as a workspace SKILL.md package.
+pub async fn handle_api_skills_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillExportBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let request = crate::skills::UserSkillPackageExportRequest {
+        skill_ref: body.skill,
+        destination: None,
+        package_name: body.package_name,
+        overwrite: body.overwrite,
+    };
+
+    match crate::skills::export_user_skill_package(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &config.workspace_dir,
+        request,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_skill_package_export_outcome_text(&outcome);
+            let package_dir = outcome.package_dir.display().to_string();
+            let skill_file = outcome.skill_file.display().to_string();
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "origin": outcome.origin.to_string(),
+                "status": outcome.status.to_string(),
+                "version": outcome.version,
+                "package_dir": package_dir,
+                "skill_file": skill_file,
+                "output": output,
+                "export": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/update — update a memory-backed manual/learned skill.
+pub async fn handle_api_skills_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillUpdateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let status = match body.status.as_deref() {
+        Some(raw) => match parse_skill_status_strict(raw) {
+            Some(status) => Some(status),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid skill status; expected active, candidate, or deprecated"
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let request = crate::skills::UserSkillUpdateRequest {
+        skill_ref: body.skill,
+        description: body.description,
+        body: body.body,
+        task_family: body.task_family,
+        tool_pattern: body.tool_pattern,
+        tags: body.tags,
+        status,
+    };
+
+    match crate::skills::update_user_skill(state.mem.as_ref(), &state.agent_id, request).await {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_skill_update_outcome_text(&outcome);
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "origin": outcome.origin.to_string(),
+                "previous_version": outcome.previous_version,
+                "new_version": outcome.new_version,
+                "previous_status": outcome.previous_status.to_string(),
+                "new_status": outcome.new_status.to_string(),
+                "rollback_skill_id": outcome.rollback_skill_id,
+                "apply_record_id": outcome.apply_record_id,
+                "output": output,
+                "update": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/candidates — list learned skill candidates owned by this agent.
+pub async fn handle_api_skills_candidates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let skills = match load_learned_skills_for_api(&state, limit).await {
+        Ok(skills) => skills,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+    let patch_candidates = match load_skill_patch_candidates_for_api(&state, limit).await {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "skills": skills
+            .iter()
+            .filter(|skill| skill.status == SkillStatus::Candidate)
+            .map(learned_skill_json)
+            .collect::<Vec<_>>(),
+        "patch_candidates": patch_candidates
+            .iter()
+            .map(skill_patch_candidate_json)
+            .collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// GET /api/skills/traces — list compact skill use traces owned by this agent.
+pub async fn handle_api_skills_traces(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(25).clamp(1, 500);
+    match load_skill_use_traces_for_api(&state, limit).await {
+        Ok(traces) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "traces": traces.iter().map(skill_use_trace_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/health — read-only skill catalog health and cleanup guidance.
+pub async fn handle_api_skills_health(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillHealthQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let trace_limit = query.trace_limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::skill_health_report_for_agent(
+        state.mem.as_ref(),
+        &state.agent_id,
+        limit,
+        trace_limit,
+    )
+    .await
+    {
+        Ok(report) => {
+            let cleanup_decisions =
+                synapse_domain::application::services::skill_health_service::skill_health_cleanup_decisions(&report);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "report": report,
+                "cleanup_decisions": cleanup_decisions,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/health/apply — apply eligible learned-skill cleanup status changes.
+pub async fn handle_api_skills_health_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillHealthApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let trace_limit = body.trace_limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::format_skill_health_cleanup_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        limit,
+        trace_limit,
+        true,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "applied": true,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/diff — compact diff/review view for a patch candidate.
+pub async fn handle_api_skills_candidate_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateDiffBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::format_skill_patch_candidate_diff_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        limit,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "candidate": body.candidate,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/test — run replay/eval checks for a patch candidate.
+pub async fn handle_api_skills_candidate_test(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateTestBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::replay::run_and_store_skill_patch_replay(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        state.runtime_tools_registry.as_ref(),
+        limit,
+    )
+    .await
+    {
+        Ok(report) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "report": report,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/apply — apply a tested patch candidate to its target skill.
+pub async fn handle_api_skills_candidate_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::apply_skill_patch_candidate(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        limit,
+    )
+    .await
+    {
+        Ok(outcome) => Json(serde_json::json!({
+            "agent_id": outcome.agent_id,
+            "candidate_id": outcome.candidate_id,
+            "target_skill_id": outcome.target_skill_id,
+            "skill_name": outcome.skill_name,
+            "previous_version": outcome.previous_version,
+            "new_version": outcome.new_version,
+            "rollback_skill_id": outcome.rollback_skill_id,
+            "apply_report": outcome.apply_report,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/versions — show applied patch/rollback records.
+pub async fn handle_api_skills_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillVersionsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match crate::skills::format_skill_patch_versions_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        query.skill.as_deref(),
+        limit,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skill": query.skill,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/rollback — roll back an applied patch using its saved snapshot.
+pub async fn handle_api_skills_rollback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchRollbackBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::rollback_skill_patch(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.rollback,
+        limit,
+    )
+    .await
+    {
+        Ok(outcome) => Json(serde_json::json!({
+            "agent_id": outcome.agent_id,
+            "rollback_ref": outcome.rollback_ref,
+            "apply_record_id": outcome.apply_record_id,
+            "candidate_id": outcome.candidate_id,
+            "target_skill_id": outcome.target_skill_id,
+            "skill_name": outcome.skill_name,
+            "from_version": outcome.from_version,
+            "restored_from_version": outcome.restored_from_version,
+            "new_version": outcome.new_version,
+            "rollback_skill_id": outcome.rollback_skill_id,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/autopromote — evaluate generated patch auto-promotion policy, dry-run.
+pub async fn handle_api_skills_autopromote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let config = state.config.lock().clone();
+    let policy =
+        crate::skills::skill_auto_promotion_policy_from_config(&config.skills.auto_promotion);
+    match crate::skills::run_skill_patch_auto_promotion(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &policy,
+        limit,
+        false,
+    )
+    .await
+    {
+        Ok(run) => {
+            let output = crate::skills::format_skill_auto_promotion_run_text(&run);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "applied": false,
+                "output": output,
+                "run": run,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/autopromote/apply — apply eligible generated patches if policy is enabled.
+pub async fn handle_api_skills_autopromote_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillAutoPromotionApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let config = state.config.lock().clone();
+    let policy =
+        crate::skills::skill_auto_promotion_policy_from_config(&config.skills.auto_promotion);
+    match crate::skills::run_skill_patch_auto_promotion(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &policy,
+        limit,
+        true,
+    )
+    .await
+    {
+        Ok(run) => {
+            let output = crate::skills::format_skill_auto_promotion_run_text(&run);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "applied": true,
+                "output": output,
+                "run": run,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/review — deterministic learned skill review, dry-run.
+pub async fn handle_api_skills_review(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    match build_skill_review_decisions_for_api(&state, limit).await {
+        Ok(decisions) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "applied": false,
+            "decisions": decisions,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/review/apply — apply deterministic learned skill review decisions.
+pub async fn handle_api_skills_review_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillReviewApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let decisions = match build_skill_review_decisions_for_api(&state, limit).await {
+        Ok(decisions) => decisions,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+
+    let applied = match crate::skills::apply_skill_review_decisions(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &decisions,
+    )
+    .await
+    {
+        Ok(applied) => applied,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "applied": true,
+        "applied_decisions": applied,
+        "decision_count": decisions.len(),
+    }))
+    .into_response()
+}
+
+/// POST /api/skills/status — set a learned skill status using body { skill, status }.
+pub async fn handle_api_skills_status_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillStatusBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let Some(status) = parse_skill_status_strict(&body.status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid skill status; expected active, candidate, or deprecated"
+            })),
+        )
+            .into_response();
+    };
+
+    match update_learned_skill_status_for_api(&state, &body.skill, status).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_skill_ref_body_status(
+    state: AppState,
+    headers: HeaderMap,
+    body: SkillRefBody,
+    target_status: SkillStatus,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match update_learned_skill_status_for_api(&state, &body.skill, target_status).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/promote — mark a learned skill active.
+pub async fn handle_api_skills_promote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Active).await
+}
+
+/// POST /api/skills/demote — mark a learned skill candidate.
+pub async fn handle_api_skills_demote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Candidate).await
+}
+
+/// POST /api/skills/reject — mark a learned skill deprecated.
+pub async fn handle_api_skills_reject(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Deprecated).await
 }
 
 fn skill_review_action_name(

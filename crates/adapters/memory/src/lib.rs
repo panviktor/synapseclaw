@@ -357,6 +357,13 @@ impl synapse_domain::ports::memory::SkillMemoryPort for NoopUnifiedMemory {
     async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
         Ok(None)
     }
+    async fn get_skill_by_id(
+        &self,
+        _: &MemoryId,
+        _: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        Ok(None)
+    }
 }
 
 #[async_trait::async_trait]

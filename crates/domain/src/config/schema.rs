@@ -1300,9 +1300,9 @@ impl Default for AgentConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SkillsPromptInjectionMode {
     /// Inline full skill instructions and tool metadata into the system prompt.
-    #[default]
     Full,
     /// Inline only compact skill metadata (name/description/location) and load details on demand.
+    #[default]
     Compact,
 }
 
@@ -1315,7 +1315,7 @@ pub fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjec
 }
 
 /// Skills loading configuration (`[skills]` section).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillsConfig {
     /// Enable loading and syncing the community open-skills repository.
     /// Default: `false` (opt-in).
@@ -1329,6 +1329,70 @@ pub struct SkillsConfig {
     /// `full` preserves legacy behavior. `compact` keeps context small and loads skills on demand.
     #[serde(default)]
     pub prompt_injection_mode: SkillsPromptInjectionMode,
+    /// One-time transitional import for workspace `skills/*/SKILL.*` packages.
+    /// Imported packages are stored as memory-backed skills and moved under `skills/ported/`.
+    #[serde(default = "default_port_workspace_packages_on_start")]
+    pub port_workspace_packages_on_start: bool,
+    /// Deterministic auto-promotion gates for generated skill patches.
+    /// Enabled by default; explicit apply commands still remain operator-triggered.
+    #[serde(default)]
+    pub auto_promotion: SkillsAutoPromotionConfig,
+}
+
+fn default_port_workspace_packages_on_start() -> bool {
+    true
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            open_skills_enabled: false,
+            open_skills_dir: None,
+            prompt_injection_mode: SkillsPromptInjectionMode::default(),
+            port_workspace_packages_on_start: default_port_workspace_packages_on_start(),
+            auto_promotion: SkillsAutoPromotionConfig::default(),
+        }
+    }
+}
+
+/// Auto-promotion policy for generated skill patches (`[skills.auto_promotion]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SkillsAutoPromotionConfig {
+    /// Allow explicit auto-promotion apply commands to write approved patch candidates.
+    #[serde(default = "default_skills_auto_promotion_enabled")]
+    pub enabled: bool,
+    /// Required clean live uses of the target skill before auto-promotion can apply.
+    #[serde(default = "default_skills_auto_promotion_min_successful_live_traces")]
+    pub min_successful_live_traces: usize,
+    /// Number of most recent live traces to inspect for the target skill.
+    #[serde(default = "default_skills_auto_promotion_trace_window_limit")]
+    pub trace_window_limit: usize,
+    /// Maximum recent failed/repaired traces tolerated in the inspected window.
+    #[serde(default)]
+    pub max_recent_blocking_traces: usize,
+}
+
+fn default_skills_auto_promotion_enabled() -> bool {
+    true
+}
+
+fn default_skills_auto_promotion_min_successful_live_traces() -> usize {
+    2
+}
+
+fn default_skills_auto_promotion_trace_window_limit() -> usize {
+    12
+}
+
+impl Default for SkillsAutoPromotionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_skills_auto_promotion_enabled(),
+            min_successful_live_traces: default_skills_auto_promotion_min_successful_live_traces(),
+            trace_window_limit: default_skills_auto_promotion_trace_window_limit(),
+            max_recent_blocking_traces: 0,
+        }
+    }
 }
 
 /// Multimodal (image) handling configuration (`[multimodal]` section).

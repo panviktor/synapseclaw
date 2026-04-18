@@ -7,6 +7,8 @@
 use crate::domain::tool_fact::TypedToolFact;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Result of a tool execution.
@@ -51,6 +53,579 @@ pub fn tool_runtime_role_name(role: ToolRuntimeRole) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolArgumentTransform {
+    UrlOriginPath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolNonReplayableReason {
+    NotReplayableByDefault,
+    FreeFormCommand,
+    MutatesState,
+    ExternalSideEffect,
+    RuntimeActivation,
+    LargeOrPrivatePayload,
+    PendingPrivacyPolicy,
+    ProviderNative,
+    Other(String),
+}
+
+impl ToolNonReplayableReason {
+    pub fn label(&self) -> String {
+        match self {
+            Self::NotReplayableByDefault => "not_replayable_by_default".into(),
+            Self::FreeFormCommand => "free_form_command".into(),
+            Self::MutatesState => "mutates_state".into(),
+            Self::ExternalSideEffect => "external_side_effect".into(),
+            Self::RuntimeActivation => "runtime_activation".into(),
+            Self::LargeOrPrivatePayload => "large_or_private_payload".into(),
+            Self::PendingPrivacyPolicy => "pending_privacy_policy".into(),
+            Self::ProviderNative => "provider_native".into(),
+            Self::Other(reason) => reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolArgumentPolicy {
+    pub name: String,
+    pub replayable: bool,
+    pub sensitive: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replayable_values: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<ToolArgumentTransform>,
+}
+
+impl ToolArgumentPolicy {
+    pub fn replayable(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            replayable: true,
+            sensitive: false,
+            replayable_values: Vec::new(),
+            transform: None,
+        }
+    }
+
+    pub fn blocked(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            replayable: false,
+            sensitive: false,
+            replayable_values: Vec::new(),
+            transform: None,
+        }
+    }
+
+    pub fn sensitive(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            replayable: false,
+            sensitive: true,
+            replayable_values: Vec::new(),
+            transform: None,
+        }
+    }
+
+    pub fn with_values(mut self, values: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.replayable_values = values.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn with_transform(mut self, transform: ToolArgumentTransform) -> Self {
+        self.transform = Some(transform);
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolContract {
+    pub runtime_role: Option<ToolRuntimeRole>,
+    pub replayable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_replayable_reason: Option<ToolNonReplayableReason>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<ToolArgumentPolicy>,
+}
+
+impl ToolContract {
+    pub fn new(runtime_role: Option<ToolRuntimeRole>) -> Self {
+        Self {
+            runtime_role,
+            replayable: false,
+            non_replayable_reason: Some(ToolNonReplayableReason::NotReplayableByDefault),
+            arguments: Vec::new(),
+        }
+    }
+
+    pub fn replayable(runtime_role: Option<ToolRuntimeRole>) -> Self {
+        Self {
+            runtime_role,
+            replayable: true,
+            non_replayable_reason: None,
+            arguments: Vec::new(),
+        }
+    }
+
+    pub fn non_replayable(
+        runtime_role: Option<ToolRuntimeRole>,
+        reason: ToolNonReplayableReason,
+    ) -> Self {
+        Self {
+            runtime_role,
+            replayable: false,
+            non_replayable_reason: Some(reason),
+            arguments: Vec::new(),
+        }
+    }
+
+    pub fn with_arguments(mut self, arguments: Vec<ToolArgumentPolicy>) -> Self {
+        self.arguments = arguments;
+        self
+    }
+
+    pub fn argument(&self, name: &str) -> Option<&ToolArgumentPolicy> {
+        self.arguments.iter().find(|argument| argument.name == name)
+    }
+
+    pub fn from_schema(runtime_role: Option<ToolRuntimeRole>, _schema: &serde_json::Value) -> Self {
+        Self::new(runtime_role)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolContractIssue {
+    pub tool_name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolContractInventoryRow {
+    pub tool_name: String,
+    pub runtime_role: Option<ToolRuntimeRole>,
+    pub replayable: bool,
+    pub non_replayable_reason: Option<ToolNonReplayableReason>,
+    pub replayable_args: Vec<String>,
+    pub blocked_args: Vec<String>,
+    pub sensitive_args: Vec<String>,
+}
+
+impl ToolContractInventoryRow {
+    pub fn line(&self) -> String {
+        let role = self
+            .runtime_role
+            .map(tool_runtime_role_name)
+            .unwrap_or("none");
+        if self.replayable {
+            format!(
+                "{} | role={} | replayable | args={}",
+                self.tool_name,
+                role,
+                csv_or_dash(&self.replayable_args)
+            )
+        } else {
+            let reason = self
+                .non_replayable_reason
+                .as_ref()
+                .map(ToolNonReplayableReason::label)
+                .unwrap_or_else(|| "unspecified".into());
+            format!(
+                "{} | role={} | non_replayable | reason={reason}",
+                self.tool_name, role
+            )
+        }
+    }
+}
+
+pub fn tool_contract_inventory_row(
+    tool_name: &str,
+    runtime_role: Option<ToolRuntimeRole>,
+    contract: &ToolContract,
+) -> ToolContractInventoryRow {
+    let mut replayable_args = Vec::new();
+    let mut blocked_args = Vec::new();
+    let mut sensitive_args = Vec::new();
+
+    for argument in &contract.arguments {
+        if argument.sensitive {
+            sensitive_args.push(argument.name.clone());
+        } else if argument.replayable {
+            replayable_args.push(argument.name.clone());
+        } else {
+            blocked_args.push(argument.name.clone());
+        }
+    }
+    replayable_args.sort();
+    blocked_args.sort();
+    sensitive_args.sort();
+
+    ToolContractInventoryRow {
+        tool_name: tool_name.to_string(),
+        runtime_role,
+        replayable: contract.replayable,
+        non_replayable_reason: contract.non_replayable_reason.clone(),
+        replayable_args,
+        blocked_args,
+        sensitive_args,
+    }
+}
+
+pub fn validate_tool_contract(
+    tool_name: &str,
+    schema: &Value,
+    runtime_role: Option<ToolRuntimeRole>,
+    contract: &ToolContract,
+) -> Vec<ToolContractIssue> {
+    let mut issues = Vec::new();
+
+    fn push_issue(
+        issues: &mut Vec<ToolContractIssue>,
+        tool_name: &str,
+        message: impl Into<String>,
+    ) {
+        issues.push(ToolContractIssue {
+            tool_name: tool_name.to_string(),
+            message: message.into(),
+        });
+    }
+
+    if contract.runtime_role != runtime_role {
+        push_issue(
+            &mut issues,
+            tool_name,
+            format!(
+                "contract runtime_role {:?} does not match tool runtime_role {:?}",
+                contract.runtime_role, runtime_role
+            ),
+        );
+    }
+
+    if contract.replayable && contract.non_replayable_reason.is_some() {
+        push_issue(
+            &mut issues,
+            tool_name,
+            "replayable contract must not carry a non_replayable_reason",
+        );
+    }
+    if !contract.replayable && contract.non_replayable_reason.is_none() {
+        push_issue(
+            &mut issues,
+            tool_name,
+            "non-replayable contract must declare a reason",
+        );
+    }
+
+    if replay_extension_path(schema).is_some() {
+        push_issue(
+            &mut issues,
+            tool_name,
+            "provider-facing schema must not contain x-synapse replay extensions",
+        );
+    }
+
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        push_issue(
+            &mut issues,
+            tool_name,
+            "schema must declare an object properties map",
+        );
+        return issues;
+    };
+
+    let mut seen = BTreeSet::new();
+    let mut replayable_arg_count = 0usize;
+    for argument in &contract.arguments {
+        if !seen.insert(argument.name.clone()) {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!("duplicate contract argument '{}'", argument.name),
+            );
+        }
+        let Some(property_schema) = properties.get(&argument.name) else {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "contract argument '{}' is not present in schema properties",
+                    argument.name
+                ),
+            );
+            continue;
+        };
+        if argument.replayable {
+            replayable_arg_count += 1;
+        }
+        if argument.sensitive && argument.replayable {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "contract argument '{}' cannot be both sensitive and replayable",
+                    argument.name
+                ),
+            );
+        }
+        if !argument.replayable && !argument.replayable_values.is_empty() {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "blocked argument '{}' must not declare replayable values",
+                    argument.name
+                ),
+            );
+        }
+        if argument.transform.is_some() && !argument.replayable {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "blocked argument '{}' must not declare a replay transform",
+                    argument.name
+                ),
+            );
+        }
+        if argument.transform.is_some() && !schema_type_includes(property_schema, "string") {
+            push_issue(
+                &mut issues,
+                tool_name,
+                format!(
+                    "argument '{}' declares a string replay transform but schema type is not string",
+                    argument.name
+                ),
+            );
+        }
+    }
+
+    if contract.replayable {
+        if !is_replayable_contract_role(contract.runtime_role) {
+            push_issue(
+                &mut issues,
+                tool_name,
+                "replayable contract uses a runtime role that is not replay-safe",
+            );
+        }
+        if replayable_arg_count == 0 {
+            push_issue(
+                &mut issues,
+                tool_name,
+                "replayable contract must declare at least one replayable argument",
+            );
+        }
+        for required in required_schema_properties(schema) {
+            match contract.argument(&required) {
+                Some(argument) if argument.replayable && !argument.sensitive => {}
+                Some(_) => push_issue(
+                    &mut issues,
+                    tool_name,
+                    format!("required schema argument '{required}' is not replayable in contract"),
+                ),
+                None => push_issue(
+                    &mut issues,
+                    tool_name,
+                    format!("required schema argument '{required}' is missing from contract"),
+                ),
+            }
+        }
+    }
+
+    issues
+}
+
+fn is_replayable_contract_role(role: Option<ToolRuntimeRole>) -> bool {
+    matches!(
+        role,
+        Some(
+            ToolRuntimeRole::HistoricalLookup
+                | ToolRuntimeRole::WorkspaceDiscovery
+                | ToolRuntimeRole::RuntimeStateInspection
+                | ToolRuntimeRole::ExternalLookup
+        )
+    )
+}
+
+fn required_schema_properties(schema: &Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn schema_type_includes(schema: &Value, expected: &str) -> bool {
+    match schema.get("type") {
+        Some(Value::String(value)) => value == expected,
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|value| value == expected),
+        _ => true,
+    }
+}
+
+fn replay_extension_path(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if key.starts_with(provider_replay_extension_prefix()) {
+                    return Some(key.clone());
+                }
+                if let Some(path) = replay_extension_path(child) {
+                    return Some(format!("{key}.{path}"));
+                }
+            }
+            None
+        }
+        Value::Array(values) => values.iter().enumerate().find_map(|(idx, child)| {
+            replay_extension_path(child).map(|path| format!("{idx}.{path}"))
+        }),
+        _ => None,
+    }
+}
+
+fn provider_replay_extension_prefix() -> &'static str {
+    concat!("x-synapse-", "replay")
+}
+
+fn csv_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "-".into()
+    } else {
+        values.join(",")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replayable_contract_validates_against_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "operation": { "type": "string" },
+                "message": { "type": "string" }
+            },
+            "required": ["operation"]
+        });
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::WorkspaceDiscovery))
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("operation").with_values(["status"]),
+                ToolArgumentPolicy::blocked("message"),
+            ]);
+
+        let issues = validate_tool_contract(
+            "git_operations",
+            &schema,
+            Some(ToolRuntimeRole::WorkspaceDiscovery),
+            &contract,
+        );
+
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn audit_rejects_provider_schema_replay_extensions() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string" }
+            },
+            "required": ["url"]
+        });
+        schema.as_object_mut().unwrap().insert(
+            format!("{}able", provider_replay_extension_prefix()),
+            Value::Bool(true),
+        );
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("url")]);
+
+        let issues = validate_tool_contract(
+            "web_fetch",
+            &schema,
+            Some(ToolRuntimeRole::ExternalLookup),
+            &contract,
+        );
+
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("x-synapse replay extensions")));
+    }
+
+    #[test]
+    fn audit_requires_contract_arguments_to_exist_in_schema() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string" }
+            }
+        });
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("missing")]);
+
+        let issues = validate_tool_contract(
+            "lookup",
+            &schema,
+            Some(ToolRuntimeRole::ExternalLookup),
+            &contract,
+        );
+
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("not present in schema properties")));
+    }
+
+    #[test]
+    fn audit_requires_replayable_required_arguments() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string" }
+            },
+            "required": ["url"]
+        });
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::sensitive("url")]);
+
+        let issues = validate_tool_contract(
+            "lookup",
+            &schema,
+            Some(ToolRuntimeRole::ExternalLookup),
+            &contract,
+        );
+
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("required schema argument 'url'")));
+    }
+
+    #[test]
+    fn inventory_row_formats_replayable_args() {
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::WorkspaceDiscovery))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("path")]);
+        let row = tool_contract_inventory_row(
+            "file_read",
+            Some(ToolRuntimeRole::WorkspaceDiscovery),
+            &contract,
+        );
+
+        assert_eq!(
+            row.line(),
+            "file_read | role=workspace_discovery | replayable | args=path"
+        );
+    }
+}
+
 /// Description of a tool for the LLM (function-calling spec).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -76,6 +651,14 @@ pub trait Tool: Send + Sync {
     /// Typed runtime role for intent narrowing and context-engine policy.
     fn runtime_role(&self) -> Option<ToolRuntimeRole> {
         None
+    }
+
+    /// Typed runtime contract used by internal policy engines.
+    ///
+    /// JSON schema remains the provider-facing function-call shape; this
+    /// contract is the programmatic source for replay and safety policy.
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::from_schema(self.runtime_role(), &self.parameters_schema())
     }
 
     /// Execute the tool with given arguments.
@@ -136,6 +719,10 @@ impl Tool for ArcToolRef {
 
     fn runtime_role(&self) -> Option<ToolRuntimeRole> {
         self.0.runtime_role()
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        self.0.tool_contract()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -53,6 +53,7 @@ use synapse_domain::application::services::model_lane_resolution::{
     ResolvedModelProfile, ResolvedModelProfileSource,
 };
 use synapse_domain::config::schema::ModelFeature;
+use synapse_domain::domain::memory::{Skill as MemorySkill, SkillOrigin, SkillStatus};
 
 #[test]
 fn scrub_credentials_redacts_bearer_token() {
@@ -71,6 +72,38 @@ fn scrub_credentials_redacts_json_api_key() {
     let scrubbed = scrub_credentials(input);
     assert!(scrubbed.contains("\"api_key\": \"sk-1*[REDACTED]\""));
     assert!(scrubbed.contains("public"));
+}
+
+#[test]
+fn relevant_skill_cards_keep_full_skill_body_out_of_context() {
+    let skill = MemorySkill {
+        id: "skill-123".into(),
+        name: "Matrix release drift audit".into(),
+        description:
+            "Find a local self-hosted chat server checkout and compare it with upstream releases."
+                .into(),
+        content: "# Full body\n\nSECRET_DETAILED_PROCEDURE_SHOULD_NOT_BE_IN_PREAMBLE".into(),
+        task_family: Some("release-drift-audit".into()),
+        tool_pattern: vec!["repo_discovery".into(), "git_operations".into()],
+        lineage_task_families: Vec::new(),
+        tags: vec!["matrix".into(), "selfhosted".into()],
+        success_count: 0,
+        fail_count: 0,
+        version: 1,
+        origin: SkillOrigin::Manual,
+        status: SkillStatus::Active,
+        created_by: "default".into(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+
+    let rendered = render_relevant_skill_cards(&[skill]);
+
+    assert!(rendered.contains("<skill_id>skill-123</skill_id>"));
+    assert!(rendered.contains("skill_read"));
+    assert!(rendered.contains("repo_discovery, git_operations"));
+    assert!(!rendered.contains("SECRET_DETAILED_PROCEDURE"));
+    assert!(rendered.contains("omitted; load on demand with skill_read"));
 }
 
 #[tokio::test]
@@ -132,6 +165,57 @@ async fn execute_one_tool_resolves_unique_activated_tool_suffix() {
     assert!(outcome.success);
     assert_eq!(outcome.output, "counted:ok");
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn execute_one_tool_captures_contract_sanitized_replay_args() {
+    let observer = NoopObserver;
+    let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(ReplayableLookupTool::new("lookup"))];
+
+    let outcome = execute_one_tool(
+        "lookup",
+        serde_json::json!({
+            "url": "https://example.invalid/status",
+            "api_key": "sk-secret-value",
+            "ignored": "not declared in schema"
+        }),
+        &tools_registry,
+        None,
+        &observer,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("lookup should execute");
+
+    assert!(outcome.success);
+    assert_eq!(
+        outcome.replay_args,
+        Some(serde_json::json!({ "url": "https://example.invalid/status" }))
+    );
+}
+
+#[tokio::test]
+async fn execute_one_tool_never_captures_shell_command_replay_args() {
+    let observer = NoopObserver;
+    let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(ReplayableLookupTool::new("shell"))];
+
+    let outcome = execute_one_tool(
+        "shell",
+        serde_json::json!({ "url": "git status --short" }),
+        &tools_registry,
+        None,
+        &observer,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("fake shell should execute");
+
+    assert!(outcome.success);
+    assert!(outcome.replay_args.is_none());
 }
 
 use synapse_observability::NoopObserver;
@@ -353,6 +437,65 @@ impl CountingTool {
             name: name.to_string(),
             invocations,
         }
+    }
+}
+
+struct ReplayableLookupTool {
+    name: String,
+}
+
+impl ReplayableLookupTool {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for ReplayableLookupTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        "Replayable typed lookup test tool"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": { "type": "string" },
+                "api_key": { "type": "string" }
+            },
+            "required": ["url"]
+        })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> synapse_domain::ports::tool::ToolContract {
+        synapse_domain::ports::tool::ToolContract::replayable(self.runtime_role()).with_arguments(
+            vec![
+                synapse_domain::ports::tool::ToolArgumentPolicy::replayable("url"),
+                synapse_domain::ports::tool::ToolArgumentPolicy::sensitive("api_key"),
+            ],
+        )
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<crate::tools::ToolResult> {
+        let url = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        Ok(crate::tools::ToolResult {
+            success: true,
+            output: format!("lookup:{url}"),
+            error: None,
+        })
     }
 }
 

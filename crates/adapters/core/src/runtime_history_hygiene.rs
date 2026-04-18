@@ -18,6 +18,9 @@ use synapse_domain::application::services::provider_context_budget::{
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_history, RouteSwitchPreflightResolution,
 };
+use synapse_domain::application::services::skill_trace_service::{
+    parse_skill_activation_trace_entry, skill_activation_trace_memory_category,
+};
 use synapse_domain::config::schema::{
     ContextCompressionConfig, ContextCompressionRouteOverrideConfig,
 };
@@ -219,7 +222,61 @@ pub(crate) async fn precompress_session_hygiene_preservation_message(
         },
     )
     .await;
-    precompress_preservation_message(&report.preservation_hints)
+    let mut preservation_hints = report.preservation_hints;
+    preservation_hints.extend(active_skill_preservation_hints(memory, agent_id).await);
+    dedupe_preservation_hints(&mut preservation_hints);
+    precompress_preservation_message(&preservation_hints)
+}
+
+async fn active_skill_preservation_hints(
+    memory: Option<&dyn UnifiedMemoryPort>,
+    agent_id: &str,
+) -> Vec<String> {
+    let Some(memory) = memory else {
+        return Vec::new();
+    };
+    let category = skill_activation_trace_memory_category();
+    let Ok(entries) = memory.list(Some(&category), None, 16).await else {
+        return Vec::new();
+    };
+    let mut hints = Vec::new();
+    for trace in entries
+        .iter()
+        .filter_map(parse_skill_activation_trace_entry)
+        .filter(|trace| !trace.loaded_skill_ids.is_empty() || !trace.selected_skill_ids.is_empty())
+        .take(4)
+    {
+        let skill_ids = if trace.loaded_skill_ids.is_empty() {
+            &trace.selected_skill_ids
+        } else {
+            &trace.loaded_skill_ids
+        };
+        let ids = skill_ids
+            .iter()
+            .filter(|id| !id.trim().is_empty())
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            continue;
+        }
+        let outcome = trace
+            .outcome
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("unknown");
+        hints.push(format!(
+            "active_skill_identity: agent={agent_id}; ids={}; outcome={outcome}; blocked_candidates={}",
+            ids.join(","),
+            trace.blocked_skill_ids.len()
+        ));
+    }
+    hints
+}
+
+fn dedupe_preservation_hints(hints: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    hints.retain(|hint| seen.insert(hint.clone()));
 }
 
 fn runtime_command_keep_non_system_turns(
@@ -428,7 +485,10 @@ mod tests {
     use std::sync::Mutex;
     use synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene;
     use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource;
+    use synapse_domain::application::services::skill_governance_service::SkillActivationTrace;
+    use synapse_domain::application::services::skill_trace_service::skill_activation_trace_to_memory_entry;
     use synapse_domain::domain::history_projection::format_projected_tool_call;
+    use synapse_memory::EpisodicMemoryPort;
 
     #[derive(Default)]
     struct MockHistory {
@@ -605,6 +665,61 @@ mod tests {
         assert_eq!(first.preservation_messages_added, 1);
         assert_eq!(second.preservation_messages_added, 0);
         assert_eq!(preservation_count, 1);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_preserves_active_skill_identity_without_body() {
+        let history = MockHistory::default();
+        let key = "manual-skill-handoff";
+        history.append_turn(key, ChatMessage::system("bootstrap"));
+        for index in 0..30 {
+            history.append_turn(key, ChatMessage::user(format!("turn {index}")));
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory = synapse_memory::SurrealMemoryAdapter::new(
+            &dir.path().join("memory.surreal").to_string_lossy(),
+            std::sync::Arc::new(synapse_memory::embeddings::NoopEmbedding),
+            "agent".into(),
+        )
+        .await
+        .unwrap();
+        let trace = SkillActivationTrace {
+            selected_skill_ids: vec!["matrix-upgrade".into()],
+            loaded_skill_ids: vec!["matrix-upgrade".into()],
+            blocked_skill_ids: Vec::new(),
+            blocked_reasons: Vec::new(),
+            budget_catalog_entries: 1,
+            budget_preloaded_skills: 0,
+            route_model: None,
+            outcome: Some("loaded".into()),
+        };
+        let entry =
+            skill_activation_trace_to_memory_entry("agent", &trace, chrono::Utc::now(), None)
+                .unwrap();
+        memory.store_episode(entry).await.unwrap();
+
+        let outcome = compact_history_for_runtime_command(
+            &history,
+            key,
+            &profile(4_000),
+            Some(&memory),
+            None,
+            "agent",
+            RuntimeCompactionSurface::Web,
+        )
+        .await;
+
+        assert!(outcome.compacted);
+        assert_eq!(outcome.preservation_messages_added, 1);
+        let compacted = history.get_history(key);
+        let handoff = compacted
+            .iter()
+            .find(|message| is_precompress_preservation_message(message))
+            .expect("pre-compress handoff message");
+        assert!(handoff.content.contains("active_skill_identity"));
+        assert!(handoff.content.contains("matrix-upgrade"));
+        assert!(!handoff.content.contains("Matrix release_status recipe"));
     }
 
     #[test]

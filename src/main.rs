@@ -1298,7 +1298,7 @@ async fn main() -> Result<()> {
         } => crate::adapters::integrations::handle_command(integration_command, &config),
 
         Commands::Skills { skill_command } => {
-            synapse_adapters::skills::handle_command(skill_command, &config)
+            synapse_adapters::skills::handle_command(skill_command, &config).await
         }
 
         Commands::Memory { memory_command } => {

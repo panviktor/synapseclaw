@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use synapse_domain::domain::tool_fact::{
     ProjectAction, ProjectFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolNonReplayableReason};
 
 /// Project intelligence tool for consulting project management.
 ///
@@ -547,6 +548,31 @@ impl Tool for ProjectIntelTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(None, ToolNonReplayableReason::LargeOrPrivatePayload)
+            .with_arguments(vec![
+                ToolArgumentPolicy::blocked("action"),
+                ToolArgumentPolicy::sensitive("project_name"),
+                ToolArgumentPolicy::blocked("period"),
+                ToolArgumentPolicy::blocked("language"),
+                ToolArgumentPolicy::sensitive("git_log"),
+                ToolArgumentPolicy::sensitive("jira_summary"),
+                ToolArgumentPolicy::sensitive("notes"),
+                ToolArgumentPolicy::sensitive("deadlines"),
+                ToolArgumentPolicy::sensitive("velocity"),
+                ToolArgumentPolicy::sensitive("blockers"),
+                ToolArgumentPolicy::blocked("audience"),
+                ToolArgumentPolicy::blocked("tone"),
+                ToolArgumentPolicy::sensitive("highlights"),
+                ToolArgumentPolicy::sensitive("concerns"),
+                ToolArgumentPolicy::sensitive("sprint_dates"),
+                ToolArgumentPolicy::sensitive("completed"),
+                ToolArgumentPolicy::sensitive("in_progress"),
+                ToolArgumentPolicy::sensitive("blocked"),
+                ToolArgumentPolicy::sensitive("tasks"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -251,6 +251,74 @@ pub async fn run(
     let shared_dead_letter = mem_backend.dead_letter;
     let shared_surreal = mem_backend.surreal;
 
+    if config.skills.port_workspace_packages_on_start {
+        match crate::skills::port_workspace_skill_packages_to_memory(
+            shared_raw_mem.as_ref(),
+            &daemon_agent_id,
+            &config.workspace_dir,
+        )
+        .await
+        {
+            Ok(report)
+                if report.scanned > 0
+                    || report.imported > 0
+                    || report.skipped_existing > 0
+                    || report.moved > 0
+                    || report.failed > 0 =>
+            {
+                tracing::info!(
+                    scanned = report.scanned,
+                    imported = report.imported,
+                    skipped_existing = report.skipped_existing,
+                    moved = report.moved,
+                    failed = report.failed,
+                    "daemon ported workspace skill packages into memory"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "daemon failed to port workspace skill packages into memory"
+                );
+            }
+        }
+    }
+    match crate::skills::sync_file_backed_skill_index_to_memory(
+        shared_raw_mem.as_ref(),
+        &daemon_agent_id,
+        &config.workspace_dir,
+        &config,
+    )
+    .await
+    {
+        Ok(report)
+            if report.scanned > 0
+                || report.indexed > 0
+                || report.updated > 0
+                || report.skipped_existing > 0
+                || report.deprecated_stale > 0
+                || report.failed > 0 =>
+        {
+            tracing::info!(
+                scanned = report.scanned,
+                indexed = report.indexed,
+                updated = report.updated,
+                skipped_existing = report.skipped_existing,
+                deprecated_stale = report.deprecated_stale,
+                failed = report.failed,
+                "daemon synced file-backed skill semantic index"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "daemon failed to sync file-backed skill semantic index"
+            );
+        }
+    }
+
     // Replace AgentRunner with one that shares memory (avoids SurrealKV LOCK conflicts)
     let agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort> = {
         let config_for_runner = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));

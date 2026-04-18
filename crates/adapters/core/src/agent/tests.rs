@@ -1140,6 +1140,7 @@ fn native_format_results_maps_tool_call_ids() {
             tool_call_id: Some("tc-001".into()),
             tool_facts: vec![],
             repair_trace: None,
+            replay_args: None,
         },
         ToolExecutionResult {
             name: "b".into(),
@@ -1148,6 +1149,7 @@ fn native_format_results_maps_tool_call_ids() {
             tool_call_id: Some("tc-002".into()),
             tool_facts: vec![],
             repair_trace: None,
+            replay_args: None,
         },
     ];
 

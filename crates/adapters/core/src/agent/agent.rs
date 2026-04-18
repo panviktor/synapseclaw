@@ -80,8 +80,8 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
 };
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::tool_repair::{
-    append_tool_repair_trace, apply_successful_tool_repair_observation, enrich_tool_repair_trace,
-    latest_tool_repair_trace, ToolRepairTraceContext,
+    append_tool_repair_trace, apply_successful_tool_repair_observation_with_args,
+    enrich_tool_repair_trace, latest_tool_repair_trace, ToolRepairTraceContext,
 };
 use synapse_domain::application::services::turn_admission::{
     assess_turn_admission, CandidateAdmissionDecision, TurnAdmissionInput,
@@ -1505,6 +1505,116 @@ impl Agent {
                     &resolved_agent_id,
                 )
             });
+        let prompt_skills = if config.skills.port_workspace_packages_on_start {
+            let mut prompt_skills =
+                crate::skills::load_file_backed_runtime_skills(&config.workspace_dir, config);
+            match crate::skills::port_workspace_skill_packages_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.imported > 0
+                        || report.skipped_existing > 0
+                        || report.moved > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        imported = report.imported,
+                        skipped_existing = report.skipped_existing,
+                        moved = report.moved,
+                        failed = report.failed,
+                        "ported workspace skill packages into memory"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to port workspace skill packages into memory; continuing with filesystem skill catalog"
+                    );
+                    prompt_skills =
+                        crate::skills::load_skills_with_config(&config.workspace_dir, config);
+                }
+            }
+            match crate::skills::sync_file_backed_skill_index_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+                config,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.indexed > 0
+                        || report.updated > 0
+                        || report.skipped_existing > 0
+                        || report.deprecated_stale > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        indexed = report.indexed,
+                        updated = report.updated,
+                        skipped_existing = report.skipped_existing,
+                        deprecated_stale = report.deprecated_stale,
+                        failed = report.failed,
+                        "synced file-backed skill semantic index"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to sync file-backed skill semantic index"
+                    );
+                }
+            }
+            prompt_skills
+        } else {
+            let prompt_skills =
+                crate::skills::load_skills_with_config(&config.workspace_dir, config);
+            match crate::skills::sync_file_backed_skill_index_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+                config,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.indexed > 0
+                        || report.updated > 0
+                        || report.skipped_existing > 0
+                        || report.deprecated_stale > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        indexed = report.indexed,
+                        updated = report.updated,
+                        skipped_existing = report.skipped_existing,
+                        deprecated_stale = report.deprecated_stale,
+                        failed = report.failed,
+                        "synced file-backed skill semantic index"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to sync file-backed skill semantic index"
+                    );
+                }
+            }
+            prompt_skills
+        };
 
         Agent::builder()
             .provider(provider)
@@ -1543,10 +1653,7 @@ impl Agent {
             .turn_defaults_context(Some(turn_defaults_context))
             .scoped_instruction_context(runtime_ports.scoped_instruction_context)
             .channel_registry(runtime_ports.channel_registry)
-            .skills(crate::skills::load_skills_with_config(
-                &config.workspace_dir,
-                config,
-            ))
+            .skills(prompt_skills)
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .auto_save(config.memory.auto_save)
             .build()
@@ -2060,6 +2167,7 @@ impl Agent {
             duration: Duration::ZERO,
             tool_facts: Vec::new(),
             repair_trace: Some(classify_tool_execution_error(&normalized_call.name, &error)),
+            replay_args: None,
         });
         let tool_spec = self
             .tool_specs
@@ -2086,6 +2194,7 @@ impl Agent {
             tool_call_id: call.tool_call_id.clone(),
             tool_facts: outcome.tool_facts,
             repair_trace: outcome.repair_trace,
+            replay_args: outcome.replay_args,
         }
     }
 
@@ -3221,17 +3330,20 @@ impl Agent {
                         .find(|spec| spec.name == result.name)
                         .and_then(|spec| spec.runtime_role);
                     let success_observed_at = chrono::Utc::now().timestamp();
-                    self.recent_turn_tool_repairs = apply_successful_tool_repair_observation(
-                        &self.recent_turn_tool_repairs,
-                        &result.name,
-                        role,
-                        success_observed_at,
-                    );
-                    tool_repairs_this_turn = apply_successful_tool_repair_observation(
+                    self.recent_turn_tool_repairs =
+                        apply_successful_tool_repair_observation_with_args(
+                            &self.recent_turn_tool_repairs,
+                            &result.name,
+                            role,
+                            success_observed_at,
+                            result.replay_args.as_ref(),
+                        );
+                    tool_repairs_this_turn = apply_successful_tool_repair_observation_with_args(
                         &tool_repairs_this_turn,
                         &result.name,
                         role,
                         success_observed_at,
+                        result.replay_args.as_ref(),
                     );
                     if let Some(latest) = latest_tool_repair_trace(&tool_repairs_this_turn) {
                         last_tool_repair_this_turn = Some(latest);

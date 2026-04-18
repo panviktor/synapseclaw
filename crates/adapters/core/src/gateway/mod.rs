@@ -1658,6 +1658,58 @@ pub async fn run_gateway(
             "/api/memory/evals/learning",
             get(api::handle_api_memory_learning_evals),
         )
+        .route("/api/skills/learned", get(api::handle_api_skills_learned))
+        .route("/api/skills/authored", get(api::handle_api_skills_authored))
+        .route("/api/skills/create", post(api::handle_api_skills_create))
+        .route("/api/skills/update", post(api::handle_api_skills_update))
+        .route("/api/skills/export", post(api::handle_api_skills_export))
+        .route(
+            "/api/skills/candidates",
+            get(api::handle_api_skills_candidates),
+        )
+        .route("/api/skills/traces", get(api::handle_api_skills_traces))
+        .route("/api/skills/health", get(api::handle_api_skills_health))
+        .route(
+            "/api/skills/health/apply",
+            post(api::handle_api_skills_health_apply),
+        )
+        .route(
+            "/api/skills/candidates/diff",
+            post(api::handle_api_skills_candidate_diff),
+        )
+        .route(
+            "/api/skills/candidates/test",
+            post(api::handle_api_skills_candidate_test),
+        )
+        .route(
+            "/api/skills/candidates/apply",
+            post(api::handle_api_skills_candidate_apply),
+        )
+        .route("/api/skills/versions", get(api::handle_api_skills_versions))
+        .route(
+            "/api/skills/rollback",
+            post(api::handle_api_skills_rollback),
+        )
+        .route(
+            "/api/skills/autopromote",
+            get(api::handle_api_skills_autopromote),
+        )
+        .route(
+            "/api/skills/autopromote/apply",
+            post(api::handle_api_skills_autopromote_apply),
+        )
+        .route("/api/skills/review", get(api::handle_api_skills_review))
+        .route(
+            "/api/skills/review/apply",
+            post(api::handle_api_skills_review_apply),
+        )
+        .route(
+            "/api/skills/status",
+            post(api::handle_api_skills_status_update),
+        )
+        .route("/api/skills/promote", post(api::handle_api_skills_promote))
+        .route("/api/skills/demote", post(api::handle_api_skills_demote))
+        .route("/api/skills/reject", post(api::handle_api_skills_reject))
         .route(
             "/api/user-profiles",
             get(api::handle_api_user_profiles_list),

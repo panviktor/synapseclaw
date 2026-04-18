@@ -7,6 +7,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract};
 
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -54,6 +55,14 @@ impl Tool for FileReadTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("path"),
+            ToolArgumentPolicy::replayable("offset"),
+            ToolArgumentPolicy::replayable("limit"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -311,6 +320,11 @@ mod tests {
         assert!(schema["properties"]["path"].is_object());
         assert!(schema["properties"]["offset"].is_object());
         assert!(schema["properties"]["limit"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert!(contract.argument("path").unwrap().replayable);
+        assert!(contract.argument("offset").unwrap().replayable);
+        assert!(contract.argument("limit").unwrap().replayable);
         assert!(schema["required"]
             .as_array()
             .unwrap()

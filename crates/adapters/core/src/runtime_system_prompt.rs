@@ -39,7 +39,7 @@ pub fn build_system_prompt(
         identity_config,
         bootstrap_max_chars,
         false,
-        SkillsPromptInjectionMode::Full,
+        SkillsPromptInjectionMode::default(),
     )
 }
 
@@ -59,7 +59,7 @@ pub fn build_channel_system_prompt(
         identity_config,
         bootstrap_max_chars,
         false,
-        SkillsPromptInjectionMode::Full,
+        SkillsPromptInjectionMode::default(),
         RuntimePromptSurface::Channel,
     )
 }

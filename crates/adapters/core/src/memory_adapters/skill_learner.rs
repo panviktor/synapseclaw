@@ -132,6 +132,7 @@ pub async fn reflect_on_run(
                         new_task_family: None,
                         new_tool_pattern: None,
                         new_lineage_task_families: None,
+                        new_tags: None,
                         new_status: None,
                     };
                     memory

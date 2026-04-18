@@ -23,6 +23,7 @@ pub struct ToolExecutionResult {
     pub tool_call_id: Option<String>,
     pub tool_facts: Vec<TypedToolFact>,
     pub repair_trace: Option<ToolRepairTrace>,
+    pub replay_args: Option<Value>,
 }
 
 pub trait ToolDispatcher: Send + Sync {
@@ -175,6 +176,7 @@ mod tests {
                 tool_call_id: Some("tc1".into()),
                 tool_facts: vec![],
                 repair_trace: None,
+                replay_args: None,
             }])
             .unwrap();
         match msg {
@@ -239,6 +241,7 @@ mod tests {
                 tool_call_id: None,
                 tool_facts: vec![],
                 repair_trace: None,
+                replay_args: None,
             }])
             .unwrap_err();
 
@@ -256,6 +259,7 @@ mod tests {
                 tool_call_id: Some("tc-1".into()),
                 tool_facts: vec![],
                 repair_trace: None,
+                replay_args: None,
             }])
             .unwrap();
 
@@ -286,6 +290,7 @@ mod tests {
                 detail: Some("No such file or directory".into()),
                 ..ToolRepairTrace::default()
             }),
+            replay_args: None,
         }])
         .unwrap();
 

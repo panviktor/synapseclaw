@@ -7,13 +7,22 @@ use crate::domain::turn_admission::{
     candidate_admission_reason_label, context_pressure_state_name, turn_admission_action_name,
 };
 use crate::ports::provider::ProviderCapabilityRequirement;
-use crate::ports::tool::{ToolRuntimeRole, ToolSpec};
+use crate::ports::tool::{
+    ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolRuntimeRole, ToolSpec,
+};
 use chrono::Utc;
+use serde_json::{Map, Value};
+use url::Url;
 
 pub const TOOL_REPAIR_TRACE_TTL_SECS: i64 = 48 * 60 * 60;
 pub const MAX_TOOL_REPAIR_HISTORY: usize = 8;
 const MAX_ARGUMENT_KEYS: usize = 12;
 const MAX_ARGUMENT_KEY_CHARS: usize = 48;
+const MAX_REPLAY_ARGS_BYTES: usize = 2_048;
+const MAX_REPLAY_STRING_CHARS: usize = 240;
+const MAX_REPLAY_ARRAY_ITEMS: usize = 8;
+const MAX_REPLAY_OBJECT_KEYS: usize = 16;
+const MAX_REPLAY_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct ToolRepairTraceContext<'a> {
@@ -76,6 +85,7 @@ pub fn build_tool_repair_trace_with_context(
         argument_shape: context
             .arguments
             .map(|arguments| tool_argument_shape(arguments, context.tool_spec)),
+        replay_args: None,
         admission_state: context.admission.map(tool_repair_admission_state),
         repair_outcome: ToolRepairOutcome::Failed,
         expires_at_unix: observed_at_unix + TOOL_REPAIR_TRACE_TTL_SECS,
@@ -212,6 +222,9 @@ fn append_single_tool_repair_trace(history: &mut Vec<ToolRepairTrace>, next: Too
             last.expires_at_unix = next.expires_at_unix;
             last.repeat_count = last.repeat_count.saturating_add(next.repeat_count.max(1));
             last.repair_outcome = next.repair_outcome;
+            if last.replay_args.is_none() {
+                last.replay_args = next.replay_args;
+            }
             if last.detail.is_none() {
                 last.detail = next.detail;
             }
@@ -229,6 +242,22 @@ pub fn apply_successful_tool_repair_observation(
     tool_role: Option<ToolRuntimeRole>,
     observed_at_unix: i64,
 ) -> Vec<ToolRepairTrace> {
+    apply_successful_tool_repair_observation_with_args(
+        history,
+        tool_name,
+        tool_role,
+        observed_at_unix,
+        None,
+    )
+}
+
+pub fn apply_successful_tool_repair_observation_with_args(
+    history: &[ToolRepairTrace],
+    tool_name: &str,
+    tool_role: Option<ToolRuntimeRole>,
+    observed_at_unix: i64,
+    replay_args: Option<&Value>,
+) -> Vec<ToolRepairTrace> {
     let mut bounded = retained_tool_repair_history(history, observed_at_unix);
     for trace in bounded.iter_mut() {
         let same_tool = trace.tool_name == tool_name;
@@ -237,6 +266,9 @@ pub fn apply_successful_tool_repair_observation(
             trace.repair_outcome = ToolRepairOutcome::Resolved;
             trace.observed_at_unix = observed_at_unix;
             trace.expires_at_unix = observed_at_unix + TOOL_REPAIR_TRACE_TTL_SECS;
+            if trace.replay_args.is_none() {
+                trace.replay_args = replay_args.cloned();
+            }
         } else if same_role {
             trace.repair_outcome = ToolRepairOutcome::Downgraded;
             trace.observed_at_unix = observed_at_unix;
@@ -246,6 +278,51 @@ pub fn apply_successful_tool_repair_observation(
     sort_tool_repair_history(&mut bounded);
     trim_tool_repair_history(&mut bounded);
     bounded
+}
+
+pub fn sanitized_tool_replay_args(
+    tool_name: &str,
+    arguments: &Value,
+    tool_spec: Option<&ToolSpec>,
+) -> Option<Value> {
+    let tool_spec = tool_spec?;
+    let contract = ToolContract::from_schema(tool_spec.runtime_role, &tool_spec.parameters);
+    sanitized_tool_replay_args_with_contract(tool_name, arguments, tool_spec, &contract)
+}
+
+pub fn sanitized_tool_replay_args_with_contract(
+    tool_name: &str,
+    arguments: &Value,
+    tool_spec: &ToolSpec,
+    contract: &ToolContract,
+) -> Option<Value> {
+    if tool_name == "shell"
+        || !is_replayable_tool_role(contract.runtime_role)
+        || !contract.replayable
+    {
+        return None;
+    }
+    let sanitized = sanitize_replay_value(
+        arguments,
+        Some(&tool_spec.parameters),
+        Some(contract),
+        None,
+        0,
+    )?;
+    if sanitized.to_string().len() > MAX_REPLAY_ARGS_BYTES {
+        return None;
+    }
+    if sanitized
+        .as_object()
+        .is_some_and(|object| object.is_empty())
+    {
+        return None;
+    }
+    let shape = tool_argument_shape(&sanitized, Some(tool_spec));
+    if !shape.missing_required_keys.is_empty() {
+        return None;
+    }
+    Some(sanitized)
 }
 
 pub fn latest_tool_repair_trace(history: &[ToolRepairTrace]) -> Option<ToolRepairTrace> {
@@ -301,6 +378,152 @@ pub fn tool_argument_shape(
         missing_required_keys,
         approximate_chars: arguments.to_string().chars().count(),
     }
+}
+
+fn sanitize_replay_value(
+    value: &Value,
+    schema: Option<&Value>,
+    contract: Option<&ToolContract>,
+    policy: Option<&ToolArgumentPolicy>,
+    depth: usize,
+) -> Option<Value> {
+    if depth > MAX_REPLAY_DEPTH {
+        return None;
+    }
+    if !schema_type_allows_value(schema, value) {
+        return None;
+    }
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => Some(value.clone()),
+        Value::String(value) => {
+            if !argument_policy_allows_replay_value(policy, value) {
+                return None;
+            }
+            Some(Value::String(sanitize_replay_string(value, policy)?))
+        }
+        Value::Array(values) => {
+            let item_schema = schema
+                .and_then(|schema| schema.get("items"))
+                .filter(|schema| schema.is_object());
+            let sanitized = values
+                .iter()
+                .take(MAX_REPLAY_ARRAY_ITEMS)
+                .filter_map(|value| {
+                    sanitize_replay_value(value, item_schema, None, None, depth + 1)
+                })
+                .collect::<Vec<_>>();
+            Some(Value::Array(sanitized))
+        }
+        Value::Object(values) => {
+            let property_schemas = schema
+                .and_then(|schema| schema.get("properties"))
+                .and_then(Value::as_object);
+            if schema.is_some() && property_schemas.is_none() {
+                return None;
+            }
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut out = Map::new();
+            for key in keys.into_iter().take(MAX_REPLAY_OBJECT_KEYS) {
+                let child_schema = property_schemas.and_then(|schemas| schemas.get(key));
+                if property_schemas.is_some() && child_schema.is_none() {
+                    continue;
+                }
+                let child_policy = match contract {
+                    Some(contract) => match contract.argument(key) {
+                        Some(policy) => Some(policy),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                if child_policy.is_some_and(|policy| !policy.replayable || policy.sensitive) {
+                    continue;
+                }
+                if let Some(value) = values.get(key).and_then(|value| {
+                    sanitize_replay_value(value, child_schema, None, child_policy, depth + 1)
+                }) {
+                    out.insert(bounded_key(key), value);
+                }
+            }
+            Some(Value::Object(out))
+        }
+    }
+}
+
+fn is_replayable_tool_role(role: Option<ToolRuntimeRole>) -> bool {
+    matches!(
+        role,
+        Some(
+            ToolRuntimeRole::HistoricalLookup
+                | ToolRuntimeRole::WorkspaceDiscovery
+                | ToolRuntimeRole::RuntimeStateInspection
+                | ToolRuntimeRole::ExternalLookup
+        )
+    )
+}
+
+fn argument_policy_allows_replay_value(policy: Option<&ToolArgumentPolicy>, value: &str) -> bool {
+    let Some(policy) = policy else {
+        return true;
+    };
+    if policy.replayable_values.is_empty() {
+        return true;
+    }
+    policy
+        .replayable_values
+        .iter()
+        .any(|allowed| allowed == value)
+}
+
+fn schema_type_allows_value(schema: Option<&Value>, value: &Value) -> bool {
+    let Some(schema_type) = schema.and_then(|schema| schema.get("type")) else {
+        return true;
+    };
+    match schema_type {
+        Value::String(kind) => schema_type_name_allows_value(kind, value),
+        Value::Array(kinds) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|kind| schema_type_name_allows_value(kind, value)),
+        _ => true,
+    }
+}
+
+fn schema_type_name_allows_value(kind: &str, value: &Value) -> bool {
+    match kind {
+        "null" => value.is_null(),
+        "boolean" => value.is_boolean(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "string" => value.is_string(),
+        "array" => value.is_array(),
+        "object" => value.is_object(),
+        _ => true,
+    }
+}
+
+fn bounded_replay_string(value: &str) -> String {
+    value.trim().chars().take(MAX_REPLAY_STRING_CHARS).collect()
+}
+
+fn sanitize_replay_string(value: &str, policy: Option<&ToolArgumentPolicy>) -> Option<String> {
+    match policy.and_then(|policy| policy.transform) {
+        Some(ToolArgumentTransform::UrlOriginPath) => sanitize_replay_url_origin_path(value),
+        None => Some(bounded_replay_string(value)),
+    }
+}
+
+fn sanitize_replay_url_origin_path(value: &str) -> Option<String> {
+    let mut parsed = Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    parsed.host_str()?;
+    parsed.set_username("").ok()?;
+    parsed.set_password(None).ok()?;
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    Some(bounded_replay_string(parsed.as_str()))
 }
 
 fn tool_repair_admission_state(
@@ -373,7 +596,7 @@ fn tool_repair_outcome_sort_key(outcome: ToolRepairOutcome) -> u8 {
 mod tests {
     use super::*;
     use crate::config::schema::CapabilityLane;
-    use crate::ports::tool::{ToolRuntimeRole, ToolSpec};
+    use crate::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole, ToolSpec};
 
     fn external_lookup_spec(name: &str) -> ToolSpec {
         ToolSpec {
@@ -390,6 +613,35 @@ mod tests {
             }),
             runtime_role: Some(ToolRuntimeRole::ExternalLookup),
         }
+    }
+
+    fn replayable_lookup_spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: format!("{name} desc"),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {"type": "string"},
+                    "api_key": {"type": "string"}
+                }
+            }),
+            runtime_role: Some(ToolRuntimeRole::ExternalLookup),
+        }
+    }
+
+    fn web_fetch_contract() -> ToolContract {
+        ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup)).with_arguments(vec![
+            ToolArgumentPolicy::replayable("url"),
+            ToolArgumentPolicy::sensitive("api_key"),
+        ])
+    }
+
+    fn web_fetch_url_policy_contract() -> ToolContract {
+        ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("url")
+                .with_transform(ToolArgumentTransform::UrlOriginPath)])
     }
 
     #[test]
@@ -536,6 +788,156 @@ mod tests {
     }
 
     #[test]
+    fn sanitized_replay_args_reject_unstructured_shell_command() {
+        let spec = ToolSpec {
+            name: "shell".into(),
+            description: "shell".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": {"type": "string"},
+                    "approved": {"type": "boolean"}
+                }
+            }),
+            runtime_role: Some(ToolRuntimeRole::WorkspaceDiscovery),
+        };
+        let args = serde_json::json!({ "command": "git status --short" });
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::WorkspaceDiscovery))
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("command"),
+                ToolArgumentPolicy::replayable("approved"),
+            ]);
+
+        assert!(
+            sanitized_tool_replay_args_with_contract("shell", &args, &spec, &contract).is_none()
+        );
+    }
+
+    #[test]
+    fn sanitized_replay_args_keep_structured_non_secret_payload() {
+        let spec = replayable_lookup_spec("web_fetch");
+        let args = serde_json::json!({
+            "url": "https://example.invalid/status",
+            "api_key": "sk-secret-value"
+        });
+
+        let contract = web_fetch_contract();
+        let sanitized =
+            sanitized_tool_replay_args_with_contract("web_fetch", &args, &spec, &contract)
+                .expect("replay args");
+
+        assert_eq!(
+            sanitized,
+            serde_json::json!({ "url": "https://example.invalid/status" })
+        );
+        assert!(!sanitized.to_string().contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn sanitized_replay_args_apply_url_origin_path_policy() {
+        let spec = replayable_lookup_spec("web_fetch");
+        let contract = web_fetch_url_policy_contract();
+        let args = serde_json::json!({
+            "url": "https://user:pass@example.invalid/status?token=secret#frag"
+        });
+
+        let sanitized =
+            sanitized_tool_replay_args_with_contract("web_fetch", &args, &spec, &contract)
+                .expect("replay args");
+
+        assert_eq!(
+            sanitized,
+            serde_json::json!({ "url": "https://example.invalid/status" })
+        );
+        assert!(!sanitized.to_string().contains("secret"));
+        assert!(!sanitized.to_string().contains("user:pass"));
+    }
+
+    #[test]
+    fn sanitized_replay_args_require_typed_contract() {
+        let spec = replayable_lookup_spec("web_fetch");
+        let args = serde_json::json!({ "url": "https://example.invalid/status" });
+
+        assert!(sanitized_tool_replay_args("web_fetch", &args, Some(&spec)).is_none());
+    }
+
+    #[test]
+    fn sanitized_replay_args_honor_typed_tool_contract() {
+        let spec = ToolSpec {
+            name: "git_operations".into(),
+            description: "git".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "required": ["operation"],
+                "properties": {
+                    "operation": {"type": "string"},
+                    "message": {"type": "string"}
+                }
+            }),
+            runtime_role: Some(ToolRuntimeRole::WorkspaceDiscovery),
+        };
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::WorkspaceDiscovery))
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("operation").with_values(["status"]),
+                ToolArgumentPolicy::blocked("message"),
+            ]);
+
+        assert_eq!(
+            sanitized_tool_replay_args_with_contract(
+                "git_operations",
+                &serde_json::json!({ "operation": "status", "message": "ignore me" }),
+                &spec,
+                &contract,
+            ),
+            Some(serde_json::json!({ "operation": "status" }))
+        );
+        assert!(sanitized_tool_replay_args_with_contract(
+            "git_operations",
+            &serde_json::json!({ "operation": "commit", "message": "ship it" }),
+            &spec,
+            &contract,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn sanitized_replay_args_reject_schema_type_mismatch() {
+        let spec = replayable_lookup_spec("web_fetch");
+        let contract = web_fetch_contract();
+
+        assert!(sanitized_tool_replay_args_with_contract(
+            "web_fetch",
+            &serde_json::json!({ "url": 42 }),
+            &spec,
+            &contract,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn sanitized_replay_args_reject_contract_with_schema_without_properties() {
+        let spec = ToolSpec {
+            name: "opaque_lookup".into(),
+            description: "opaque".into(),
+            parameters: serde_json::json!({
+                "type": "object"
+            }),
+            runtime_role: Some(ToolRuntimeRole::ExternalLookup),
+        };
+        let contract = ToolContract::replayable(Some(ToolRuntimeRole::ExternalLookup))
+            .with_arguments(vec![ToolArgumentPolicy::replayable("anything")]);
+
+        assert!(sanitized_tool_replay_args_with_contract(
+            "opaque_lookup",
+            &serde_json::json!({ "anything": "goes" }),
+            &spec,
+            &contract,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn enrich_preserves_attempt_reason_without_context_override() {
         let trace = build_tool_repair_trace_with_context(
             "web_fetch",
@@ -615,6 +1017,53 @@ mod tests {
                 .tool_name,
             "web_fetch"
         );
+    }
+
+    #[test]
+    fn successful_tool_observation_attaches_sanitized_replay_args_to_same_tool_only() {
+        let replay_args = serde_json::json!({ "url": "https://example.invalid/status" });
+
+        let updated = apply_successful_tool_repair_observation_with_args(
+            &[
+                ToolRepairTrace {
+                    observed_at_unix: 100,
+                    tool_name: "web_fetch".into(),
+                    tool_role: Some(ToolRuntimeRole::ExternalLookup),
+                    failure_kind: ToolFailureKind::Timeout,
+                    suggested_action: ToolRepairAction::RetryWithSimplerRequest,
+                    repair_outcome: ToolRepairOutcome::Failed,
+                    expires_at_unix: 100 + TOOL_REPAIR_TRACE_TTL_SECS,
+                    repeat_count: 1,
+                    ..ToolRepairTrace::default()
+                },
+                ToolRepairTrace {
+                    observed_at_unix: 101,
+                    tool_name: "image_info".into(),
+                    tool_role: Some(ToolRuntimeRole::ExternalLookup),
+                    failure_kind: ToolFailureKind::CapabilityMismatch,
+                    suggested_action: ToolRepairAction::InspectRuntimeFailure,
+                    repair_outcome: ToolRepairOutcome::Failed,
+                    expires_at_unix: 101 + TOOL_REPAIR_TRACE_TTL_SECS,
+                    repeat_count: 1,
+                    ..ToolRepairTrace::default()
+                },
+            ],
+            "web_fetch",
+            Some(ToolRuntimeRole::ExternalLookup),
+            200,
+            Some(&replay_args),
+        );
+
+        let web_fetch = updated
+            .iter()
+            .find(|trace| trace.tool_name == "web_fetch")
+            .expect("web fetch trace");
+        let image_info = updated
+            .iter()
+            .find(|trace| trace.tool_name == "image_info")
+            .expect("image info trace");
+        assert_eq!(web_fetch.replay_args.as_ref(), Some(&replay_args));
+        assert!(image_info.replay_args.is_none());
     }
 
     #[test]

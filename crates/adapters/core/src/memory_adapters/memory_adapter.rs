@@ -140,6 +140,13 @@ impl SkillMemoryPort for ConsolidatingMemory {
     ) -> Result<Option<Skill>, MemoryError> {
         self.inner.get_skill(name, agent_id).await
     }
+    async fn get_skill_by_id(
+        &self,
+        skill_id: &MemoryId,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        self.inner.get_skill_by_id(skill_id, agent_id).await
+    }
     async fn list_skills(
         &self,
         agent_id: &AgentId,

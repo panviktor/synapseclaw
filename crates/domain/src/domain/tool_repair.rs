@@ -118,6 +118,8 @@ pub struct ToolRepairTrace {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argument_shape: Option<ToolArgumentShape>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_args: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_state: Option<ToolRepairAdmissionState>,
     #[serde(default)]
     pub repair_outcome: ToolRepairOutcome,
@@ -141,6 +143,7 @@ impl Default for ToolRepairTrace {
             route: None,
             attempt_reason: ToolRepairAttemptReason::ModelToolCall,
             argument_shape: None,
+            replay_args: None,
             admission_state: None,
             repair_outcome: ToolRepairOutcome::Failed,
             expires_at_unix: 0,

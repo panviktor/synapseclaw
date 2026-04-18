@@ -11,8 +11,9 @@ use synapse_domain::application::services::model_capability_support::{
 };
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::tool_repair::{
-    apply_successful_tool_repair_observation, build_tool_repair_trace, enrich_tool_repair_trace,
-    latest_tool_repair_trace, ToolRepairTraceContext,
+    apply_successful_tool_repair_observation_with_args, build_tool_repair_trace,
+    enrich_tool_repair_trace, latest_tool_repair_trace, sanitized_tool_replay_args_with_contract,
+    ToolRepairTraceContext,
 };
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 use synapse_domain::domain::tool_repair::{
@@ -238,6 +239,7 @@ pub(crate) async fn execute_one_tool(
                 ToolFailureKind::UnknownTool,
                 Some(&reason),
             )),
+            replay_args: None,
         });
     };
 
@@ -285,6 +287,7 @@ pub(crate) async fn execute_one_tool(
                     ToolFailureKind::PolicyBlocked,
                     Some(&reason),
                 )),
+                replay_args: None,
             });
         }
     }
@@ -335,6 +338,20 @@ pub(crate) async fn execute_one_tool(
                     duration,
                     tool_facts,
                     repair_trace: None,
+                    replay_args: {
+                        let tool_spec = DomainToolSpec {
+                            name: tool.name().to_string(),
+                            description: tool.description().to_string(),
+                            parameters: tool.parameters_schema(),
+                            runtime_role: tool.runtime_role(),
+                        };
+                        sanitized_tool_replay_args_with_contract(
+                            call_name,
+                            &call_arguments,
+                            &tool_spec,
+                            &tool.tool_contract(),
+                        )
+                    },
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -354,6 +371,7 @@ pub(crate) async fn execute_one_tool(
                         ToolFailureKind::ReportedFailure,
                         Some(&reason),
                     )),
+                    replay_args: None,
                 })
             }
         }
@@ -382,6 +400,7 @@ pub(crate) async fn execute_one_tool(
                 duration,
                 tool_facts,
                 repair_trace: Some(classify_tool_execution_error(call_name, &e)),
+                replay_args: None,
             })
         }
     }
@@ -394,6 +413,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) duration: Duration,
     pub(crate) tool_facts: Vec<TypedToolFact>,
     pub(crate) repair_trace: Option<ToolRepairTrace>,
+    pub(crate) replay_args: Option<serde_json::Value>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -945,6 +965,7 @@ pub(crate) async fn run_tool_call_loop(
                                     model,
                                     ToolRepairAttemptReason::HookPolicy,
                                 )),
+                                replay_args: None,
                             },
                         ));
                         continue;
@@ -1022,6 +1043,7 @@ pub(crate) async fn run_tool_call_loop(
                                     model,
                                     ToolRepairAttemptReason::ApprovalGate,
                                 )),
+                                replay_args: None,
                             },
                         ));
                         continue;
@@ -1082,6 +1104,7 @@ pub(crate) async fn run_tool_call_loop(
                             model,
                             ToolRepairAttemptReason::DuplicateGuard,
                         )),
+                        replay_args: None,
                     },
                 ));
                 continue;
@@ -1226,11 +1249,12 @@ pub(crate) async fn run_tool_call_loop(
                     .iter()
                     .find(|spec| spec.name == call.name)
                     .and_then(|spec| spec.runtime_role);
-                collected_tool_repairs = apply_successful_tool_repair_observation(
+                collected_tool_repairs = apply_successful_tool_repair_observation_with_args(
                     &collected_tool_repairs,
                     &call.name,
                     role,
                     chrono::Utc::now().timestamp(),
+                    outcome.replay_args.as_ref(),
                 );
                 last_tool_repair = latest_tool_repair_trace(&collected_tool_repairs);
             }

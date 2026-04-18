@@ -18,7 +18,7 @@ const ACTIVE_SUCCESS_THRESHOLD: u32 = 5;
 const FAILURE_DOMINANT_THRESHOLD: u32 = 2;
 const SKILL_RECIPE_SUPPORT_THRESHOLD: f64 = 0.66;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SkillReviewAction {
     PromoteToActive,
     DowngradeToCandidate,

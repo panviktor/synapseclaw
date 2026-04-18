@@ -7,7 +7,9 @@ use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::memory::MemoryQuery;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 fn is_autosave_key(key: &str) -> bool {
     let normalized = key.trim().to_ascii_lowercase();
@@ -196,7 +198,18 @@ impl Tool for MemoryRecallTool {
     }
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
+        Some(ToolRuntimeRole::HistoricalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::PendingPrivacyPolicy,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("query"),
+            ToolArgumentPolicy::blocked("limit"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

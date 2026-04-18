@@ -238,7 +238,20 @@ pub async fn handle(
                 CommandEffect::SwitchModelBlocked { .. }
                 | CommandEffect::ShowProviders
                 | CommandEffect::ShowModel
-                | CommandEffect::ShowDoctor => {}
+                | CommandEffect::ShowDoctor
+                | CommandEffect::ShowSkills { .. }
+                | CommandEffect::CreateUserSkill { .. }
+                | CommandEffect::UpdateUserSkill { .. }
+                | CommandEffect::ShowSkillTools
+                | CommandEffect::ShowSkillTraces
+                | CommandEffect::ShowSkillHealth { .. }
+                | CommandEffect::ShowSkillDiff { .. }
+                | CommandEffect::ApplySkillPatch { .. }
+                | CommandEffect::ShowSkillVersions { .. }
+                | CommandEffect::RollbackSkillPatch { .. }
+                | CommandEffect::AutoPromoteSkills { .. }
+                | CommandEffect::ReviewSkills { .. }
+                | CommandEffect::UpdateSkillStatus { .. } => {}
             }
 
             Ok(HandleResult::Command {
@@ -1211,6 +1224,7 @@ async fn execute_agent_turn(
                     chrono::Utc::now().timestamp(),
                 )
                 .records;
+            let post_turn_tool_repairs = route.recent_tool_repairs.clone();
             ports.routes.set_route(conversation_key, route);
 
             if let Some(ref store) = ports.dialogue_state_store {
@@ -1239,6 +1253,7 @@ async fn execute_agent_turn(
                     assistant_response: response_text_for_delivery.clone(),
                     tools_used: turn_result.tool_names.clone(),
                     tool_facts: turn_result.tool_facts.clone(),
+                    tool_repairs: post_turn_tool_repairs.clone(),
                     run_recipe_store: ports.run_recipe_store.clone(),
                     user_profile_store: ports.user_profile_store.clone(),
                     user_profile_key: Some(channel_user_profile_key(&config.agent_id, envelope)),

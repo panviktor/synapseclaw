@@ -28,6 +28,7 @@ pub use synapse_mcp::{ActivatedToolSet, DeferredMcpToolSet};
 pub mod agents_ipc;
 pub mod delegate;
 pub mod node_tool;
+pub mod skill_runtime;
 pub mod traits;
 
 pub use agents_ipc::{
@@ -37,15 +38,21 @@ pub use agents_ipc::{
 pub use delegate::DelegateTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
+pub use skill_runtime::SkillReadTool;
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use synapse_domain::config::schema::{Config, DelegateAgentConfig};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::runtime::RuntimeAdapter;
+use synapse_domain::ports::tool::{
+    tool_contract_inventory_row, tool_runtime_role_name, validate_tool_contract,
+    ToolContractInventoryRow, ToolContractIssue,
+};
 use synapse_memory::UnifiedMemoryPort;
 use synapse_tools::core_memory_update::CoreMemoryUpdateTool;
 
@@ -83,6 +90,69 @@ pub type DelegateParentToolsHandle = Arc<RwLock<Vec<Arc<dyn Tool>>>>;
 
 pub use synapse_domain::ports::tool::ArcToolRef;
 
+pub fn audit_tool_contracts(tools: &[Box<dyn Tool>]) -> Vec<ToolContractIssue> {
+    let mut issues = Vec::new();
+    for tool in tools {
+        issues.extend(validate_tool_contract(
+            tool.name(),
+            &tool.parameters_schema(),
+            tool.runtime_role(),
+            &tool.tool_contract(),
+        ));
+    }
+    issues
+}
+
+pub fn tool_contract_inventory(tools: &[Box<dyn Tool>]) -> Vec<ToolContractInventoryRow> {
+    let mut rows = tools
+        .iter()
+        .map(|tool| {
+            tool_contract_inventory_row(tool.name(), tool.runtime_role(), &tool.tool_contract())
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.tool_name.cmp(&right.tool_name));
+    rows
+}
+
+pub fn tool_contract_inventory_lines(tools: &[Box<dyn Tool>]) -> Vec<String> {
+    tool_contract_inventory(tools)
+        .into_iter()
+        .map(|row| row.line())
+        .collect()
+}
+
+pub fn format_tool_contract_inventory_report(tools: &[Box<dyn Tool>]) -> String {
+    let issues = audit_tool_contracts(tools);
+    let rows = tool_contract_inventory(tools);
+    let replayable_count = rows.iter().filter(|row| row.replayable).count();
+    let non_replayable_count = rows.len().saturating_sub(replayable_count);
+    let mut report = String::new();
+
+    let _ = writeln!(report, "Tool replay contracts");
+    let _ = writeln!(
+        report,
+        "Tools: {} total, {} replayable, {} non-replayable",
+        rows.len(),
+        replayable_count,
+        non_replayable_count
+    );
+    if issues.is_empty() {
+        let _ = writeln!(report, "Audit: ok");
+    } else {
+        let _ = writeln!(report, "Audit: failed ({} issue(s))", issues.len());
+        for issue in &issues {
+            let _ = writeln!(report, "- {}: {}", issue.tool_name, issue.message);
+        }
+    }
+
+    let _ = writeln!(report);
+    for row in rows {
+        let _ = writeln!(report, "- {}", row.line());
+    }
+
+    report
+}
+
 #[derive(Clone)]
 struct ArcDelegatingTool {
     inner: Arc<dyn Tool>,
@@ -110,6 +180,10 @@ impl Tool for ArcDelegatingTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         self.inner.runtime_role()
+    }
+
+    fn tool_contract(&self) -> synapse_domain::ports::tool::ToolContract {
+        self.inner.tool_contract()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -485,6 +559,10 @@ fn build_runtime_tool_registry(
             security.clone(),
         )) as Arc<dyn Tool>,
         Arc::new(ProxyConfigTool::new(config.clone(), security.clone())),
+        Arc::new(RepoDiscoveryTool::new(
+            security.clone(),
+            workspace_dir.to_path_buf(),
+        )),
         Arc::new(GitOperationsTool::new(
             security.clone(),
             workspace_dir.to_path_buf(),
@@ -831,6 +909,26 @@ fn build_runtime_tool_registry(
         )));
     }
 
+    let mut skill_tool_names = tool_arcs
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect::<Vec<_>>();
+    skill_tool_names.push("skill_read".into());
+    let mut skill_tool_roles = tool_arcs
+        .iter()
+        .filter_map(|tool| tool.runtime_role().map(tool_runtime_role_name))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    skill_tool_roles.sort();
+    skill_tool_roles.dedup();
+    tool_arcs.push(Arc::new(SkillReadTool::new(
+        Arc::new(root_config.clone()),
+        memory.clone(),
+        skill_tool_names,
+        skill_tool_roles,
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    )));
+
     // Add delegation tool when agents are configured
     let delegate_default_credential = default_api_key.and_then(|value| {
         let trimmed_value = value.trim();
@@ -944,6 +1042,7 @@ fn build_runtime_tool_registry(
 mod tests {
     use super::*;
     use synapse_domain::config::schema::{BrowserConfig, Config};
+    use synapse_domain::ports::tool::ToolNonReplayableReason;
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {
@@ -1123,6 +1222,134 @@ mod tests {
                 tool.name()
             );
         }
+    }
+
+    #[test]
+    fn default_tools_have_valid_contracts() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tools = default_tools(security);
+        let issues = audit_tool_contracts(&tools);
+
+        assert!(
+            issues.is_empty(),
+            "tool contract issues:\n{}",
+            issues
+                .iter()
+                .map(|issue| format!("{}: {}", issue.tool_name, issue.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    #[test]
+    fn runtime_registry_tools_have_valid_contracts() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let browser = BrowserConfig {
+            enabled: true,
+            allowed_domains: vec!["example.com".into()],
+            session_name: None,
+            ..BrowserConfig::default()
+        };
+        let http = synapse_domain::config::schema::HttpRequestConfig {
+            enabled: true,
+            allowed_domains: vec!["example.com".into()],
+            ..synapse_domain::config::schema::HttpRequestConfig::default()
+        };
+        let web_fetch = synapse_domain::config::schema::WebFetchConfig {
+            enabled: true,
+            allowed_domains: vec!["example.com".into()],
+            ..synapse_domain::config::schema::WebFetchConfig::default()
+        };
+        let mut cfg = test_config(&tmp);
+        cfg.web_search.enabled = false;
+
+        let (tools, _, _) = test_all_tools(
+            Arc::new(Config::default()),
+            &security,
+            mem,
+            None,
+            None,
+            &browser,
+            &http,
+            &web_fetch,
+            tmp.path(),
+            &HashMap::new(),
+            None,
+            &cfg,
+            None,
+        );
+        let issues = audit_tool_contracts(&tools);
+        let inventory = tool_contract_inventory(&tools);
+
+        assert!(
+            issues.is_empty(),
+            "tool contract issues:\n{}\n\ninventory:\n{}",
+            issues
+                .iter()
+                .map(|issue| format!("{}: {}", issue.tool_name, issue.message))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            tool_contract_inventory_lines(&tools).join("\n")
+        );
+        assert!(
+            inventory
+                .iter()
+                .any(|row| row.tool_name == "file_read" && row.replayable),
+            "runtime registry lost replayable contracts:\n{}",
+            tool_contract_inventory_lines(&tools).join("\n")
+        );
+        assert!(
+            inventory
+                .iter()
+                .any(|row| row.tool_name == "git_operations" && row.replayable),
+            "runtime registry lost git replay contract:\n{}",
+            tool_contract_inventory_lines(&tools).join("\n")
+        );
+        assert!(
+            inventory.iter().any(|row| {
+                row.tool_name == "skill_read"
+                    && !row.replayable
+                    && row.non_replayable_reason == Some(ToolNonReplayableReason::RuntimeActivation)
+            }),
+            "runtime registry lost skill_read runtime-activation contract:\n{}",
+            tool_contract_inventory_lines(&tools).join("\n")
+        );
+        assert!(
+            inventory.iter().any(|row| {
+                row.tool_name == "memory_recall"
+                    && !row.replayable
+                    && row.non_replayable_reason
+                        == Some(ToolNonReplayableReason::PendingPrivacyPolicy)
+            }),
+            "runtime registry lost memory_recall privacy contract:\n{}",
+            tool_contract_inventory_lines(&tools).join("\n")
+        );
+    }
+
+    #[test]
+    fn tool_contract_inventory_lists_replayable_and_non_replayable_tools() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tools = default_tools(security);
+        let lines = tool_contract_inventory_lines(&tools);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("file_read | role=workspace_discovery | replayable"));
+        assert!(joined.contains(
+            "shell | role=workspace_discovery | non_replayable | reason=free_form_command"
+        ));
+    }
+
+    #[test]
+    fn tool_contract_inventory_report_includes_audit_status() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tools = default_tools(security);
+        let report = format_tool_contract_inventory_report(&tools);
+
+        assert!(report.contains("Tool replay contracts"));
+        assert!(report.contains("Audit: ok"));
+        assert!(report.contains("file_read | role=workspace_discovery | replayable"));
     }
 
     #[test]

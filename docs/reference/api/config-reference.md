@@ -269,7 +269,8 @@ Notes:
 |---|---|---|
 | `open_skills_enabled` | `false` | Opt-in loading/sync of community `open-skills` repository |
 | `open_skills_dir` | unset | Optional local path for `open-skills` (defaults to `$HOME/open-skills` when enabled) |
-| `prompt_injection_mode` | `full` | Skill prompt verbosity: `full` (inline instructions/tools) or `compact` (name/description/location only) |
+| `prompt_injection_mode` | `compact` | Skill prompt verbosity: `compact` (name/description/location only) or `full` (inline instructions/tools) |
+| `port_workspace_packages_on_start` | `true` | One-time port of workspace `skills/**/SKILL.*` packages into memory-backed skills, then move sources under `skills/ported/` |
 
 Notes:
 
@@ -279,7 +280,10 @@ Notes:
   - `SYNAPSECLAW_OPEN_SKILLS_DIR` overrides the repository path when non-empty.
   - `SYNAPSECLAW_SKILLS_PROMPT_MODE` accepts `full` or `compact`.
 - Precedence for enable flag: `SYNAPSECLAW_OPEN_SKILLS_ENABLED` → `skills.open_skills_enabled` in `config.toml` → default `false`.
-- `prompt_injection_mode = "compact"` is recommended on low-context local models to reduce startup prompt size while keeping skill files available on demand.
+- `prompt_injection_mode = "compact"` is the default. It reduces startup prompt size while keeping skill files available through governed on-demand activation.
+- `prompt_injection_mode = "full"` is a legacy/diagnostic option for explicitly inlining skill instructions and tool metadata into the system prompt.
+- `port_workspace_packages_on_start = true` ports local workspace skill packages into memory, but imported/community file-backed skills remain available in the compact catalog and through `skill_read`.
+- Imported/community file-backed skills are also indexed as compact memory cards for semantic discovery. The index stores source/hash metadata and a bounded excerpt; full package instructions remain file-backed and are loaded only through `skill_read`.
 - Skill loading and `synapseclaw skills install` both apply a static security audit. Skills that contain symlinks, script-like files, high-risk shell payload snippets, or unsafe markdown link traversal are rejected.
 
 ## `[composio]`

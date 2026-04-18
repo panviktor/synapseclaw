@@ -1741,6 +1741,184 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         )
     }
 
+    async fn skill_status_output(
+        &mut self,
+        view: synapse_domain::application::services::inbound_message_service::RuntimeSkillStatusView,
+    ) -> anyhow::Result<String> {
+        let available_tools = self
+            .state
+            .runtime_tools_registry
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        let mut available_tool_roles = self
+            .state
+            .runtime_tools_registry
+            .iter()
+            .filter_map(|tool| {
+                tool.runtime_role()
+                    .map(synapse_domain::ports::tool::tool_runtime_role_name)
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        available_tool_roles.sort();
+        available_tool_roles.dedup();
+        crate::skills::format_runtime_skill_status_view(
+            self.config,
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            available_tools,
+            available_tool_roles,
+            100,
+            view,
+        )
+        .await
+    }
+
+    async fn skill_tool_contracts_output(&mut self) -> anyhow::Result<String> {
+        Ok(crate::tools::format_tool_contract_inventory_report(
+            self.state.runtime_tools_registry.as_ref(),
+        ))
+    }
+
+    async fn skill_use_traces_output(&mut self) -> anyhow::Result<String> {
+        crate::skills::format_skill_use_traces_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            25,
+        )
+        .await
+    }
+
+    async fn skill_health_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        crate::skills::format_skill_health_cleanup_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            100,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn skill_patch_diff_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+        crate::skills::format_skill_patch_candidate_diff_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            candidate,
+            100,
+        )
+        .await
+    }
+
+    async fn apply_skill_patch_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+        crate::skills::apply_skill_patch_candidate_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            candidate,
+            100,
+        )
+        .await
+    }
+
+    async fn skill_patch_versions_output(
+        &mut self,
+        skill_ref: Option<&str>,
+    ) -> anyhow::Result<String> {
+        crate::skills::format_skill_patch_versions_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            skill_ref,
+            50,
+        )
+        .await
+    }
+
+    async fn create_user_skill_output(
+        &mut self,
+        name: &str,
+        body: &str,
+        metadata: &synapse_domain::application::services::inbound_message_service::RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String> {
+        crate::skills::create_user_authored_skill_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            crate::skills::user_authored_skill_request_from_runtime_command(name, body, metadata),
+        )
+        .await
+    }
+
+    async fn update_user_skill_output(
+        &mut self,
+        skill_ref: &str,
+        body: &str,
+        metadata: &synapse_domain::application::services::inbound_message_service::RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String> {
+        crate::skills::update_user_skill_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            crate::skills::UserSkillUpdateRequest {
+                skill_ref: skill_ref.to_string(),
+                description: None,
+                body: Some(body.to_string()),
+                task_family: metadata.task_family.clone(),
+                tool_pattern: (!metadata.tool_pattern.is_empty())
+                    .then_some(metadata.tool_pattern.clone()),
+                tags: (!metadata.tags.is_empty()).then_some(metadata.tags.clone()),
+                status: None,
+            },
+        )
+        .await
+    }
+
+    async fn rollback_skill_patch_output(&mut self, rollback_ref: &str) -> anyhow::Result<String> {
+        crate::skills::rollback_skill_patch_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            rollback_ref,
+            100,
+        )
+        .await
+    }
+
+    async fn skill_auto_promotion_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        let policy = crate::skills::skill_auto_promotion_policy_from_config(
+            &self.config.skills.auto_promotion,
+        );
+        crate::skills::format_skill_auto_promotion_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            &policy,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn skill_review_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        crate::skills::format_learned_skill_review_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn update_skill_status_output(
+        &mut self,
+        skill_ref: &str,
+        target_status: synapse_domain::domain::memory::SkillStatus,
+    ) -> anyhow::Result<String> {
+        crate::skills::update_learned_skill_status_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            skill_ref,
+            target_status,
+        )
+        .await
+    }
+
     async fn switch_provider(
         &mut self,
         request: RuntimeRouteMutationRequest,
