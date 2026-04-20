@@ -400,6 +400,8 @@ fn matrix_media_artifact_attachments(
             Ok(MatrixOutgoingAttachment {
                 kind: matrix_attachment_kind_for_artifact(artifact.kind),
                 target: artifact_delivery_uri("matrix", artifact)?.to_string(),
+                label: artifact.label.clone(),
+                mime_type: artifact.mime_type.clone(),
             })
         })
         .collect()
@@ -409,6 +411,8 @@ fn matrix_media_artifact_attachments(
 struct MatrixOutgoingAttachment {
     kind: MatrixOutgoingAttachmentKind,
     target: String,
+    label: Option<String>,
+    mime_type: Option<String>,
 }
 
 fn parse_matrix_attachment_markers(message: &str) -> (String, Vec<MatrixOutgoingAttachment>) {
@@ -442,6 +446,8 @@ fn parse_matrix_attachment_markers(message: &str) -> (String, Vec<MatrixOutgoing
             Some(MatrixOutgoingAttachment {
                 kind,
                 target: target.to_string(),
+                label: None,
+                mime_type: None,
             })
         });
 
@@ -1477,8 +1483,8 @@ impl Channel for MatrixChannel {
             let upload = resolve_outbound_media_uri(
                 &self.http_client,
                 target,
-                None,
-                None,
+                attachment.label.as_deref(),
+                attachment.mime_type.as_deref(),
                 matrix_attachment_fallback_file_name(attachment.kind),
             )
             .await?;
@@ -2766,6 +2772,21 @@ mod tests {
         let (cleaned, attachments) = parse_matrix_attachment_markers(input);
         assert_eq!(cleaned, "Just plain text");
         assert!(attachments.is_empty());
+    }
+
+    #[test]
+    fn matrix_media_artifacts_preserve_label_and_mime() {
+        let mut artifact = MediaArtifact::new(MediaArtifactKind::Voice, "/tmp/voice.wav");
+        artifact.label = Some("assistant-voice.wav".to_string());
+        artifact.mime_type = Some("audio/wav".to_string());
+
+        let attachments = matrix_media_artifact_attachments(&[artifact]).unwrap();
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].kind, MatrixOutgoingAttachmentKind::Voice);
+        assert_eq!(attachments[0].target, "/tmp/voice.wav");
+        assert_eq!(attachments[0].label.as_deref(), Some("assistant-voice.wav"));
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("audio/wav"));
     }
 
     #[test]

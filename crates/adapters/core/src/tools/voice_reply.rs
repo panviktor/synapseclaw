@@ -161,20 +161,52 @@ impl VoiceReplyTool {
         }
     }
 
-    fn output_extension(config: &TtsConfig) -> &'static str {
-        match config.default_format.trim().to_ascii_lowercase().as_str() {
+    fn provider_output_format(config: &TtsConfig) -> String {
+        match config.default_provider.trim().to_ascii_lowercase().as_str() {
+            "openai" => "opus".to_string(),
+            "groq" => config
+                .groq
+                .as_ref()
+                .map(|cfg| cfg.response_format.as_str())
+                .unwrap_or(config.default_format.as_str())
+                .to_string(),
+            "elevenlabs" | "edge" | "google" | "minimax" => "mp3".to_string(),
+            "mistral" => config
+                .mistral
+                .as_ref()
+                .map(|cfg| cfg.response_format.as_str())
+                .unwrap_or(config.default_format.as_str())
+                .to_string(),
+            "xai" => config
+                .xai
+                .as_ref()
+                .map(|cfg| cfg.codec.as_str())
+                .unwrap_or(config.default_format.as_str())
+                .to_string(),
+            _ => config.default_format.clone(),
+        }
+    }
+
+    fn output_extension(format: &str) -> &'static str {
+        match format.trim().to_ascii_lowercase().as_str() {
             "ogg" | "opus" => "ogg",
-            "wav" => "wav",
-            "m4a" | "mp4" | "aac" => "m4a",
+            "wav" | "wave" => "wav",
+            "m4a" | "mp4" => "m4a",
+            "aac" => "aac",
+            "flac" => "flac",
+            "pcm" => "pcm",
             _ => "mp3",
         }
     }
 
-    fn output_mime(extension: &str) -> &'static str {
-        match extension {
-            "ogg" => "audio/ogg",
-            "wav" => "audio/wav",
-            "m4a" => "audio/mp4",
+    fn output_mime(format: &str) -> &'static str {
+        match format.trim().to_ascii_lowercase().as_str() {
+            "ogg" | "opus" => "audio/ogg",
+            "wav" | "wave" => "audio/wav",
+            "m4a" | "mp4" => "audio/mp4",
+            "aac" => "audio/aac",
+            "flac" => "audio/flac",
+            "pcm" => "audio/L16",
             _ => "audio/mpeg",
         }
     }
@@ -441,7 +473,8 @@ impl Tool for VoiceReplyTool {
             )));
         };
 
-        let extension = Self::output_extension(&tts_config);
+        let format = Self::provider_output_format(&tts_config);
+        let extension = Self::output_extension(&format);
         let path = match Self::persist_voice_bytes(&self.workspace_dir, extension, &audio).await {
             Ok(path) => path,
             Err(error) => return Ok(Self::failure_execution(error.to_string())),
@@ -452,7 +485,7 @@ impl Tool for VoiceReplyTool {
             .unwrap_or("voice_reply")
             .to_string();
         let mut artifact = MediaArtifact::new(MediaArtifactKind::Voice, path.display().to_string());
-        artifact.mime_type = Some(Self::output_mime(extension).to_string());
+        artifact.mime_type = Some(Self::output_mime(&format).to_string());
         artifact.label = Some(label);
 
         let mut intent = OutboundIntent::notify_in_thread(
@@ -792,6 +825,14 @@ mod tests {
             delivered[0].media_artifacts[0].kind,
             MediaArtifactKind::Voice
         );
+        assert_eq!(
+            delivered[0].media_artifacts[0].mime_type.as_deref(),
+            Some("audio/mpeg")
+        );
+        assert!(delivered[0].media_artifacts[0]
+            .label
+            .as_deref()
+            .is_some_and(|label| label.ends_with(".mp3")));
         assert!(matches!(
             execution.facts[0].payload,
             ToolFactPayload::Delivery(DeliveryFact {
@@ -872,6 +913,37 @@ mod tests {
             synth.attempts.lock().as_slice(),
             ["groq:hannah", "openai:alloy"]
         );
+        let delivered = registry.delivered.lock();
+        assert_eq!(
+            delivered[0].media_artifacts[0].mime_type.as_deref(),
+            Some("audio/ogg")
+        );
+        assert!(delivered[0].media_artifacts[0]
+            .label
+            .as_deref()
+            .is_some_and(|label| label.ends_with(".ogg")));
+    }
+
+    #[test]
+    fn voice_reply_uses_provider_native_output_format() {
+        let mut config = TtsConfig {
+            enabled: true,
+            default_provider: "openai".into(),
+            default_format: "wav".into(),
+            ..TtsConfig::default()
+        };
+        assert_eq!(VoiceReplyTool::provider_output_format(&config), "opus");
+        assert_eq!(VoiceReplyTool::output_extension("opus"), "ogg");
+        assert_eq!(VoiceReplyTool::output_mime("opus"), "audio/ogg");
+
+        config.default_provider = "groq".into();
+        config.groq = Some(synapse_domain::config::schema::GroqTtsConfig {
+            api_key: Some("test".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        });
+        assert_eq!(VoiceReplyTool::provider_output_format(&config), "wav");
+        assert_eq!(VoiceReplyTool::output_mime("wav"), "audio/wav");
     }
 
     #[tokio::test]

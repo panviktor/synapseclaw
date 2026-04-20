@@ -187,6 +187,8 @@ api_key_env = "XAI_API_KEY"
 
 Voice IDs come from the runtime voice catalog exposed by `voice_list`. For provider-specific voice defaults, keep small blocks under `[tts.<provider>]`. For example, MiniMax keeps voice tuning under `[tts.minimax]`, while the model and key are selected through `speech_synthesis`.
 
+Matrix voice replies preserve the speech provider's native audio format and send it through the Matrix voice-message path. This keeps the message as a voice bubble, but client playback can vary by format; use a provider that emits valid Ogg/Opus when a Matrix mobile client requires strict Ogg/Opus voice payloads.
+
 ```toml
 [tts.minimax]
 voice_id = "<voice-id-from-voice-list-or-provider-catalog>"

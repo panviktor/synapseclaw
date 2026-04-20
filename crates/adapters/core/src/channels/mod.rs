@@ -268,6 +268,7 @@ fn apply_speech_synthesis_candidate_config(
                 model: selected.model.clone(),
                 speed,
             });
+            tts.default_format = "opus".to_string();
             apply_lane_default_tts_voice(&mut tts, "openai", &selected.model, None);
         }
         "groq" => {
@@ -295,6 +296,7 @@ fn apply_speech_synthesis_candidate_config(
                     .map(|cfg| cfg.similarity_boost)
                     .unwrap_or(0.5),
             });
+            tts.default_format = "mp3".to_string();
         }
         "google" => {
             let language_code = tts
@@ -306,6 +308,7 @@ fn apply_speech_synthesis_candidate_config(
                 api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
                 language_code,
             });
+            tts.default_format = "mp3".to_string();
             apply_lane_default_tts_voice(&mut tts, "google", &selected.model, None);
         }
         "edge" => {
@@ -315,6 +318,7 @@ fn apply_speech_synthesis_candidate_config(
                 .map(|cfg| cfg.binary_path.clone())
                 .unwrap_or_else(|| "edge-tts".to_string());
             tts.edge = Some(EdgeTtsConfig { binary_path });
+            tts.default_format = "mp3".to_string();
             apply_lane_default_tts_voice(&mut tts, "edge", &selected.model, None);
         }
         "minimax" | "minimax-cn" => {
@@ -350,6 +354,7 @@ fn apply_speech_synthesis_candidate_config(
                     .unwrap_or(32_000),
                 bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
             });
+            tts.default_format = "mp3".to_string();
             apply_lane_default_tts_voice(&mut tts, "minimax", &selected.model, Some(voice_id));
         }
         "mistral" => {
@@ -370,6 +375,9 @@ fn apply_speech_synthesis_candidate_config(
                     .map(|cfg| cfg.response_format.clone())
                     .unwrap_or_else(|| tts.default_format.clone()),
             });
+            if let Some(mistral) = &tts.mistral {
+                tts.default_format = mistral.response_format.clone();
+            }
             apply_lane_default_tts_voice(&mut tts, "mistral", &selected.model, Some(voice_id));
         }
         "xai" => {
@@ -390,6 +398,9 @@ fn apply_speech_synthesis_candidate_config(
                     .unwrap_or(24_000),
                 bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
             });
+            if let Some(xai) = &tts.xai {
+                tts.default_format = xai.codec.clone();
+            }
             apply_lane_default_tts_voice(&mut tts, "xai", &selected.model, None);
         }
         other => {
