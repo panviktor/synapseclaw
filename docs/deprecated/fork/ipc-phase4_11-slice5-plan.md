@@ -979,7 +979,6 @@ Still open for later Slice 5 work:
 
 ## References
 
-- Hermes Agent local implementation: `/home/protosik00/hermes-agent`
 - Hermes Skills System: https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
 - OpenHands Skills Overview: https://docs.openhands.dev/overview/skills
 - OpenHands SDK Skills Guide: https://docs.openhands.dev/sdk/guides/skill
