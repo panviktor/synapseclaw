@@ -22,7 +22,7 @@ use matrix_sdk::{
                 MediaSource,
             },
         },
-        OwnedEventId, OwnedRoomId, OwnedUserId,
+        OwnedEventId, OwnedRoomId, OwnedUserId, UInt,
     },
     Client as MatrixSdkClient, LoopCtrl, Room, RoomState, SessionMeta, SessionTokens,
 };
@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
 use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
@@ -269,6 +270,125 @@ fn matrix_attachment_fallback_file_name(kind: MatrixOutgoingAttachmentKind) -> &
         MatrixOutgoingAttachmentKind::Audio => "audio.bin",
         MatrixOutgoingAttachmentKind::Voice => "voice.ogg",
     }
+}
+
+#[derive(Debug, Clone)]
+struct MatrixAudioDetails {
+    duration: Option<Duration>,
+    waveform: Option<Vec<f32>>,
+}
+
+fn matrix_audio_info(kind: MatrixOutgoingAttachmentKind, bytes: &[u8]) -> BaseAudioInfo {
+    let details = wav_pcm16_audio_details(bytes);
+    BaseAudioInfo {
+        duration: details.as_ref().and_then(|details| details.duration),
+        size: Some(UInt::new_wrapping(bytes.len() as u64)),
+        waveform: if kind == MatrixOutgoingAttachmentKind::Voice {
+            details.and_then(|details| details.waveform)
+        } else {
+            None
+        },
+    }
+}
+
+fn wav_pcm16_audio_details(bytes: &[u8]) -> Option<MatrixAudioDetails> {
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+
+    let mut sample_rate = None::<u32>;
+    let mut channels = None::<u16>;
+    let mut bits_per_sample = None::<u16>;
+    let mut data_range = None::<(usize, usize)>;
+    let mut offset = 12usize;
+
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().ok()?);
+        let data_start = offset + 8;
+        let available_size = bytes.len().saturating_sub(data_start);
+        let chunk_size = if chunk_size == u32::MAX {
+            available_size
+        } else {
+            (chunk_size as usize).min(available_size)
+        };
+
+        match chunk_id {
+            b"fmt " if chunk_size >= 16 => {
+                let fmt = &bytes[data_start..data_start + chunk_size];
+                let audio_format = u16::from_le_bytes(fmt[0..2].try_into().ok()?);
+                if audio_format != 1 {
+                    return None;
+                }
+                channels = Some(u16::from_le_bytes(fmt[2..4].try_into().ok()?));
+                sample_rate = Some(u32::from_le_bytes(fmt[4..8].try_into().ok()?));
+                bits_per_sample = Some(u16::from_le_bytes(fmt[14..16].try_into().ok()?));
+            }
+            b"data" => {
+                data_range = Some((data_start, chunk_size));
+                break;
+            }
+            _ => {}
+        }
+
+        let padded_size = chunk_size + (chunk_size % 2);
+        let next_offset = data_start.checked_add(padded_size)?;
+        if next_offset <= offset || next_offset > bytes.len() {
+            break;
+        }
+        offset = next_offset;
+    }
+
+    let sample_rate = sample_rate?;
+    let channels = channels?;
+    let bits_per_sample = bits_per_sample?;
+    let (data_start, data_len) = data_range?;
+    if sample_rate == 0 || channels == 0 || bits_per_sample != 16 || data_len == 0 {
+        return None;
+    }
+
+    let frame_size = usize::from(channels) * 2;
+    if frame_size == 0 {
+        return None;
+    }
+    let frame_count = data_len / frame_size;
+    if frame_count == 0 {
+        return None;
+    }
+
+    let duration_ms = ((frame_count as u128 * 1000) / sample_rate as u128) as u64;
+    let waveform = pcm16_waveform(bytes, data_start, frame_count, channels, frame_size);
+
+    Some(MatrixAudioDetails {
+        duration: Some(Duration::from_millis(duration_ms.max(1))),
+        waveform,
+    })
+}
+
+fn pcm16_waveform(
+    bytes: &[u8],
+    data_start: usize,
+    frame_count: usize,
+    channels: u16,
+    frame_size: usize,
+) -> Option<Vec<f32>> {
+    const WAVEFORM_POINTS: usize = 64;
+    let mut waveform = vec![0.0f32; WAVEFORM_POINTS];
+    for frame_index in 0..frame_count {
+        let bin = frame_index * WAVEFORM_POINTS / frame_count;
+        let frame_start = data_start + frame_index * frame_size;
+        let mut peak = 0i16;
+        for channel in 0..usize::from(channels) {
+            let sample_start = frame_start + channel * 2;
+            let Some(sample_bytes) = bytes.get(sample_start..sample_start + 2) else {
+                continue;
+            };
+            let sample = i16::from_le_bytes(sample_bytes.try_into().ok()?).saturating_abs();
+            peak = peak.max(sample);
+        }
+        waveform[bin] = waveform[bin].max(f32::from(peak) / f32::from(i16::MAX));
+    }
+    Some(waveform)
 }
 
 fn matrix_media_artifact_attachments(
@@ -1371,20 +1491,12 @@ impl Channel for MatrixChannel {
             let bytes = upload.bytes;
 
             let config = match attachment.kind {
-                MatrixOutgoingAttachmentKind::Voice => {
-                    AttachmentConfig::new().info(AttachmentInfo::Voice(BaseAudioInfo {
-                        duration: None,
-                        size: None,
-                        waveform: None,
-                    }))
-                }
-                MatrixOutgoingAttachmentKind::Audio => {
-                    AttachmentConfig::new().info(AttachmentInfo::Audio(BaseAudioInfo {
-                        duration: None,
-                        size: None,
-                        waveform: None,
-                    }))
-                }
+                MatrixOutgoingAttachmentKind::Voice => AttachmentConfig::new().info(
+                    AttachmentInfo::Voice(matrix_audio_info(attachment.kind, &bytes)),
+                ),
+                MatrixOutgoingAttachmentKind::Audio => AttachmentConfig::new().info(
+                    AttachmentInfo::Audio(matrix_audio_info(attachment.kind, &bytes)),
+                ),
                 _ => AttachmentConfig::new(),
             };
 
@@ -2683,6 +2795,38 @@ mod tests {
             Some(MatrixOutgoingAttachmentKind::Voice)
         );
         assert_eq!(MatrixOutgoingAttachmentKind::from_marker("unknown"), None);
+    }
+
+    #[test]
+    fn matrix_voice_audio_info_extracts_duration_size_and_waveform() {
+        let wav = tiny_pcm16_wav_with_placeholder_sizes();
+        let info = matrix_audio_info(MatrixOutgoingAttachmentKind::Voice, &wav);
+
+        assert_eq!(info.size, Some(matrix_sdk::ruma::UInt::new_wrapping(52)));
+        assert_eq!(info.duration, Some(std::time::Duration::from_millis(1)));
+        let waveform = info.waveform.expect("voice waveform should be present");
+        assert_eq!(waveform.len(), 64);
+        assert!(waveform.iter().any(|value| *value > 0.0));
+    }
+
+    #[test]
+    fn matrix_audio_info_omits_waveform_for_plain_audio() {
+        let wav = tiny_pcm16_wav_with_placeholder_sizes();
+        let info = matrix_audio_info(MatrixOutgoingAttachmentKind::Audio, &wav);
+
+        assert_eq!(info.size, Some(matrix_sdk::ruma::UInt::new_wrapping(52)));
+        assert_eq!(info.duration, Some(std::time::Duration::from_millis(1)));
+        assert!(info.waveform.is_none());
+    }
+
+    fn tiny_pcm16_wav_with_placeholder_sizes() -> Vec<u8> {
+        let mut wav = vec![
+            b'R', b'I', b'F', b'F', 0xff, 0xff, 0xff, 0xff, b'W', b'A', b'V', b'E', b'f', b'm',
+            b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0,
+            b'd', b'a', b't', b'a', 0xff, 0xff, 0xff, 0xff,
+        ];
+        wav.extend_from_slice(&[0, 0, 0xff, 0x7f, 0, 0, 0x00, 0x80]);
+        wav
     }
 
     #[test]

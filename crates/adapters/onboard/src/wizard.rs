@@ -1872,7 +1872,7 @@ pub async fn run_models_catalog_init(force: bool) -> Result<()> {
         style(path.display()).green().bold()
     );
     println!(
-        "  Edit this file to override built-in presets, provider defaults, or curated model lists."
+        "  Edit this file to override built-in presets, provider defaults, curated model lists, or voice catalogs."
     );
     println!("  Restart SynapseClaw after editing so the override is reloaded.");
     println!();

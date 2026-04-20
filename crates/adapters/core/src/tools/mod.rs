@@ -40,7 +40,7 @@ pub use delegate::DelegateTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
 pub use skill_runtime::SkillReadTool;
-pub use voice_reply::VoiceReplyTool;
+pub use voice_reply::{VoiceListTool, VoiceReplyTool};
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
@@ -1009,6 +1009,7 @@ fn build_runtime_tool_registry(
         conversation_context.clone(),
         user_profile_context,
     )));
+    tool_arcs.push(Arc::new(VoiceListTool::new(Arc::clone(&config))));
     if let (Some(ctx), Some(defaults), Some(reg)) = (
         conversation_context.as_ref(),
         turn_defaults_context.as_ref(),

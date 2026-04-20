@@ -167,7 +167,6 @@ api_key_env = "GROQ_API_KEY"
 
 [tts]
 enabled = true
-default_voice = "eve"
 default_format = "mp3"
 max_text_length = 4096
 
@@ -180,11 +179,11 @@ model = "tts"
 api_key_env = "XAI_API_KEY"
 ```
 
-For provider-specific voice defaults, keep small blocks under `[tts.<provider>]`. For example, MiniMax keeps voice tuning under `[tts.minimax]`, while the model and key are selected through `speech_synthesis`.
+Voice IDs come from the runtime voice catalog exposed by `voice_list`. For provider-specific voice defaults, keep small blocks under `[tts.<provider>]`. For example, MiniMax keeps voice tuning under `[tts.minimax]`, while the model and key are selected through `speech_synthesis`.
 
 ```toml
 [tts.minimax]
-voice_id = "English_Graceful_Lady"
+voice_id = "<voice-id-from-voice-list-or-provider-catalog>"
 speed = 1.0
 volume = 1.0
 pitch = 0

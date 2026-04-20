@@ -954,6 +954,53 @@
       "model": "google/veo-3.1"
     }
   ],
+  "voice_catalogs": [
+    {
+      "provider": "openai",
+      "model": "tts-1",
+      "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini-tts",
+      "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    },
+    {
+      "provider": "groq",
+      "model": "canopylabs/orpheus-v1-english",
+      "voices": ["autumn", "diana", "hannah", "austin", "daniel", "troy"]
+    },
+    {
+      "provider": "groq",
+      "model": "canopylabs/orpheus-arabic-saudi",
+      "voices": ["abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"]
+    },
+    {
+      "provider": "google",
+      "model": "cloud-text-to-speech",
+      "voices": ["en-US-Standard-A", "en-US-Standard-B", "en-US-Standard-C", "en-US-Standard-D"]
+    },
+    {
+      "provider": "edge",
+      "model": "edge-tts",
+      "voices": ["en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "en-GB-SoniaNeural"]
+    },
+    {
+      "provider": "minimax",
+      "model": "speech-2.8-hd",
+      "voices": ["English_Graceful_Lady"]
+    },
+    {
+      "provider": "mistral",
+      "model": "voxtral-mini-tts-2603",
+      "voices": ["c69964a6-ab8b-4f8a-9465-ec0925096ec8"]
+    },
+    {
+      "provider": "xai",
+      "model": "tts",
+      "voices": ["eve", "ara", "rex", "sal", "leo"]
+    }
+  ],
   "request_policies": [
     {
       "provider": "openai",

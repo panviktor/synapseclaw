@@ -206,6 +206,32 @@ fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionCo
     Ok(transcription)
 }
 
+fn catalog_default_tts_voice(provider: &str, model: &str) -> Option<String> {
+    synapse_domain::config::model_catalog::tts_voice_catalog(provider, model)
+        .and_then(|catalog| catalog.voices.into_iter().next())
+}
+
+fn apply_lane_default_tts_voice(
+    tts: &mut TtsConfig,
+    provider: &str,
+    model: &str,
+    configured_voice: Option<String>,
+) {
+    let schema_default = TtsConfig::default();
+    let current_voice = tts.default_voice.trim();
+    let needs_lane_voice = current_voice.is_empty()
+        || (current_voice.eq_ignore_ascii_case(&schema_default.default_voice)
+            && !provider.eq_ignore_ascii_case(&schema_default.default_provider));
+
+    if !needs_lane_voice {
+        return;
+    }
+
+    if let Some(voice) = catalog_default_tts_voice(provider, model).or(configured_voice) {
+        tts.default_voice = voice;
+    }
+}
+
 pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
     let mut tts = config.tts.clone();
     if !tts.enabled {
@@ -230,6 +256,7 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                 model: selected.model.clone(),
                 speed,
             });
+            apply_lane_default_tts_voice(&mut tts, "openai", &selected.model, None);
         }
         "groq" => {
             let existing = tts.groq.clone();
@@ -243,9 +270,7 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                 response_format: response_format.clone(),
             });
             tts.default_format = response_format;
-            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
-                tts.default_voice = "troy".to_string();
-            }
+            apply_lane_default_tts_voice(&mut tts, "groq", &selected.model, None);
         }
         "elevenlabs" => {
             let existing = tts.elevenlabs.clone();
@@ -269,6 +294,7 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                 api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
                 language_code,
             });
+            apply_lane_default_tts_voice(&mut tts, "google", &selected.model, None);
         }
         "edge" => {
             let binary_path = tts
@@ -277,16 +303,17 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                 .map(|cfg| cfg.binary_path.clone())
                 .unwrap_or_else(|| "edge-tts".to_string());
             tts.edge = Some(EdgeTtsConfig { binary_path });
-            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
-                tts.default_voice = "en-US-AriaNeural".to_string();
-            }
+            apply_lane_default_tts_voice(&mut tts, "edge", &selected.model, None);
         }
         "minimax" | "minimax-cn" => {
             let existing = tts.minimax.clone();
             let voice_id = existing
                 .as_ref()
-                .map(|cfg| cfg.voice_id.clone())
-                .unwrap_or_else(|| "English_Graceful_Lady".to_string());
+                .map(|cfg| cfg.voice_id.trim())
+                .filter(|voice| !voice.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| catalog_default_tts_voice("minimax", &selected.model))
+                .unwrap_or_default();
             let base_url = existing
                 .as_ref()
                 .map(|cfg| cfg.base_url.clone())
@@ -311,16 +338,17 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                     .unwrap_or(32_000),
                 bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
             });
-            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
-                tts.default_voice = voice_id;
-            }
+            apply_lane_default_tts_voice(&mut tts, "minimax", &selected.model, Some(voice_id));
         }
         "mistral" => {
             let existing = tts.mistral.clone();
             let voice_id = existing
                 .as_ref()
-                .map(|cfg| cfg.voice_id.clone())
-                .unwrap_or_else(|| "c69964a6-ab8b-4f8a-9465-ec0925096ec8".to_string());
+                .map(|cfg| cfg.voice_id.trim())
+                .filter(|voice| !voice.is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| catalog_default_tts_voice("mistral", &selected.model))
+                .unwrap_or_default();
             tts.mistral = Some(MistralTtsConfig {
                 api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
                 model: selected.model.clone(),
@@ -330,9 +358,7 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                     .map(|cfg| cfg.response_format.clone())
                     .unwrap_or_else(|| tts.default_format.clone()),
             });
-            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
-                tts.default_voice = voice_id;
-            }
+            apply_lane_default_tts_voice(&mut tts, "mistral", &selected.model, Some(voice_id));
         }
         "xai" => {
             let existing = tts.xai.clone();
@@ -352,9 +378,7 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                     .unwrap_or(24_000),
                 bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
             });
-            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
-                tts.default_voice = "eve".to_string();
-            }
+            apply_lane_default_tts_voice(&mut tts, "xai", &selected.model, None);
         }
         other => {
             anyhow::bail!("speech_synthesis lane selected unsupported TTS provider `{other}`");

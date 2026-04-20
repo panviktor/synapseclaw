@@ -25,6 +25,7 @@ use synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort;
 #[async_trait]
 trait VoiceSynthesizer: Send + Sync {
     async fn synthesize(&self, text: &str, config: &TtsConfig) -> Result<Vec<u8>>;
+    fn supported_voices(&self, config: &TtsConfig) -> Result<(String, Vec<String>)>;
 }
 
 struct ConfiguredVoiceSynthesizer;
@@ -34,6 +35,13 @@ impl VoiceSynthesizer for ConfiguredVoiceSynthesizer {
     async fn synthesize(&self, text: &str, config: &TtsConfig) -> Result<Vec<u8>> {
         let manager = synapse_channels::TtsManager::new(config)?;
         manager.synthesize(text).await
+    }
+
+    fn supported_voices(&self, config: &TtsConfig) -> Result<(String, Vec<String>)> {
+        let manager = synapse_channels::TtsManager::new(config)?;
+        let provider = manager.default_provider().to_string();
+        let voices = manager.supported_voices(&provider)?;
+        Ok((provider, voices))
     }
 }
 
@@ -170,6 +178,43 @@ impl VoiceReplyTool {
         }
     }
 
+    fn resolve_voice_override(
+        args: &serde_json::Value,
+        provider: &str,
+        supported_voices: &[String],
+    ) -> Result<Option<String>, String> {
+        let Some(raw_voice) = args.get("voice") else {
+            return Ok(None);
+        };
+        let Some(voice) = raw_voice
+            .as_str()
+            .map(str::trim)
+            .filter(|voice| !voice.is_empty())
+        else {
+            return Err("Voice override must be a non-empty string".to_string());
+        };
+
+        let Some(canonical_voice) = supported_voices
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(voice))
+            .cloned()
+        else {
+            return Err(format!(
+                "Voice `{voice}` is not supported for TTS provider `{provider}`. Use `voice_list` to inspect available voices."
+            ));
+        };
+
+        Ok(Some(canonical_voice))
+    }
+
+    fn resolved_tts_config(&self) -> Result<TtsConfig, String> {
+        match crate::channels::lane_selected_tts_config(&self.root_config) {
+            Ok(config) if config.enabled => Ok(config),
+            Ok(_) => Err("Voice synthesis is not enabled".to_string()),
+            Err(error) => Err(format!("Voice synthesis is not ready: {error}")),
+        }
+    }
+
     async fn persist_voice_bytes(
         workspace_dir: &Path,
         extension: &str,
@@ -237,6 +282,10 @@ impl Tool for VoiceReplyTool {
                     "type": "string",
                     "description": "Natural-language text to synthesize into the voice note. This should be the spoken reply itself, not a statement that the message was delivered."
                 },
+                "voice": {
+                    "type": "string",
+                    "description": "Optional one-message voice override. Use voice_list first when the user asks what voices are available; do not invent provider voice IDs."
+                },
                 "target": {
                     "description": "Where to send the voice note. Use 'current_conversation' when replying here, omit target only when a resolved runtime default exists, or provide explicit channel and recipient as an object. Do not JSON-encode the object into a string.",
                     "oneOf": [
@@ -272,6 +321,7 @@ impl Tool for VoiceReplyTool {
         )
         .with_arguments(vec![
             ToolArgumentPolicy::sensitive("content").user_private(),
+            ToolArgumentPolicy::sensitive("voice").user_private(),
             ToolArgumentPolicy::sensitive("target").user_private(),
         ])
     }
@@ -313,15 +363,25 @@ impl Tool for VoiceReplyTool {
             )));
         }
 
-        let tts_config = match crate::channels::lane_selected_tts_config(&self.root_config) {
-            Ok(config) if config.enabled => config,
-            Ok(_) => return Ok(Self::failure_execution("Voice synthesis is not enabled")),
-            Err(error) => {
-                return Ok(Self::failure_execution(format!(
-                    "Voice synthesis is not ready: {error}"
-                )))
-            }
+        let mut tts_config = match self.resolved_tts_config() {
+            Ok(config) => config,
+            Err(output) => return Ok(Self::failure_execution(output)),
         };
+        if args.get("voice").is_some() {
+            let (provider, voices) = match self.synthesizer.supported_voices(&tts_config) {
+                Ok(voices) => voices,
+                Err(error) => {
+                    return Ok(Self::failure_execution(format!(
+                        "Voice catalog is not available: {error}"
+                    )))
+                }
+            };
+            match Self::resolve_voice_override(&args, &provider, &voices) {
+                Ok(Some(voice)) => tts_config.default_voice = voice,
+                Ok(None) => {}
+                Err(output) => return Ok(Self::failure_execution(output)),
+            }
+        }
 
         let audio = match self.synthesizer.synthesize(&content, &tts_config).await {
             Ok(bytes) if !bytes.is_empty() => bytes,
@@ -375,6 +435,95 @@ impl Tool for VoiceReplyTool {
     }
 }
 
+pub struct VoiceListTool {
+    root_config: Arc<Config>,
+    synthesizer: Arc<dyn VoiceSynthesizer>,
+}
+
+impl VoiceListTool {
+    pub fn new(root_config: Arc<Config>) -> Self {
+        Self {
+            root_config,
+            synthesizer: Arc::new(ConfiguredVoiceSynthesizer),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_synthesizer(
+        root_config: Arc<Config>,
+        synthesizer: Arc<dyn VoiceSynthesizer>,
+    ) -> Self {
+        Self {
+            root_config,
+            synthesizer,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for VoiceListTool {
+    fn name(&self) -> &str {
+        "voice_list"
+    }
+
+    fn description(&self) -> &str {
+        "List the configured TTS provider and the voice IDs that can be used with voice_reply.voice."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role())
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
+        let tts_config = match crate::channels::lane_selected_tts_config(&self.root_config) {
+            Ok(config) if config.enabled => config,
+            Ok(_) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: "Voice synthesis is not enabled".into(),
+                    error: None,
+                })
+            }
+            Err(error) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: format!("Voice synthesis is not ready: {error}"),
+                    error: None,
+                })
+            }
+        };
+        match self.synthesizer.supported_voices(&tts_config) {
+            Ok((provider, voices)) => Ok(ToolResult {
+                success: true,
+                output: json!({
+                    "provider": provider,
+                    "default_voice": tts_config.default_voice,
+                    "voices": voices
+                })
+                .to_string(),
+                error: None,
+            }),
+            Err(error) => Ok(ToolResult {
+                success: false,
+                output: format!("Voice catalog is not available: {error}"),
+                error: None,
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,12 +532,23 @@ mod tests {
     use synapse_domain::domain::turn_defaults::{ResolvedDeliveryTarget, ResolvedTurnDefaults};
     use synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext;
 
-    struct TestSynthesizer;
+    #[derive(Default)]
+    struct TestSynthesizer {
+        voices: Mutex<Vec<String>>,
+    }
 
     #[async_trait]
     impl VoiceSynthesizer for TestSynthesizer {
-        async fn synthesize(&self, _text: &str, _config: &TtsConfig) -> Result<Vec<u8>> {
+        async fn synthesize(&self, _text: &str, config: &TtsConfig) -> Result<Vec<u8>> {
+            self.voices.lock().push(config.default_voice.clone());
             Ok(vec![1, 2, 3, 4])
+        }
+
+        fn supported_voices(&self, config: &TtsConfig) -> Result<(String, Vec<String>)> {
+            Ok((
+                config.default_provider.clone(),
+                vec!["troy".into(), "hannah".into(), "diana".into()],
+            ))
         }
     }
 
@@ -463,6 +623,30 @@ mod tests {
         config
     }
 
+    fn enabled_groq_config(workspace: &Path) -> Config {
+        let mut config = Config {
+            workspace_dir: workspace.to_path_buf(),
+            ..Config::default()
+        };
+        config.tts.enabled = true;
+        config.tts.default_provider = "groq".into();
+        config.tts.default_voice = "troy".into();
+        config
+            .model_lanes
+            .push(synapse_domain::config::schema::ModelLaneConfig {
+                lane: synapse_domain::config::schema::CapabilityLane::SpeechSynthesis,
+                candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "groq".into(),
+                    model: "canopylabs/orpheus-v1-english".into(),
+                    api_key: Some("test-groq-key".into()),
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: Default::default(),
+                }],
+            });
+        config
+    }
+
     #[tokio::test]
     async fn voice_reply_sends_voice_artifact_to_current_conversation() {
         let tmp = tempfile::tempdir().unwrap();
@@ -482,7 +666,7 @@ mod tests {
             context,
             defaults,
             registry.clone(),
-            Arc::new(TestSynthesizer),
+            Arc::new(TestSynthesizer::default()),
         );
 
         let execution = tool
@@ -536,7 +720,7 @@ mod tests {
             context,
             defaults,
             registry.clone(),
-            Arc::new(TestSynthesizer),
+            Arc::new(TestSynthesizer::default()),
         );
 
         let execution = tool
@@ -565,7 +749,7 @@ mod tests {
             context,
             Arc::new(InMemoryTurnDefaultsContext::default()),
             Arc::new(TestRegistry::default()),
-            Arc::new(TestSynthesizer),
+            Arc::new(TestSynthesizer::default()),
         );
 
         let execution = tool
@@ -578,5 +762,95 @@ mod tests {
 
         assert!(!execution.result.success);
         assert!(execution.result.output.contains("not enabled"));
+    }
+
+    #[tokio::test]
+    async fn voice_reply_accepts_voice_override_from_provider_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let context = Arc::new(TestConversationContext::default());
+        context.set(CurrentConversationContext {
+            source_adapter: "matrix".into(),
+            conversation_id: "conv".into(),
+            reply_ref: "!room:example".into(),
+            thread_ref: None,
+            actor_id: "@user:example".into(),
+        });
+        let synth = Arc::new(TestSynthesizer::default());
+        let tool = VoiceReplyTool::new_with_synthesizer(
+            Arc::new(enabled_groq_config(tmp.path())),
+            tmp.path().join("workspace"),
+            context,
+            Arc::new(InMemoryTurnDefaultsContext::default()),
+            Arc::new(TestRegistry::default()),
+            synth.clone(),
+        );
+
+        let execution = tool
+            .execute_with_facts(json!({
+                "content": "hello",
+                "voice": "Hannah",
+                "target": "current_conversation"
+            }))
+            .await
+            .unwrap();
+
+        assert!(execution.result.success);
+        assert_eq!(synth.voices.lock().as_slice(), ["hannah"]);
+    }
+
+    #[tokio::test]
+    async fn voice_reply_rejects_voice_override_not_in_provider_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let context = Arc::new(TestConversationContext::default());
+        context.set(CurrentConversationContext {
+            source_adapter: "matrix".into(),
+            conversation_id: "conv".into(),
+            reply_ref: "!room:example".into(),
+            thread_ref: None,
+            actor_id: "@user:example".into(),
+        });
+        let registry = Arc::new(TestRegistry::default());
+        let tool = VoiceReplyTool::new_with_synthesizer(
+            Arc::new(enabled_groq_config(tmp.path())),
+            tmp.path().join("workspace"),
+            context,
+            Arc::new(InMemoryTurnDefaultsContext::default()),
+            registry.clone(),
+            Arc::new(TestSynthesizer::default()),
+        );
+
+        let execution = tool
+            .execute_with_facts(json!({
+                "content": "hello",
+                "voice": "unknown_voice",
+                "target": "current_conversation"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!execution.result.success);
+        assert!(execution.result.output.contains("Use `voice_list`"));
+        assert!(registry.delivered.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn voice_list_reports_runtime_provider_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tool = VoiceListTool::new_with_synthesizer(
+            Arc::new(enabled_groq_config(tmp.path())),
+            Arc::new(TestSynthesizer::default()),
+        );
+
+        let result = tool.execute(json!({})).await.unwrap();
+
+        assert!(result.success);
+        let payload: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(payload["provider"], "groq");
+        assert_eq!(payload["default_voice"], "troy");
+        assert!(payload["voices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|voice| voice == "hannah"));
     }
 }

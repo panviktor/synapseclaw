@@ -787,7 +787,7 @@ fn default_tts_provider() -> String {
 }
 
 fn default_tts_voice() -> String {
-    "alloy".into()
+    String::new()
 }
 
 fn default_tts_format() -> String {
@@ -843,7 +843,7 @@ fn default_minimax_tts_base_url() -> String {
 }
 
 fn default_minimax_tts_voice_id() -> String {
-    "English_Graceful_Lady".into()
+    String::new()
 }
 
 fn default_minimax_tts_speed() -> f64 {
@@ -871,7 +871,7 @@ fn default_mistral_tts_model() -> String {
 }
 
 fn default_mistral_tts_voice_id() -> String {
-    "c69964a6-ab8b-4f8a-9465-ec0925096ec8".into()
+    String::new()
 }
 
 fn default_mistral_tts_response_format() -> String {

@@ -27,6 +27,68 @@ fn tts_http_error_message(provider: &str, status: reqwest::StatusCode, message: 
     format!("{provider} TTS API error ({status}): {message}")
 }
 
+fn normalize_wav_chunk_sizes(bytes: &mut [u8]) -> bool {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return false;
+    }
+
+    let Ok(riff_size) = u32::try_from(bytes.len().saturating_sub(8)) else {
+        return false;
+    };
+    bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+    let normalized = true;
+    let mut offset = 12usize;
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes(
+            bytes[offset + 4..offset + 8]
+                .try_into()
+                .expect("slice length checked"),
+        );
+        let data_start = offset + 8;
+
+        if chunk_id == b"data" {
+            let Ok(actual_size) = u32::try_from(bytes.len().saturating_sub(data_start)) else {
+                return false;
+            };
+            bytes[offset + 4..offset + 8].copy_from_slice(&actual_size.to_le_bytes());
+            return true;
+        }
+
+        let chunk_size = chunk_size as usize;
+        let padded_size = chunk_size + (chunk_size % 2);
+        let Some(next_offset) = data_start.checked_add(padded_size) else {
+            return normalized;
+        };
+        if next_offset <= offset || next_offset > bytes.len() {
+            return normalized;
+        }
+        offset = next_offset;
+    }
+
+    normalized
+}
+
+fn catalog_voices(provider: &str, model: &str) -> Vec<String> {
+    synapse_domain::config::model_catalog::tts_voice_catalog(provider, model)
+        .map(|catalog| catalog.voices)
+        .unwrap_or_default()
+}
+
+fn catalog_voices_with_configured(provider: &str, model: &str, configured: &str) -> Vec<String> {
+    let mut voices = catalog_voices(provider, model);
+    let configured = configured.trim();
+    if !configured.is_empty()
+        && !voices
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(configured))
+    {
+        voices.push(configured.to_string());
+    }
+    voices
+}
+
 // ── TtsProvider trait ────────────────────────────────────────────
 
 /// Trait for pluggable TTS backends.
@@ -122,10 +184,7 @@ impl TtsProvider for OpenAiTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        catalog_voices("openai", &self.model)
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -206,17 +265,13 @@ impl TtsProvider for GroqTtsProvider {
             .bytes()
             .await
             .context("Failed to read Groq TTS response body")?;
-        Ok(bytes.to_vec())
+        let mut audio = bytes.to_vec();
+        normalize_wav_chunk_sizes(&mut audio);
+        Ok(audio)
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        [
-            "autumn", "diana", "hannah", "austin", "daniel", "troy", "abdullah", "fahad", "sultan",
-            "lulwa", "noura", "aisha",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        catalog_voices("groq", &self.model)
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -312,7 +367,8 @@ impl TtsProvider for ElevenLabsTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // ElevenLabs voices are user-specific; return empty (dynamic lookup).
+        // ElevenLabs voices are account-specific; use provider API discovery
+        // before enabling validated one-shot voice overrides for this provider.
         Vec::new()
     }
 
@@ -408,16 +464,7 @@ impl TtsProvider for GoogleTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // Google voices vary by language; return common English defaults.
-        [
-            "en-US-Standard-A",
-            "en-US-Standard-B",
-            "en-US-Standard-C",
-            "en-US-Standard-D",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        catalog_voices("google", "cloud-text-to-speech")
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -509,16 +556,7 @@ impl TtsProvider for EdgeTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // Edge TTS has many voices; return common defaults.
-        [
-            "en-US-AriaNeural",
-            "en-US-GuyNeural",
-            "en-US-JennyNeural",
-            "en-GB-SoniaNeural",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        catalog_voices("edge", "edge-tts")
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -639,7 +677,7 @@ impl TtsProvider for MiniMaxTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        vec![self.voice_id.clone()]
+        catalog_voices_with_configured("minimax", &self.model, &self.voice_id)
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -731,7 +769,7 @@ impl TtsProvider for MistralTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        vec![self.voice_id.clone()]
+        catalog_voices_with_configured("mistral", &self.model, &self.voice_id)
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -785,10 +823,9 @@ impl TtsProvider for XaiTtsProvider {
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
-        let voice_id = if voice.is_empty() { "eve" } else { voice };
         let body = serde_json::json!({
             "text": text,
-            "voice_id": voice_id,
+            "voice_id": voice,
             "language": self.language,
             "output_format": {
                 "codec": self.codec,
@@ -827,10 +864,7 @@ impl TtsProvider for XaiTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        ["eve", "ara", "rex", "sal", "leo"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        catalog_voices("xai", "tts")
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -974,6 +1008,11 @@ impl TtsManager {
         if text.is_empty() {
             bail!("TTS text must not be empty");
         }
+        if voice.trim().is_empty() {
+            bail!(
+                "TTS voice must not be empty; inspect the provider voice catalog before synthesis"
+            );
+        }
         let char_count = text.chars().count();
         if char_count > self.max_text_length {
             bail!(
@@ -992,6 +1031,19 @@ impl TtsManager {
         })?;
 
         tts.synthesize(text, voice).await
+    }
+
+    /// Return the configured default provider name.
+    pub fn default_provider(&self) -> &str {
+        &self.default_provider
+    }
+
+    /// Return supported voice IDs for a configured provider.
+    pub fn supported_voices(&self, provider: &str) -> Result<Vec<String>> {
+        self.providers
+            .get(provider)
+            .map(|tts| tts.supported_voices())
+            .with_context(|| format!("TTS provider '{provider}' is not configured"))
     }
 
     /// List names of all initialized providers.
@@ -1073,6 +1125,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tts_rejects_empty_voice() {
+        let mut config = default_tts_config();
+        config.default_provider = "edge".to_string();
+        config.edge = Some(synapse_domain::config::schema::EdgeTtsConfig {
+            binary_path: "edge-tts".into(),
+        });
+
+        let manager = TtsManager::new(&config).unwrap();
+        let err = manager
+            .synthesize_with_provider("hello", "edge", "")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("voice must not be empty"),
+            "expected empty-voice error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn tts_rejects_unknown_provider() {
         let config = default_tts_config();
         let manager = TtsManager::new(&config).unwrap();
@@ -1091,7 +1162,7 @@ mod tests {
         let config = TtsConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.default_provider, "openai");
-        assert_eq!(config.default_voice, "alloy");
+        assert_eq!(config.default_voice, "");
         assert_eq!(config.default_format, "mp3");
         assert_eq!(config.max_text_length, DEFAULT_MAX_TEXT_LENGTH);
         assert!(config.openai.is_none());
@@ -1164,5 +1235,36 @@ mod tests {
         assert_eq!(provider.name(), "groq");
         assert!(provider.supported_voices().contains(&"troy".to_string()));
         assert_eq!(provider.supported_formats(), vec!["wav"]);
+    }
+
+    #[test]
+    fn tts_manager_exposes_supported_voices_from_provider() {
+        let mut config = default_tts_config();
+        config.default_provider = "groq".into();
+        config.groq = Some(GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        });
+
+        let manager = TtsManager::new(&config).unwrap();
+        assert_eq!(manager.default_provider(), "groq");
+        assert!(manager
+            .supported_voices("groq")
+            .unwrap()
+            .contains(&"hannah".to_string()));
+    }
+
+    #[test]
+    fn normalizes_streaming_wav_placeholder_sizes() {
+        let mut wav = vec![
+            b'R', b'I', b'F', b'F', 0xff, 0xff, 0xff, 0xff, b'W', b'A', b'V', b'E', b'f', b'm',
+            b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0,
+            b'd', b'a', b't', b'a', 0xff, 0xff, 0xff, 0xff, 1, 2, 3, 4,
+        ];
+
+        assert!(normalize_wav_chunk_sizes(&mut wav));
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 40);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
     }
 }

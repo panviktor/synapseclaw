@@ -329,9 +329,15 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
                 .to_string(),
         );
     }
+    if has_tool("voice_list") {
+        lines.push(
+            "- `voice_list` returns the configured voice provider, current default voice, and supported voice IDs. Use it when the user asks what voices are available or asks for a voice that you are unsure exists."
+                .to_string(),
+        );
+    }
     if has_tool("voice_reply") {
         lines.push(
-            "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use it when the user asks for voice/audio output or when replying in kind to `[Voice]` input. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."
+            "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use optional `voice` only with IDs returned by `voice_list`. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."
                 .to_string(),
         );
     }
