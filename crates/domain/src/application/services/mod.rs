@@ -6,6 +6,7 @@
 
 pub mod approval_service;
 pub mod assistant_output_presentation;
+pub mod auxiliary_model_resolution;
 pub mod bootstrap_core_memory;
 pub mod capability_doctor;
 pub mod channel_presentation;
@@ -75,7 +76,6 @@ pub mod skill_promotion_service;
 pub mod skill_review_service;
 pub mod skill_trace_service;
 pub mod skill_user_authoring_service;
-pub mod summary_route_resolution;
 pub mod system_event_projection_service;
 pub mod tool_filtering;
 pub mod tool_middleware_service;

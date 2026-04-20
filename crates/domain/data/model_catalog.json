@@ -27,7 +27,7 @@
       "id": "openrouter",
       "aliases": [],
       "title": "OpenRouter",
-      "description": "Reasoning lane plus cheap Qwen summary and embedding defaults.",
+      "description": "Reasoning lane plus explicit compaction, cheap reasoning, and embedding defaults.",
       "default_provider": "openrouter",
       "default_model": "anthropic/claude-sonnet-4-6",
       "seed_multimodal_from_reasoning": false,
@@ -35,6 +35,19 @@
       "extra_lanes": [
         {
           "lane": "cheap_reasoning",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "deepseek/deepseek-v4"
+            },
+            {
+              "provider": "openrouter",
+              "model": "qwen/qwen3.5-plus"
+            }
+          ]
+        },
+        {
+          "lane": "compaction",
           "candidates": [
             {
               "provider": "openrouter",

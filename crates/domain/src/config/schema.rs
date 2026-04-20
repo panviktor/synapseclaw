@@ -77,26 +77,14 @@ pub struct Config {
     /// Default model routed through the selected provider (e.g. `"provider/model-id"`).
     #[serde(alias = "model")]
     pub default_model: Option<String>,
-    /// Model used for session summarization (cheaper than primary). Falls back to `default_model`.
-    /// Can be a plain model name (uses default provider) or configured via `[summary]` section.
-    #[serde(default)]
-    pub summary_model: Option<String>,
     /// Context compression policy (`[compression]`), Hermes-style defaults.
     #[serde(default)]
     pub compression: ContextCompressionConfig,
     /// Optional route/lane-specific compression policy overrides.
     #[serde(default)]
     pub compression_overrides: Vec<ContextCompressionRouteOverrideConfig>,
-    /// Explicit summary model configuration with its own provider.
-    /// When set, overrides `summary_model` string. Allows using a different provider
-    /// for summaries while keeping a different default provider.
-    ///
-    /// ```toml
-    /// [summary]
-    /// provider = "summary-provider"
-    /// model = "summary-model-id"
-    /// temperature = 0.3
-    /// ```
+    /// Summary generation tuning. The model route itself is resolved through
+    /// `[[model_lanes]]` with `lane = "compaction"`.
     #[serde(default)]
     pub summary: SummaryConfig,
     /// Optional named provider profiles keyed by id (Codex app-server compatible layout).
@@ -203,10 +191,6 @@ pub struct Config {
     /// Explicit `model_lanes` entries override the preset lane-by-lane.
     #[serde(default, alias = "preset")]
     pub model_preset: Option<String>,
-
-    /// Embedding routing rules — route `hint:<name>` to specific provider+model combos.
-    #[serde(default)]
-    pub embedding_routes: Vec<EmbeddingRouteConfig>,
 
     /// Automatic query classification — maps user messages to model hints.
     #[serde(default)]
@@ -3486,17 +3470,6 @@ pub struct MemoryConfig {
     /// Auto-save user conversation input to memory.
     pub auto_save: bool,
 
-    // ── Embeddings ────────────────────────────────────────────
-    /// Embedding provider: "none" | "openai" | "custom:URL"
-    #[serde(default = "default_embedding_provider")]
-    pub embedding_provider: String,
-    /// Embedding model name (e.g. "text-embedding-3-small")
-    #[serde(default = "default_embedding_model")]
-    pub embedding_model: String,
-    /// Embedding vector dimensions
-    #[serde(default = "default_embedding_dims")]
-    pub embedding_dimensions: usize,
-
     // ── Search tuning ─────────────────────────────────────────
     /// Weight for vector similarity in hybrid search (0.0–1.0)
     #[serde(default = "default_vector_weight")]
@@ -3528,15 +3501,6 @@ pub struct MemoryConfig {
     pub prompt_budget: PromptBudgetConfig,
 }
 
-fn default_embedding_provider() -> String {
-    "none".into()
-}
-fn default_embedding_model() -> String {
-    "text-embedding-3-small".into()
-}
-fn default_embedding_dims() -> usize {
-    1536
-}
 fn default_vector_weight() -> f64 {
     0.7
 }
@@ -3562,9 +3526,6 @@ impl Default for MemoryConfig {
         Self {
             backend: "surrealdb".into(),
             auto_save: true,
-            embedding_provider: default_embedding_provider(),
-            embedding_model: default_embedding_model(),
-            embedding_dimensions: default_embedding_dims(),
             vector_weight: default_vector_weight(),
             keyword_weight: default_keyword_weight(),
             min_relevance_score: default_min_relevance_score(),
@@ -4180,34 +4141,16 @@ impl Default for SchedulerConfig {
 
 // ── Model routing ────────────────────────────────────────────────
 
-/// Explicit summary model configuration (`[summary]` section).
+/// Summary generation tuning (`[summary]` section).
 ///
-/// When `provider` is set, the summary path creates its own provider instance
-/// instead of reusing the default. This allows using a cheaper/smaller route for summaries
-/// while the default provider is DashScope.
-///
-/// ```toml
-/// [summary]
-/// provider = "summary-provider"
-/// model = "summary-model-id"
-/// temperature = 0.3
-/// api_key_env = "SUMMARY_PROVIDER_API_KEY"
-/// ```
+/// Model/provider selection is intentionally not represented here. Compaction
+/// and rolling summary generation use the unified auxiliary lane resolver with
+/// `[[model_lanes]] lane = "compaction"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SummaryConfig {
-    /// Provider name for summaries. When empty, uses default provider.
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// Model name for summaries. When empty, falls back to `summary_model` or `default_model`.
-    #[serde(default)]
-    pub model: Option<String>,
     /// Temperature for summary generation. Default: 0.3.
     #[serde(default = "default_summary_temperature")]
     pub temperature: f64,
-    /// Environment variable name to read API key from (e.g. "ANTHROPIC_API_KEY").
-    /// When set, reads the key from this env var instead of config.api_key.
-    #[serde(default)]
-    pub api_key_env: Option<String>,
 }
 
 fn default_summary_temperature() -> f64 {
@@ -4217,10 +4160,7 @@ fn default_summary_temperature() -> f64 {
 impl Default for SummaryConfig {
     fn default() -> Self {
         Self {
-            provider: None,
-            model: None,
             temperature: default_summary_temperature(),
-            api_key_env: None,
         }
     }
 }
@@ -4231,7 +4171,10 @@ impl Default for SummaryConfig {
 pub enum CapabilityLane {
     Reasoning,
     CheapReasoning,
+    Compaction,
     Embedding,
+    WebExtraction,
+    ToolValidator,
     ImageGeneration,
     AudioGeneration,
     VideoGeneration,
@@ -4240,10 +4183,13 @@ pub enum CapabilityLane {
 }
 
 impl CapabilityLane {
-    pub const ALL: [CapabilityLane; 8] = [
+    pub const ALL: [CapabilityLane; 11] = [
         CapabilityLane::Reasoning,
         CapabilityLane::CheapReasoning,
+        CapabilityLane::Compaction,
         CapabilityLane::Embedding,
+        CapabilityLane::WebExtraction,
+        CapabilityLane::ToolValidator,
         CapabilityLane::ImageGeneration,
         CapabilityLane::AudioGeneration,
         CapabilityLane::VideoGeneration,
@@ -4255,7 +4201,10 @@ impl CapabilityLane {
         match self {
             CapabilityLane::Reasoning => "reasoning",
             CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Compaction => "compaction",
             CapabilityLane::Embedding => "embedding",
+            CapabilityLane::WebExtraction => "web_extraction",
+            CapabilityLane::ToolValidator => "tool_validator",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",
@@ -4369,42 +4318,6 @@ pub struct ModelRouteConfig {
     pub provider: String,
     /// Model to use with that provider
     pub model: String,
-    /// Optional API key override for this route's provider
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Optional manual profile overrides for this route.
-    #[serde(default)]
-    pub profile: ModelCandidateProfileConfig,
-}
-
-// ── Embedding routing ───────────────────────────────────────────
-
-/// Route an embedding hint to a specific provider + model.
-///
-/// ```toml
-/// [[embedding_routes]]
-/// hint = "semantic"
-/// provider = "openai"
-/// model = "text-embedding-3-small"
-/// dimensions = 1536
-///
-/// [memory]
-/// embedding_model = "hint:semantic"
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EmbeddingRouteConfig {
-    /// Route hint name (e.g. "semantic", "archive", "faq")
-    pub hint: String,
-    /// Optional capability lane resolved by runtime/domain services.
-    #[serde(default)]
-    pub capability: Option<CapabilityLane>,
-    /// Embedding provider (`none`, `openai`, or `custom:<url>`)
-    pub provider: String,
-    /// Embedding model to use with that provider
-    pub model: String,
-    /// Optional embedding dimension override for this route
-    #[serde(default)]
-    pub dimensions: Option<usize>,
     /// Optional API key override for this route's provider
     #[serde(default)]
     pub api_key: Option<String>,
@@ -6370,7 +6283,6 @@ impl Default for Config {
                 .map(|(provider, _)| provider.to_string()),
             default_model: super::model_catalog::default_reasoning_seed()
                 .map(|(_, model)| model.to_string()),
-            summary_model: None,
             compression: ContextCompressionConfig::default(),
             compression_overrides: Vec::new(),
             summary: SummaryConfig::default(),
@@ -6394,7 +6306,6 @@ impl Default for Config {
             route_aliases: Vec::new(),
             model_lanes: Vec::new(),
             model_preset: None,
-            embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),
             channels_config: ChannelsConfig::default(),

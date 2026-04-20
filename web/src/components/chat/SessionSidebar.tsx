@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users, Search } from 'lucide-react';
+import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Users, Search } from 'lucide-react';
 import type { ChatSessionInfo, StatusResponse } from '@/types/api';
 import type { AgentEntry } from '@/lib/api';
-import { t } from '@/lib/i18n';
 
 interface SessionSidebarProps {
   sessions: ChatSessionInfo[];
@@ -18,7 +17,6 @@ interface SessionSidebarProps {
   onNew: () => void;
   onRename: (key: string, label: string) => void;
   onDelete: (key: string) => void;
-  onSummaryModelChange: (model: string | null) => void;
   onAgentChange: (agentId: string | null) => void;
 }
 
@@ -73,13 +71,10 @@ export default function SessionSidebar({
   onNew,
   onRename,
   onDelete,
-  onSummaryModelChange,
   onAgentChange,
 }: SessionSidebarProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
-  const [editingSummaryModel, setEditingSummaryModel] = useState(false);
-  const [summaryModelInput, setSummaryModelInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
   const startRename = (key: string, currentLabel: string) => {
@@ -201,62 +196,11 @@ export default function SessionSidebar({
               {shortModel(status.model)}
             </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="h-3 w-3 text-[#C9872C] flex-shrink-0" />
-            {editingSummaryModel ? (
-              <div className="flex items-center gap-1 flex-1 min-w-0">
-                <input
-                  type="text"
-                  value={summaryModelInput}
-                  onChange={(e) => setSummaryModelInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const val = summaryModelInput.trim() || null;
-                      onSummaryModelChange(val);
-                      setEditingSummaryModel(false);
-                    }
-                    if (e.key === 'Escape') setEditingSummaryModel(false);
-                  }}
-                  className="flex-1 min-w-0 bg-[var(--bg-card)] border border-[var(--accent-primary)]/40 rounded px-1 py-0 text-[10px] text-[var(--text-primary)] outline-none"
-                  placeholder="model name or empty"
-                  autoFocus
-                />
-                <button
-                  onClick={() => {
-                    const val = summaryModelInput.trim() || null;
-                    onSummaryModelChange(val);
-                    setEditingSummaryModel(false);
-                  }}
-                  className="text-[#2D8A4E] hover:text-[var(--text-primary)]"
-                >
-                  <Check className="h-2.5 w-2.5" />
-                </button>
-                <button
-                  onClick={() => setEditingSummaryModel(false)}
-                  className="text-[#C73E3E] hover:text-[var(--text-primary)]"
-                >
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </div>
-            ) : (
-              <span
-                className="text-[10px] text-[var(--text-muted)] truncate cursor-pointer hover:text-[var(--text-secondary)] transition-colors"
-                title={`${t('agent.summary_model')}: ${status.summary_model ?? 'same as primary'} (click to change)`}
-                onClick={() => {
-                  setSummaryModelInput(status.summary_model ?? '');
-                  setEditingSummaryModel(true);
-                }}
-              >
-                <span className="text-[var(--text-placeholder)]">{t('agent.summary_model')}:</span>{' '}
-                {status.summary_model ? shortModel(status.summary_model) : t('agent.summary_auto')}
-              </span>
-            )}
-          </div>
-          {status.embedding_model && (
+          {status.embedding_profile && (
             <div className="flex items-center gap-1.5">
               <Search className="h-3 w-3 text-[#7C6BAF] flex-shrink-0" />
-              <span className="text-[10px] text-[var(--text-muted)] truncate" title={`${status.embedding_provider ?? ''} / ${status.embedding_model}`}>
-                {shortModel(status.embedding_model)}
+              <span className="text-[10px] text-[var(--text-muted)] truncate" title={status.embedding_profile}>
+                {shortModel(status.embedding_profile)}
               </span>
             </div>
           )}

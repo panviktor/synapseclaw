@@ -228,25 +228,20 @@ pub async fn run(
     // components causes contention. Create the raw adapter here and pass it
     // to gateway, channels, and the consolidation worker.
     let daemon_agent_id = crate::agent::resolve_agent_id(&config);
-    let mem_backend = match synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &daemon_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("Memory init failed in daemon: {e} — using noop memory");
-            let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
-            synapse_memory::MemoryBackend {
-                memory: noop.clone(),
-                dead_letter: noop,
-                surreal: None,
+    let mem_backend =
+        match synapse_memory::create_memory(&config, &config.workspace_dir, &daemon_agent_id).await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Memory init failed in daemon: {e} — using noop memory");
+                let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
+                synapse_memory::MemoryBackend {
+                    memory: noop.clone(),
+                    dead_letter: noop,
+                    surreal: None,
+                }
             }
-        }
-    };
+        };
     let shared_raw_mem = mem_backend.memory;
     let shared_dead_letter = mem_backend.dead_letter;
     let shared_surreal = mem_backend.surreal;

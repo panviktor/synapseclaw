@@ -335,7 +335,6 @@ fn config_memory_defaults_when_section_absent() {
     let parsed: Config = toml::from_str(toml_str).expect("minimal TOML should parse");
     let mem = &parsed.memory;
     assert!(!mem.backend.is_empty());
-    assert!(!mem.embedding_provider.is_empty());
     let weight_sum = mem.vector_weight + mem.keyword_weight;
     assert!(
         (weight_sum - 1.0).abs() < 0.01,

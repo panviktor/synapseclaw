@@ -19,7 +19,11 @@ pub fn assess_lane_capability_support(
 ) -> LaneCapabilitySupport {
     if matches!(
         lane,
-        CapabilityLane::Reasoning | CapabilityLane::CheapReasoning
+        CapabilityLane::Reasoning
+            | CapabilityLane::CheapReasoning
+            | CapabilityLane::Compaction
+            | CapabilityLane::WebExtraction
+            | CapabilityLane::ToolValidator
     ) {
         return LaneCapabilitySupport::Supported;
     }
@@ -98,7 +102,11 @@ pub fn assess_provider_call_capabilities(
 
 pub fn lane_required_feature(lane: CapabilityLane) -> Option<ModelFeature> {
     match lane {
-        CapabilityLane::Reasoning | CapabilityLane::CheapReasoning => None,
+        CapabilityLane::Reasoning
+        | CapabilityLane::CheapReasoning
+        | CapabilityLane::Compaction
+        | CapabilityLane::WebExtraction
+        | CapabilityLane::ToolValidator => None,
         CapabilityLane::Embedding => Some(ModelFeature::Embedding),
         CapabilityLane::ImageGeneration => Some(ModelFeature::ImageGeneration),
         CapabilityLane::AudioGeneration => Some(ModelFeature::AudioGeneration),

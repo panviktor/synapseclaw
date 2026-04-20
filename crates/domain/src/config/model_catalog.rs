@@ -706,6 +706,9 @@ mod tests {
             .any(|lane| lane.lane == CapabilityLane::CheapReasoning));
         assert!(lanes
             .iter()
+            .any(|lane| lane.lane == CapabilityLane::Compaction));
+        assert!(lanes
+            .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
         assert!(lanes
             .iter()

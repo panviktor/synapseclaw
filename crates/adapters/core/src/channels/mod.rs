@@ -232,7 +232,6 @@ struct ChannelRuntimeContext {
     conversation_store:
         Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
-    summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
     /// Enforces `auto_approve` / `always_ask` / supervised policy from
     /// `[autonomy]` config; auto-denies tools that would need interactive
@@ -621,7 +620,6 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     summary_config.default_provider = Some(ctx.default_provider.as_ref().clone());
     summary_config.default_model = Some(ctx.model.as_ref().clone());
     summary_config.summary = ctx.summary_config.as_ref().clone();
-    summary_config.summary_model = ctx.summary_model.clone();
     summary_config.model_lanes = ctx.model_lanes.as_ref().clone();
 
     match crate::inbound_runtime_summary::summarize_session_if_needed(
@@ -2477,14 +2475,9 @@ pub async fn start_channels(
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
         Some(m) => m,
         None => {
-            synapse_memory::create_memory(
-                &config.memory,
-                &config.workspace_dir,
-                &resolved_agent_id,
-                config.api_key.as_deref(),
-            )
-            .await?
-            .memory
+            synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                .await?
+                .memory
         }
     };
 
@@ -3003,7 +2996,6 @@ pub async fn start_channels(
         session_store: channel_session_store,
         conversation_store: retrieval_conversation_store,
         summary_config: Arc::new(config.summary.clone()),
-        summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
         channel_registry: Some(channel_registry),
@@ -3368,7 +3360,6 @@ mod tests {
             session_store: None,
             conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
-            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &synapse_domain::config::schema::AutonomyConfig::default(),
             )),
@@ -3882,7 +3873,6 @@ mod tests {
             session_store: None,
             conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
-            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &synapse_domain::config::schema::AutonomyConfig::default(),
             )),
@@ -4000,7 +3990,6 @@ mod tests {
             session_store: None,
             conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
-            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &synapse_domain::config::schema::AutonomyConfig::default(),
             )),
@@ -4125,7 +4114,6 @@ mod tests {
             session_store: None,
             conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
-            summary_model: None,
             multimodal: synapse_domain::config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -4263,7 +4251,6 @@ mod tests {
             session_store: None,
             conversation_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
-            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &synapse_domain::config::schema::AutonomyConfig::default(),
             )),

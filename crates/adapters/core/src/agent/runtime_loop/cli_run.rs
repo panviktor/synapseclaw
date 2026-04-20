@@ -61,13 +61,9 @@ pub async fn run_with_shared_memory(
         tracing::info!(backend = shared.name(), "Memory: using shared instance");
         (shared, None)
     } else {
-        let mem_backend = synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &resolved_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await?;
+        let mem_backend =
+            synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                .await?;
         let surreal = mem_backend.surreal;
         tracing::info!(backend = mem_backend.memory.name(), "Memory initialized");
         (mem_backend.memory, surreal)
@@ -769,13 +765,8 @@ pub async fn process_message(
         &config.workspace_dir,
     ));
     let resolved_agent_id = resolve_agent_id(&config);
-    let mem_backend_pm = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &resolved_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await?;
+    let mem_backend_pm =
+        synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id).await?;
     let mem: Arc<dyn UnifiedMemoryPort> = mem_backend_pm.memory;
     let surreal_handle_pm = mem_backend_pm.surreal;
 

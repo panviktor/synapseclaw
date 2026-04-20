@@ -287,9 +287,6 @@ pub async fn handle_api_status(
     let body = serde_json::json!({
         "provider": config.default_provider,
         "model": state.model,
-        "summary_model": config.summary.model.as_ref().or(config.summary_model.as_ref()),
-        "embedding_provider": config.memory.embedding_provider,
-        "embedding_model": config.memory.embedding_model,
         "embedding_profile": state.mem.embedding_profile(),
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
@@ -586,82 +583,6 @@ pub async fn handle_api_agent_heartbeat_runs_proxy(
             .into_response(),
         Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
     }
-}
-
-/// PUT /api/agents/:agent_id/summary-model — proxy summary model change to a specific agent.
-pub async fn handle_api_agent_summary_model_proxy(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(agent_id): Path<String>,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    let agent = match state.agent_registry.get(&agent_id) {
-        Some(a) => a,
-        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
-    let url = format!("{}/api/summary-model", agent.gateway_url);
-    match client
-        .put(&url)
-        .bearer_auth(&agent.proxy_token)
-        .header("Content-Type", "application/json")
-        .body(body.to_vec())
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(body) => Json(body).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
-        },
-        Ok(resp) => (
-            StatusCode::BAD_GATEWAY,
-            format!("Agent returned {}", resp.status()),
-        )
-            .into_response(),
-        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
-    }
-}
-
-/// PUT /api/summary-model — switch the summary model on the fly
-pub async fn handle_api_summary_model_put(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    let payload: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
-        }
-    };
-
-    let model = payload["model"].as_str().map(String::from);
-
-    // Update AppState (summary_model is behind Arc so we need interior mutability)
-    // Since AppState.summary_model is not behind a lock, we store it in config
-    {
-        let mut config = state.config.lock();
-        config.summary_model = model.clone();
-    }
-
-    Json(serde_json::json!({
-        "ok": true,
-        "summary_model": model,
-    }))
-    .into_response()
 }
 
 /// GET /api/config — current config (api_key masked)
@@ -4731,23 +4652,6 @@ fn route_alias_provider_model_matches(
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
-fn embedding_route_identity_matches(
-    incoming: &synapse_domain::config::schema::EmbeddingRouteConfig,
-    current: &synapse_domain::config::schema::EmbeddingRouteConfig,
-) -> bool {
-    normalize_route_field(&incoming.hint) == normalize_route_field(&current.hint)
-        && normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
-        && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
-}
-
-fn embedding_route_provider_model_matches(
-    incoming: &synapse_domain::config::schema::EmbeddingRouteConfig,
-    current: &synapse_domain::config::schema::EmbeddingRouteConfig,
-) -> bool {
-    normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
-        && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
-}
-
 fn restore_route_alias_api_keys(
     incoming: &mut [synapse_domain::config::schema::ModelRouteConfig],
     current: &[synapse_domain::config::schema::ModelRouteConfig],
@@ -4791,50 +4695,6 @@ fn restore_route_alias_api_keys(
     }
 }
 
-fn restore_embedding_route_api_keys(
-    incoming: &mut [synapse_domain::config::schema::EmbeddingRouteConfig],
-    current: &[synapse_domain::config::schema::EmbeddingRouteConfig],
-) {
-    let mut used_current = vec![false; current.len()];
-    for incoming_route in incoming {
-        if !incoming_route
-            .api_key
-            .as_deref()
-            .is_some_and(is_masked_secret)
-        {
-            continue;
-        }
-
-        let exact_match_idx = current
-            .iter()
-            .enumerate()
-            .find(|(idx, current_route)| {
-                !used_current[*idx]
-                    && embedding_route_identity_matches(incoming_route, current_route)
-            })
-            .map(|(idx, _)| idx);
-
-        let match_idx = exact_match_idx.or_else(|| {
-            current
-                .iter()
-                .enumerate()
-                .find(|(idx, current_route)| {
-                    !used_current[*idx]
-                        && embedding_route_provider_model_matches(incoming_route, current_route)
-                })
-                .map(|(idx, _)| idx)
-        });
-
-        if let Some(idx) = match_idx {
-            used_current[idx] = true;
-            incoming_route.api_key = current[idx].api_key.clone();
-        } else {
-            // Never persist UI placeholders to disk when no safe restore target exists.
-            incoming_route.api_key = None;
-        }
-    }
-}
-
 fn mask_sensitive_fields(
     config: &synapse_domain::config::schema::Config,
 ) -> synapse_domain::config::schema::Config {
@@ -4859,9 +4719,6 @@ fn mask_sensitive_fields(
     }
     mask_optional_secret(&mut masked.agents_ipc.broker_token);
     for route in &mut masked.route_aliases {
-        mask_optional_secret(&mut route.api_key);
-    }
-    for route in &mut masked.embedding_routes {
         mask_optional_secret(&mut route.api_key);
     }
 
@@ -4984,7 +4841,6 @@ fn restore_masked_sensitive_fields(
         }
     }
     restore_route_alias_api_keys(&mut incoming.route_aliases, &current.route_aliases);
-    restore_embedding_route_api_keys(&mut incoming.embedding_routes, &current.embedding_routes);
 
     if let (Some(incoming_ch), Some(current_ch)) = (
         incoming.channels_config.telegram.as_mut(),
@@ -5182,16 +5038,6 @@ mod tests {
             capability: None,
             profile: Default::default(),
         }];
-        cfg.embedding_routes = vec![synapse_domain::config::schema::EmbeddingRouteConfig {
-            hint: "semantic".to_string(),
-            provider: "openai".to_string(),
-            model: "text-embedding-3-small".to_string(),
-            dimensions: Some(1536),
-            api_key: Some("route-embed-key".to_string()),
-            capability: None,
-            profile: Default::default(),
-        }];
-
         let masked = mask_sensitive_fields(&cfg);
         let toml = toml::to_string_pretty(&masked).expect("masked config should serialize");
         let parsed: synapse_domain::config::schema::Config =
@@ -5245,13 +5091,6 @@ mod tests {
         assert_eq!(
             parsed
                 .route_aliases
-                .first()
-                .and_then(|v| v.api_key.as_deref()),
-            Some(MASKED_SECRET)
-        );
-        assert_eq!(
-            parsed
-                .embedding_routes
                 .first()
                 .and_then(|v| v.api_key.as_deref()),
             Some(MASKED_SECRET)
@@ -5328,27 +5167,6 @@ mod tests {
                 profile: Default::default(),
             },
         ];
-        current.embedding_routes = vec![
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "semantic".to_string(),
-                provider: "openai".to_string(),
-                model: "text-embedding-3-small".to_string(),
-                dimensions: Some(1536),
-                api_key: Some("route-embed-key-1".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "archive".to_string(),
-                provider: "custom:https://emb.example.com/v1".to_string(),
-                model: "bge-m3".to_string(),
-                dimensions: Some(1024),
-                api_key: Some("route-embed-key-2".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-        ];
-
         let mut incoming = mask_sensitive_fields(&current);
         incoming.default_model = Some("gpt-4.1-mini".to_string());
         // Simulate UI changing only one key and keeping the first masked.
@@ -5372,7 +5190,6 @@ mod tests {
             email.password = MASKED_SECRET.to_string();
         }
         incoming.route_aliases[1].api_key = Some("route-model-key-2-new".to_string());
-        incoming.embedding_routes[1].api_key = Some("route-embed-key-2-new".to_string());
 
         let hydrated = hydrate_config_for_save(incoming, &current);
 
@@ -5445,14 +5262,6 @@ mod tests {
             Some("route-model-key-2-new")
         );
         assert_eq!(
-            hydrated.embedding_routes[0].api_key.as_deref(),
-            Some("route-embed-key-1")
-        );
-        assert_eq!(
-            hydrated.embedding_routes[1].api_key.as_deref(),
-            Some("route-embed-key-2-new")
-        );
-        assert_eq!(
             hydrated
                 .channels_config
                 .email
@@ -5483,30 +5292,8 @@ mod tests {
                 profile: Default::default(),
             },
         ];
-        current.embedding_routes = vec![
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "semantic".to_string(),
-                provider: "openai".to_string(),
-                model: "text-embedding-3-small".to_string(),
-                dimensions: Some(1536),
-                api_key: Some("route-embed-key-1".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "archive".to_string(),
-                provider: "custom:https://emb.example.com/v1".to_string(),
-                model: "bge-m3".to_string(),
-                dimensions: Some(1024),
-                api_key: Some("route-embed-key-2".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-        ];
-
         let mut incoming = mask_sensitive_fields(&current);
         incoming.route_aliases.swap(0, 1);
-        incoming.embedding_routes.swap(0, 1);
         incoming
             .route_aliases
             .push(synapse_domain::config::schema::ModelRouteConfig {
@@ -5517,18 +5304,6 @@ mod tests {
                 capability: None,
                 profile: Default::default(),
             });
-        incoming
-            .embedding_routes
-            .push(synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "new-embed".to_string(),
-                provider: "custom:https://emb2.example.com/v1".to_string(),
-                model: "bge-small".to_string(),
-                dimensions: Some(768),
-                api_key: Some(MASKED_SECRET.to_string()),
-                capability: None,
-                profile: Default::default(),
-            });
-
         let hydrated = hydrate_config_for_save(incoming, &current);
 
         assert_eq!(
@@ -5540,21 +5315,8 @@ mod tests {
             Some("route-model-key-1")
         );
         assert_eq!(hydrated.route_aliases[2].api_key, None);
-        assert_eq!(
-            hydrated.embedding_routes[0].api_key.as_deref(),
-            Some("route-embed-key-2")
-        );
-        assert_eq!(
-            hydrated.embedding_routes[1].api_key.as_deref(),
-            Some("route-embed-key-1")
-        );
-        assert_eq!(hydrated.embedding_routes[2].api_key, None);
         assert!(hydrated
             .route_aliases
-            .iter()
-            .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
-        assert!(hydrated
-            .embedding_routes
             .iter()
             .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
     }

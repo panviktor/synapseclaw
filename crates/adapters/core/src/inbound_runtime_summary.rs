@@ -6,8 +6,10 @@
 use std::collections::HashSet;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane, AuxiliaryModelResolutionError,
+};
 use synapse_domain::application::services::conversation_service;
-use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::config::schema::Config;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_providers::{Provider, ProviderRuntimeOptions};
@@ -51,26 +53,59 @@ pub(crate) struct InboundRuntimeSummaryInput<'a> {
 pub(crate) async fn summarize_session_if_needed(
     input: InboundRuntimeSummaryInput<'_>,
 ) -> anyhow::Result<Option<String>> {
+    if !conversation_service::needs_summary(
+        input.message_count,
+        input.last_summary_count,
+        input.interval,
+    ) {
+        return Ok(None);
+    }
+
     let Some(_guard) = InflightSummaryGuard::acquire(input.session_key) else {
         return Ok(None);
     };
 
-    let summary_route = resolve_summary_route(input.config, input.current_model);
-    tracing::debug!(
+    let summary_route = match resolve_auxiliary_model(input.config, AuxiliaryLane::Compaction, None)
+    {
+        Ok(route) => route,
+        Err(AuxiliaryModelResolutionError::LaneNotConfigured { lane }) => {
+            tracing::warn!(
+                session_key = input.session_key,
+                transport = input.transport_label,
+                auxiliary_lane = lane.as_str(),
+                "Inbound session summary skipped: auxiliary lane is not configured"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(
+                session_key = input.session_key,
+                transport = input.transport_label,
+                %error,
+                "Inbound session summary skipped: no supported auxiliary candidate"
+            );
+            return Ok(None);
+        }
+    };
+    tracing::info!(
         session_key = input.session_key,
         transport = input.transport_label,
-        summary_route_source = summary_route.source.as_str(),
-        summary_provider = summary_route.provider.as_deref().unwrap_or("current"),
-        summary_model = summary_route.model.as_str(),
-        "Inbound session summary lane selected"
+        auxiliary_lane = summary_route.lane.as_str(),
+        summary_provider = summary_route.selected.provider.as_str(),
+        compaction_model = summary_route.selected.model.as_str(),
+        selected_candidate_index = summary_route.selected_index,
+        candidate_count = summary_route.candidates.len(),
+        "Inbound session summary auxiliary lane selected"
     );
 
-    let provider = if let Some(provider_name) = summary_route.provider.as_ref() {
+    let provider = {
+        let provider_name = summary_route.selected.provider.as_str();
         let api_key = summary_route
+            .selected
             .api_key_env
             .as_deref()
             .and_then(|env| std::env::var(env).ok())
-            .or_else(|| summary_route.api_key.clone());
+            .or_else(|| summary_route.selected.api_key.clone());
         match synapse_providers::create_provider_with_options(
             provider_name,
             api_key.as_deref(),
@@ -81,22 +116,20 @@ pub(crate) async fn summarize_session_if_needed(
                 tracing::warn!(
                     %error,
                     transport = input.transport_label,
-                    summary_provider = provider_name.as_str(),
-                    summary_model = summary_route.model.as_str(),
+                    summary_provider = provider_name,
+                    compaction_model = summary_route.selected.model.as_str(),
                     "Summary provider init failed"
                 );
                 return Err(error);
             }
         }
-    } else {
-        input.current_provider
     };
 
     let generator =
         crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
             provider,
-            summary_route.model,
-            summary_route.temperature,
+            summary_route.selected.model,
+            input.config.summary.temperature,
         );
 
     conversation_service::generate_session_summary(

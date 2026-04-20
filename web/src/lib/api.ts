@@ -160,20 +160,6 @@ export function getHealth(): Promise<HealthSnapshot> {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Summary Model
-// ---------------------------------------------------------------------------
-
-export function putSummaryModel(model: string | null, agentId?: string | null): Promise<{ ok: boolean; summary_model: string | null }> {
-  const path = agentId
-    ? `/api/agents/${encodeURIComponent(agentId)}/summary-model`
-    : '/api/summary-model';
-  return apiFetch(path, {
-    method: 'PUT',
-    body: JSON.stringify({ model }),
-  });
-}
-
 export function uploadChatMedia(file: File, agentId?: string | null): Promise<InboundMediaAttachment> {
   const body = new FormData();
   body.append('file', file, file.name);

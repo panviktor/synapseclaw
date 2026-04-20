@@ -243,7 +243,10 @@ impl ModelRoutingConfigTool {
         match lane {
             CapabilityLane::Reasoning => "reasoning",
             CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Compaction => "compaction",
             CapabilityLane::Embedding => "embedding",
+            CapabilityLane::WebExtraction => "web_extraction",
+            CapabilityLane::ToolValidator => "tool_validator",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",

@@ -159,32 +159,14 @@ pub fn resolve_lane_candidates(
     lane: CapabilityLane,
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> Vec<ResolvedModelCandidate> {
-    let effective_lanes = resolve_effective_model_lanes(config);
-
-    if let Some(explicit) = effective_lanes.iter().find(|entry| entry.lane == lane) {
-        if !explicit.candidates.is_empty() {
-            return explicit
-                .candidates
-                .iter()
-                .map(|candidate| {
-                    resolve_candidate(
-                        ModelLaneResolutionSource::ExplicitLaneConfig,
-                        candidate.provider.as_str(),
-                        candidate.model.as_str(),
-                        candidate.api_key.clone(),
-                        candidate.api_key_env.clone(),
-                        candidate.dimensions,
-                        &candidate.profile,
-                        catalog,
-                    )
-                })
-                .collect();
-        }
+    let explicit = resolve_explicit_lane_candidates(config, lane, catalog);
+    if !explicit.is_empty() {
+        return explicit;
     }
 
     let mut resolved = Vec::new();
 
-    if resolved.is_empty() && lane_allows_implicit_reasoning_candidates(lane) {
+    if lane_allows_implicit_reasoning_candidates(lane) {
         resolved = resolve_lane_candidates(config, CapabilityLane::Reasoning, catalog)
             .into_iter()
             .filter(|candidate| profile_supports_lane_confidently(&candidate.profile, lane))
@@ -214,6 +196,36 @@ pub fn resolve_lane_candidates(
     }
 
     resolved
+}
+
+pub fn resolve_explicit_lane_candidates(
+    config: &Config,
+    lane: CapabilityLane,
+    catalog: Option<&dyn ModelProfileCatalogPort>,
+) -> Vec<ResolvedModelCandidate> {
+    let effective_lanes = resolve_effective_model_lanes(config);
+
+    if let Some(explicit) = effective_lanes.iter().find(|entry| entry.lane == lane) {
+        if !explicit.candidates.is_empty() {
+            return explicit
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    resolve_candidate(
+                        ModelLaneResolutionSource::ExplicitLaneConfig,
+                        candidate.provider.as_str(),
+                        candidate.model.as_str(),
+                        candidate.api_key.clone(),
+                        candidate.api_key_env.clone(),
+                        candidate.dimensions,
+                        &candidate.profile,
+                        catalog,
+                    )
+                })
+                .collect();
+        }
+    }
+    Vec::new()
 }
 
 pub fn resolve_candidate_profile(
@@ -441,6 +453,7 @@ fn lane_allows_implicit_reasoning_candidates(lane: CapabilityLane) -> bool {
             | CapabilityLane::AudioGeneration
             | CapabilityLane::VideoGeneration
             | CapabilityLane::MusicGeneration
+            | CapabilityLane::WebExtraction
     )
 }
 

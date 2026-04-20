@@ -8,6 +8,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::application::services::auxiliary_model_resolution::{
+    AuxiliaryCandidateSkipReason, AuxiliaryModelResolution,
+};
 use crate::application::services::model_lane_resolution::{
     resolved_model_profile_confidence_name, resolved_model_profile_freshness_name,
     resolved_model_profile_source_name, ResolvedModelProfile,
@@ -175,6 +178,27 @@ pub struct RuntimeTraceAuxiliaryDecision {
     pub action: String,
     pub count: usize,
     pub reason: Option<String>,
+    pub lane: Option<String>,
+    pub selected_provider: Option<String>,
+    pub selected_model: Option<String>,
+    pub selected_candidate_index: Option<usize>,
+    pub candidate_order: Vec<RuntimeTraceAuxiliaryCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RuntimeTraceAuxiliaryCandidate {
+    pub index: usize,
+    pub provider: String,
+    pub model: String,
+    pub source: String,
+    pub selected: bool,
+    pub skip_reason: Option<String>,
+    pub context_window_source: String,
+    pub context_window_freshness: String,
+    pub context_window_confidence: String,
+    pub features_source: String,
+    pub features_freshness: String,
+    pub features_confidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -477,7 +501,56 @@ pub fn runtime_auxiliary_decision(
         action: redact_trace_text(&action.into()),
         count,
         reason: reason.map(redact_trace_text),
+        lane: None,
+        selected_provider: None,
+        selected_model: None,
+        selected_candidate_index: None,
+        candidate_order: Vec::new(),
     }
+}
+
+pub fn runtime_auxiliary_model_resolution_decision(
+    observed_at_unix: i64,
+    action: impl Into<String>,
+    resolution: &AuxiliaryModelResolution,
+) -> RuntimeTraceAuxiliaryDecision {
+    RuntimeTraceAuxiliaryDecision {
+        observed_at_unix,
+        kind: "auxiliary_model_resolution".to_string(),
+        action: redact_trace_text(&action.into()),
+        count: resolution.candidates.len(),
+        reason: Some("explicit_model_lane_resolution".to_string()),
+        lane: Some(resolution.lane.as_str().to_string()),
+        selected_provider: Some(redact_trace_text(&resolution.selected.provider)),
+        selected_model: Some(redact_trace_text(&resolution.selected.model)),
+        selected_candidate_index: Some(resolution.selected_index),
+        candidate_order: resolution
+            .candidates
+            .iter()
+            .map(|candidate| RuntimeTraceAuxiliaryCandidate {
+                index: candidate.index,
+                provider: redact_trace_text(&candidate.provider),
+                model: redact_trace_text(&candidate.model),
+                source: candidate.source.clone(),
+                selected: candidate.selected,
+                skip_reason: candidate
+                    .skip_reason
+                    .as_ref()
+                    .map(auxiliary_candidate_skip_reason_name)
+                    .map(str::to_string),
+                context_window_source: candidate.profile_context_window_source.clone(),
+                context_window_freshness: candidate.profile_context_window_freshness.clone(),
+                context_window_confidence: candidate.profile_context_window_confidence.clone(),
+                features_source: candidate.profile_features_source.clone(),
+                features_freshness: candidate.profile_features_freshness.clone(),
+                features_confidence: candidate.profile_features_confidence.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn auxiliary_candidate_skip_reason_name(reason: &AuxiliaryCandidateSkipReason) -> &'static str {
+    reason.as_str()
 }
 
 fn cap_runtime_decision_traces(traces: &mut Vec<RuntimeDecisionTrace>) {

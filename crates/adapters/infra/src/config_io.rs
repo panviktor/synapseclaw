@@ -560,6 +560,23 @@ async fn resolve_config_path_for_save(config: &Config) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+fn removed_auxiliary_config_key_error(path: &str) -> Option<String> {
+    let replacement = "`[[model_lanes]]` with `lane = \"compaction\"` or `lane = \"embedding\"`";
+    match path {
+        "summary_model"
+        | "summary.provider"
+        | "summary.model"
+        | "summary.api_key_env"
+        | "embedding_routes"
+        | "memory.embedding_provider"
+        | "memory.embedding_model"
+        | "memory.embedding_dimensions" => Some(format!(
+            "removed auxiliary model config key `{path}` is no longer supported; use {replacement}"
+        )),
+        _ => None,
+    }
+}
+
 // ConfigIO trait defined here (adapter-owned) to satisfy orphan rule.
 #[async_trait::async_trait]
 pub trait ConfigIO {
@@ -632,6 +649,12 @@ impl ConfigIO for Config {
                 },
             )
             .context("Failed to deserialize config file")?;
+
+            for path in &ignored_paths {
+                if let Some(message) = removed_auxiliary_config_key_error(path) {
+                    anyhow::bail!("{message}");
+                }
+            }
 
             // Warn about each unknown config key
             for path in ignored_paths {
@@ -1113,19 +1136,6 @@ impl ConfigIO for Config {
             }
             if route.model.trim().is_empty() {
                 anyhow::bail!("route_aliases[{i}].model must not be empty");
-            }
-        }
-
-        // Embedding routes
-        for (i, route) in self.embedding_routes.iter().enumerate() {
-            if route.hint.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].hint must not be empty");
-            }
-            if route.provider.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].provider must not be empty");
-            }
-            if route.model.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].model must not be empty");
             }
         }
 
@@ -2250,5 +2260,30 @@ async fn sync_directory(path: &Path) -> Result<()> {
     {
         let _ = path;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::removed_auxiliary_config_key_error;
+
+    #[test]
+    fn removed_auxiliary_config_keys_are_rejected() {
+        for path in [
+            "summary_model",
+            "summary.provider",
+            "summary.model",
+            "summary.api_key_env",
+            "embedding_routes",
+            "memory.embedding_provider",
+            "memory.embedding_model",
+            "memory.embedding_dimensions",
+        ] {
+            assert!(
+                removed_auxiliary_config_key_error(path).is_some(),
+                "{path} should be rejected"
+            );
+        }
+        assert!(removed_auxiliary_config_key_error("summary.temperature").is_none());
     }
 }

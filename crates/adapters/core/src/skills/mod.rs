@@ -3455,14 +3455,7 @@ async fn create_skill_access(
         }
     }
 
-    match synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        agent_id,
-        config.api_key.as_deref(),
-    )
-    .await
-    {
+    match synapse_memory::create_memory(config, &config.workspace_dir, agent_id).await {
         Ok(backend)
             if backend.surreal.is_some() || config.memory.backend.eq_ignore_ascii_case("none") =>
         {

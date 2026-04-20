@@ -1169,13 +1169,9 @@ async fn main() -> Result<()> {
 
         Commands::Cron { cron_command } => {
             let resolved_agent_id = synapse_adapters::agent::resolve_agent_id(&config);
-            let mem_backend = synapse_memory::create_memory(
-                &config.memory,
-                &config.workspace_dir,
-                &resolved_agent_id,
-                config.api_key.as_deref(),
-            )
-            .await?;
+            let mem_backend =
+                synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                    .await?;
             let db = mem_backend
                 .surreal
                 .ok_or_else(|| anyhow::anyhow!("SurrealDB not available for cron commands"))?;
@@ -2270,13 +2266,7 @@ async fn handle_pipeline_command(
     config: &config::Config,
 ) -> anyhow::Result<()> {
     use synapse_domain::ports::pipeline_store::PipelineStorePort;
-    let mem_backend = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        "cli",
-        config.api_key.as_deref(),
-    )
-    .await?;
+    let mem_backend = synapse_memory::create_memory(config, &config.workspace_dir, "cli").await?;
 
     match cmd {
         PipelineCommands::Show { name, mermaid } => {

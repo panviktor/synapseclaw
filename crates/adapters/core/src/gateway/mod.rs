@@ -335,8 +335,6 @@ pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub provider: Arc<dyn Provider>,
     pub model: String,
-    /// Model for session summarization (falls back to `model` if None).
-    pub summary_model: Option<String>,
     pub temperature: f64,
     pub mem: Arc<dyn UnifiedMemoryPort>,
     pub auto_save: bool,
@@ -537,20 +535,14 @@ pub async fn run_gateway(
         .with_context(|| {
             format!("no default model configured for provider '{default_provider}'")
         })?;
-    let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
         Some(m) => m,
         None => {
-            synapse_memory::create_memory(
-                &config.memory,
-                &config.workspace_dir,
-                &resolved_agent_id,
-                config.api_key.as_deref(),
-            )
-            .await?
-            .memory
+            synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                .await?
+                .memory
         }
     };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -995,7 +987,6 @@ pub async fn run_gateway(
         config: config_state,
         provider: Arc::clone(&provider),
         model: model.clone(),
-        summary_model: summary_model.clone(),
         temperature,
         mem: Arc::new(
             crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
@@ -1552,10 +1543,6 @@ pub async fn run_gateway(
             get(api::handle_api_agent_heartbeat_runs_proxy),
         )
         .route(
-            "/api/agents/{agent_id}/summary-model",
-            put(api::handle_api_agent_summary_model_proxy),
-        )
-        .route(
             "/api/agents/{agent_id}/cron",
             get(api::handle_api_agent_cron_list_proxy),
         )
@@ -1586,7 +1573,6 @@ pub async fn run_gateway(
         .route("/api/status", get(api::handle_api_status))
         .route("/api/heartbeat", get(api::handle_api_heartbeat))
         .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))
-        .route("/api/summary-model", put(api::handle_api_summary_model_put))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
         .route("/api/activity", get(api::handle_api_activity))

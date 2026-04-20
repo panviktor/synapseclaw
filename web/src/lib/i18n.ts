@@ -41,7 +41,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': '审查被标记的消息',
     'ipc.audit_subtitle': '安全和访问审计日志',
     'ipc.cron_subtitle': '管理全局智能体定时任务',
-    'agent.summary_model': '摘要',
     'agent.summary_auto': '自动（主模型）',
 
     // Dashboard
@@ -363,7 +362,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': 'Review flagged messages',
     'ipc.audit_subtitle': 'Security and access audit log',
     'ipc.cron_subtitle': 'Manage cron jobs across fleet agents',
-    'agent.summary_model': 'Summary',
     'agent.summary_auto': 'auto (primary)',
 
     // Dashboard
@@ -707,7 +705,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': 'İşaretlenen mesajları inceleyin',
     'ipc.audit_subtitle': 'Güvenlik ve erişim denetim günlüğü',
     'ipc.cron_subtitle': 'Filo ajanları genelinde cron işlerini yönetin',
-    'agent.summary_model': 'Özet',
     'agent.summary_auto': 'otomatik (birincil)',
 
     // Dashboard

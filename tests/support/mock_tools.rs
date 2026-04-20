@@ -4,7 +4,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
+use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
 use synapseclaw::adapters::tools::{Tool, ToolResult};
+
+fn test_tool_contract() -> ToolContract {
+    ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
+}
 
 /// Simple tool that echoes its input argument.
 pub struct EchoTool;
@@ -24,6 +29,9 @@ impl Tool for EchoTool {
                 "message": {"type": "string"}
             }
         })
+    }
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         let msg = args
@@ -67,6 +75,9 @@ impl Tool for CountingTool {
     fn parameters_schema(&self) -> serde_json::Value {
         json!({"type": "object"})
     }
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
+    }
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
         let mut c = self.count.lock().unwrap();
         *c += 1;
@@ -91,6 +102,9 @@ impl Tool for FailingTool {
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({"type": "object"})
+    }
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
         Ok(ToolResult {
@@ -135,6 +149,9 @@ impl Tool for RecordingTool {
                 "input": {"type": "string"}
             }
         })
+    }
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         self.calls.lock().unwrap().push(args.clone());

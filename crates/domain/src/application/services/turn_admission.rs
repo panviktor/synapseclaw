@@ -405,7 +405,11 @@ fn current_candidate_supports_lane(
     provider_capabilities: &ProviderCapabilities,
 ) -> bool {
     match lane {
-        CapabilityLane::Reasoning | CapabilityLane::CheapReasoning => true,
+        CapabilityLane::Reasoning
+        | CapabilityLane::CheapReasoning
+        | CapabilityLane::Compaction
+        | CapabilityLane::WebExtraction
+        | CapabilityLane::ToolValidator => true,
         CapabilityLane::Embedding
         | CapabilityLane::ImageGeneration
         | CapabilityLane::AudioGeneration

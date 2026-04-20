@@ -16,6 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane,
+};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
@@ -78,7 +81,6 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
     format_scoped_instruction_block,
 };
-use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::tool_repair::{
     append_tool_repair_trace, apply_successful_tool_repair_observation_with_args,
     enrich_tool_repair_trace, latest_tool_repair_trace, ToolRepairTraceContext,
@@ -1256,19 +1258,16 @@ impl Agent {
         ));
 
         let resolved_agent_id = crate::agent::resolve_agent_id(config);
-        let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) =
-            if let Some(mem) = shared_memory {
-                (mem, None)
-            } else {
-                let memory_backend = synapse_memory::create_memory(
-                    &config.memory,
-                    &config.workspace_dir,
-                    &resolved_agent_id,
-                    config.api_key.as_deref(),
-                )
-                .await?;
-                (memory_backend.memory, memory_backend.surreal)
-            };
+        let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) = if let Some(mem) =
+            shared_memory
+        {
+            (mem, None)
+        } else {
+            let memory_backend =
+                synapse_memory::create_memory(config, &config.workspace_dir, &resolved_agent_id)
+                    .await?;
+            (memory_backend.memory, memory_backend.surreal)
+        };
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -1449,50 +1448,66 @@ impl Agent {
             None
         };
 
-        let summary_route = resolve_summary_route(config, &model_name);
-        let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = {
-            let provider_result: Result<Arc<dyn Provider>> =
-                if let Some(ref summary_provider_name) = summary_route.provider {
-                    let api_key = summary_route
-                        .api_key_env
-                        .as_deref()
-                        .and_then(|env| std::env::var(env).ok())
-                        .or_else(|| summary_route.api_key.clone());
+        let summary_route = match resolve_auxiliary_model(
+            config,
+            AuxiliaryLane::Compaction,
+            Some(&profile_catalog),
+        ) {
+            Ok(route) => Some(route),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    auxiliary_lane = AuxiliaryLane::Compaction.as_str(),
+                    "Agent history summary auxiliary lane unavailable; live compaction disabled"
+                );
+                None
+            }
+        };
+        let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = match summary_route {
+            None => None,
+            Some(summary_route) => {
+                let summary_provider_name = summary_route.selected.provider.as_str();
+                let api_key = summary_route
+                    .selected
+                    .api_key_env
+                    .as_deref()
+                    .and_then(|env| std::env::var(env).ok())
+                    .or_else(|| summary_route.selected.api_key.clone());
+                let provider_result: Result<Arc<dyn Provider>> =
                     synapse_providers::create_provider_with_options(
                         summary_provider_name,
                         api_key.as_deref(),
                         &provider_runtime_options,
                     )
-                    .map(Arc::from)
-                } else {
-                    Ok(Arc::clone(&provider_for_consolidation))
-                };
+                    .map(Arc::from);
 
-            match provider_result {
-                Ok(provider) => {
-                    tracing::debug!(
-                        summary_route_source = summary_route.source.as_str(),
-                        summary_provider =
-                            summary_route.provider.as_deref().unwrap_or(provider_name),
-                        summary_model = summary_route.model.as_str(),
-                        "Agent history compaction summary lane ready"
-                    );
-                    Some(Arc::new(
+                match provider_result {
+                    Ok(provider) => {
+                        tracing::debug!(
+                            auxiliary_lane = summary_route.lane.as_str(),
+                            summary_provider = summary_provider_name,
+                            compaction_model = summary_route.selected.model.as_str(),
+                            selected_candidate_index = summary_route.selected_index,
+                            candidate_count = summary_route.candidates.len(),
+                            "Agent history compaction auxiliary lane ready"
+                        );
+                        Some(Arc::new(
                         crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
                             provider,
-                            summary_route.model.clone(),
-                            summary_route.temperature,
+                            summary_route.selected.model.clone(),
+                            config.summary.temperature,
                         ),
                     ))
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        summary_route_source = summary_route.source.as_str(),
-                        summary_model = summary_route.model.as_str(),
-                        "Failed to initialize agent history summary generator; live compaction disabled"
-                    );
-                    None
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            auxiliary_lane = summary_route.lane.as_str(),
+                            compaction_model = summary_route.selected.model.as_str(),
+                            "Failed to initialize agent history summary generator; live compaction disabled"
+                        );
+                        None
+                    }
                 }
             }
         };

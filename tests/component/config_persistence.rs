@@ -94,16 +94,6 @@ fn memory_config_default_backend() {
 }
 
 #[test]
-fn memory_config_default_embedding_provider() {
-    let memory = MemoryConfig::default();
-    // Default embedding_provider should be set (even if "none")
-    assert!(
-        !memory.embedding_provider.is_empty(),
-        "embedding_provider should have a default value"
-    );
-}
-
-#[test]
 fn memory_config_default_vector_keyword_weights_sum_to_one() {
     let memory = MemoryConfig::default();
     let sum = memory.vector_weight + memory.keyword_weight;
@@ -152,16 +142,12 @@ fn config_toml_roundtrip_preserves_agent_config() {
 #[test]
 fn config_toml_roundtrip_preserves_memory_config() {
     let mut config = Config::default();
-    config.memory.embedding_provider = "openai".into();
-    config.memory.embedding_model = "text-embedding-3-small".into();
     config.memory.vector_weight = 0.8;
     config.memory.keyword_weight = 0.2;
 
     let toml_str = toml::to_string(&config).expect("config should serialize to TOML");
     let parsed: Config = toml::from_str(&toml_str).expect("TOML should deserialize back");
 
-    assert_eq!(parsed.memory.embedding_provider, "openai");
-    assert_eq!(parsed.memory.embedding_model, "text-embedding-3-small");
     assert!((parsed.memory.vector_weight - 0.8).abs() < f64::EPSILON);
     assert!((parsed.memory.keyword_weight - 0.2).abs() < f64::EPSILON);
 }
