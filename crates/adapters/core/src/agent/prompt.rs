@@ -335,6 +335,12 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
                 .to_string(),
         );
     }
+    if has_tool("voice_preference") {
+        lines.push(
+            "- `voice_preference` stores durable scoped voice settings: use `set` with `scope: \"global\"|\"channel\"|\"conversation\"` when the user asks to remember a voice or auto-TTS policy; use `get`, `clear`, or `list` to inspect or remove those settings."
+                .to_string(),
+        );
+    }
     if has_tool("voice_reply") {
         lines.push(
             "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use optional `voice` only with IDs returned by `voice_list`. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."

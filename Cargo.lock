@@ -7573,6 +7573,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "jsonschema",
+ "mime",
  "parking_lot",
  "schemars",
  "serde",

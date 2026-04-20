@@ -4,6 +4,10 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
+use synapse_domain::application::services::media_artifact_delivery::{
+    artifact_delivery_uri, strip_media_artifact_markers,
+};
+use synapse_domain::ports::provider::MediaArtifact;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -279,17 +283,33 @@ impl Channel for SignalChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
+        let attachment_paths =
+            signal_attachment_paths_from_media_artifacts(&message.media_artifacts)?;
+        let content = strip_media_artifact_markers(&message.content, &message.media_artifacts);
+        let content = content.trim();
         let params = match Self::parse_recipient_target(&message.recipient) {
-            RecipientTarget::Direct(number) => serde_json::json!({
-                "recipient": [number],
-                "message": &message.content,
-                "account": &self.account,
-            }),
-            RecipientTarget::Group(group_id) => serde_json::json!({
-                "groupId": group_id,
-                "message": &message.content,
-                "account": &self.account,
-            }),
+            RecipientTarget::Direct(number) => {
+                let mut params = serde_json::json!({
+                    "recipient": [number],
+                    "message": content,
+                    "account": &self.account,
+                });
+                if !attachment_paths.is_empty() {
+                    params["attachments"] = serde_json::json!(attachment_paths);
+                }
+                params
+            }
+            RecipientTarget::Group(group_id) => {
+                let mut params = serde_json::json!({
+                    "groupId": group_id,
+                    "message": content,
+                    "account": &self.account,
+                });
+                if !attachment_paths.is_empty() {
+                    params["attachments"] = serde_json::json!(attachment_paths);
+                }
+                params
+            }
         };
 
         self.rpc_request("send", params).await?;
@@ -450,9 +470,36 @@ impl Channel for SignalChannel {
     }
 }
 
+fn signal_attachment_paths_from_media_artifacts(
+    artifacts: &[MediaArtifact],
+) -> anyhow::Result<Vec<String>> {
+    artifacts
+        .iter()
+        .map(|artifact| {
+            let uri = artifact_delivery_uri("signal", artifact)?;
+            signal_local_attachment_path(uri)
+        })
+        .collect()
+}
+
+fn signal_local_attachment_path(uri: &str) -> anyhow::Result<String> {
+    let uri = uri.trim();
+    if let Some(path) = uri.strip_prefix("file://") {
+        if path.is_empty() {
+            anyhow::bail!("signal attachment file URI is empty");
+        }
+        return Ok(path.to_string());
+    }
+    if uri.starts_with('/') || uri.starts_with("./") || uri.starts_with("../") {
+        return Ok(uri.to_string());
+    }
+    anyhow::bail!("signal attachments require a local path or file:// URI, got `{uri}`")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 
     fn make_channel() -> SignalChannel {
         SignalChannel::new(
@@ -875,6 +922,32 @@ mod tests {
         assert_eq!(env.source_number.as_deref(), Some("+1111111111"));
         let dm = env.data_message.unwrap();
         assert_eq!(dm.message.as_deref(), Some("Hello Signal!"));
+    }
+
+    #[test]
+    fn signal_media_artifacts_accept_local_paths() {
+        let artifacts = vec![
+            MediaArtifact::new(MediaArtifactKind::Voice, "/tmp/voice.ogg"),
+            MediaArtifact::new(MediaArtifactKind::Audio, "file:///tmp/audio.mp3"),
+        ];
+
+        let paths = signal_attachment_paths_from_media_artifacts(&artifacts).unwrap();
+
+        assert_eq!(paths, vec!["/tmp/voice.ogg", "/tmp/audio.mp3"]);
+    }
+
+    #[test]
+    fn signal_media_artifacts_reject_remote_uris() {
+        let artifacts = vec![MediaArtifact::new(
+            MediaArtifactKind::Voice,
+            "https://example.test/voice.ogg",
+        )];
+
+        let error = signal_attachment_paths_from_media_artifacts(&artifacts).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("signal attachments require a local path"));
     }
 
     #[test]

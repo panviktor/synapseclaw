@@ -40,7 +40,7 @@ pub use delegate::DelegateTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
 pub use skill_runtime::SkillReadTool;
-pub use voice_reply::{VoiceListTool, VoiceReplyTool};
+pub use voice_reply::{VoiceListTool, VoicePreferenceTool, VoiceReplyTool};
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
@@ -1015,6 +1015,11 @@ fn build_runtime_tool_registry(
         turn_defaults_context.as_ref(),
         channel_registry.as_ref(),
     ) {
+        tool_arcs.push(Arc::new(VoicePreferenceTool::new(
+            Arc::clone(&config),
+            Arc::clone(ctx),
+            Arc::clone(&user_profile_store),
+        )));
         tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(
             Arc::clone(ctx),
             Arc::clone(defaults),
@@ -1026,6 +1031,7 @@ fn build_runtime_tool_registry(
             Arc::clone(ctx),
             Arc::clone(defaults),
             Arc::clone(reg),
+            Arc::clone(&user_profile_store),
         )));
     }
     if let Some(store) = conversation_store {

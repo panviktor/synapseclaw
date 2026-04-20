@@ -16,8 +16,8 @@ use matrix_sdk::{
             relation::{Annotation, Thread},
             room::{
                 message::{
-                    LocationMessageEventContent, MessageType, OriginalSyncRoomMessageEvent,
-                    Relation, RoomMessageEventContent,
+                    AudioMessageEventContent, LocationMessageEventContent, MessageType,
+                    OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
                 },
                 MediaSource,
             },
@@ -288,6 +288,18 @@ fn matrix_audio_info(kind: MatrixOutgoingAttachmentKind, bytes: &[u8]) -> BaseAu
         } else {
             None
         },
+    }
+}
+
+fn matrix_audio_message_is_voice(content: &AudioMessageEventContent) -> bool {
+    content.voice.is_some()
+}
+
+fn matrix_audio_transcription_text(is_voice: bool, text: &str) -> String {
+    if is_voice {
+        format!("[Voice] {text}")
+    } else {
+        format!("[Audio] {text}")
     }
 }
 
@@ -1749,6 +1761,7 @@ impl Channel for MatrixChannel {
                     MessageType::Audio(content) => {
                         let filename = content.filename().to_string();
                         let source = content.source.clone();
+                        let is_voice_message = matrix_audio_message_is_voice(content);
                         let size_hint = content.info.as_ref().and_then(|i| i.size.map(u64::from));
                         let sdk_client = room.client();
 
@@ -1776,8 +1789,10 @@ impl Channel for MatrixChannel {
                                                 cache.clear();
                                             }
                                             cache.insert(event_id, text.clone());
-                                            voice_mode.store(true, Ordering::Relaxed);
-                                            format!("[Voice] {text}")
+                                            if is_voice_message {
+                                                voice_mode.store(true, Ordering::Relaxed);
+                                            }
+                                            matrix_audio_transcription_text(is_voice_message, &text)
                                         }
                                         Err(error) => {
                                             tracing::debug!("Matrix audio transcription failed, falling back to file save: {error}");
@@ -2787,6 +2802,35 @@ mod tests {
         assert_eq!(attachments[0].target, "/tmp/voice.wav");
         assert_eq!(attachments[0].label.as_deref(), Some("assistant-voice.wav"));
         assert_eq!(attachments[0].mime_type.as_deref(), Some("audio/wav"));
+    }
+
+    #[test]
+    fn matrix_msc3245_voice_marker_is_detected() {
+        use matrix_sdk::ruma::{
+            events::room::message::{AudioMessageEventContent, UnstableVoiceContentBlock},
+            mxc_uri,
+        };
+
+        let mut content = AudioMessageEventContent::plain(
+            "voice.ogg".to_string(),
+            mxc_uri!("mxc://notareal.hs/voice").to_owned(),
+        );
+
+        assert!(!matrix_audio_message_is_voice(&content));
+        assert_eq!(
+            matrix_audio_transcription_text(false, "hello"),
+            "[Audio] hello"
+        );
+
+        content.voice = Some(UnstableVoiceContentBlock::new());
+
+        assert!(matrix_audio_message_is_voice(&content));
+        assert_eq!(
+            matrix_audio_transcription_text(true, "hello"),
+            "[Voice] hello"
+        );
+        let serialized = serde_json::to_value(&content).unwrap();
+        assert!(serialized.get("org.matrix.msc3245.voice").is_some());
     }
 
     #[test]

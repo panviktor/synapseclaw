@@ -187,7 +187,51 @@ api_key_env = "XAI_API_KEY"
 
 Voice IDs come from the runtime voice catalog exposed by `voice_list`. For provider-specific voice defaults, keep small blocks under `[tts.<provider>]`. For example, MiniMax keeps voice tuning under `[tts.minimax]`, while the model and key are selected through `speech_synthesis`.
 
-Matrix voice replies preserve the speech provider's native audio format and send it through the Matrix voice-message path. This keeps the message as a voice bubble, but client playback can vary by format; use a provider that emits valid Ogg/Opus when a Matrix mobile client requires strict Ogg/Opus voice payloads.
+Voice delivery is channel-aware; Synapseclaw does not blindly relabel every TTS result as an Opus voice note. Matrix uses the native Matrix voice-message path while preserving the provider's audio payload, so strict mobile clients may still prefer Ogg/Opus. Telegram can use the voice path for Ogg/Opus, Ogg, MP3, or M4A, but Opus is the safest format for consistent voice-bubble behavior. WhatsApp PTT voice notes require Ogg/Opus; MP3, WAV, and M4A are sent as normal audio instead of being mislabeled as push-to-talk voice notes. Slack and Discord receive spoken replies as audio/file attachments unless a future channel adds native voice-note semantics.
+
+This mirrors the useful parts of Hermes and OpenClaw: prefer provider-native Opus for channels that benefit from it, but degrade by channel profile instead of doing unsafe local best-effort conversion.
+
+The `voice_list` tool returns configured voice catalogs for every active speech synthesis candidate plus the delivery profiles, so the agent can choose a compatible speech synthesis lane without guessing from prose. Operators can inspect the same runtime view with `synapseclaw voice status`, `synapseclaw voice voices --json`, and `synapseclaw voice profiles --json`; dashboard clients can use `GET /api/voice/status`, `GET /api/voice/voices`, and `GET /api/voice/profiles`. Status includes both speech synthesis and speech transcription readiness.
+
+To persist a default assistant voice without editing TOML by hand:
+
+```bash
+synapseclaw voice set --voice hannah
+```
+
+To change the first `speech_synthesis` lane candidate explicitly:
+
+```bash
+synapseclaw voice set --provider groq --model canopylabs/orpheus-v1-english --voice hannah --format opus
+```
+
+To test synthesis without sending anything to a chat:
+
+```bash
+synapseclaw voice synthesize --text "Voice test." --voice hannah --output /tmp/voice-test.wav
+```
+
+To test transcription from a local audio file:
+
+```bash
+synapseclaw voice transcribe --file /tmp/voice-test.wav
+```
+
+Dashboard clients can use `POST /api/voice/synthesize` for the same local conversion flow. The endpoint validates the requested provider, model, voice, and format against the active `speech_synthesis` candidates, writes an audio artifact under `workspace/voice_out`, and returns path, size, provider, model, voice, format, and MIME metadata.
+
+Dashboard clients can also use `POST /api/voice/transcribe` with a local artifact path and optional provider override. This uses the same `speech_transcription` lane as channel voice notes and returns the selected provider, model, and recognized text.
+
+Voice preferences can be scoped globally, per channel, or per conversation. Use them when a user asks the assistant to remember a voice or auto-spoken-reply policy.
+
+```bash
+synapseclaw voice preference set --scope global --voice hannah --auto-tts-policy inbound_voice
+synapseclaw voice preference set --scope channel --channel matrix --voice hannah
+synapseclaw voice preference list
+```
+
+The same lifecycle is available to the model through the typed `voice_preference` tool and to dashboard clients through `GET`, `POST`, and `DELETE /api/voice/preferences`. The default policy is `inherit`; use `off` only when a scope should explicitly disable broader auto-TTS behavior.
+
+When SynapseClaw runs under systemd, API keys should be available through the user service environment file, not committed config. A CLI `voice status` run from a normal shell may report a missing key even when the daemon can see it through systemd.
 
 ```toml
 [tts.minimax]
@@ -269,6 +313,8 @@ The `speech_transcription` lane selects the STT provider/model for channel voice
 The `speech_synthesis` lane selects the TTS provider/model for spoken replies. Supported direct adapters include OpenAI TTS, ElevenLabs, Google Cloud TTS, Edge TTS, MiniMax Speech, Mistral Voxtral TTS, and xAI TTS.
 
 The `audio_generation` lane is different: it is for model-generated audio as an agent output, not for channel voice-note transcription or reply playback. Live voice calls, Discord voice channels, LiveKit/WebRTC, and video calls require a streaming channel/runtime layer on top of these lanes; they are not enabled just by selecting a TTS model.
+
+For Telnyx-backed ClawdTalk calls, call-control voice choices are explicit channel config rather than prompt text. Set `answering_machine_detection_mode`, `speak_voice`, `speak_language`, `speak_service_level`, `ai_voice`, and `ai_speed` under `[channels_config.clawdtalk]` when that channel is enabled.
 
 ## Operator Checks
 

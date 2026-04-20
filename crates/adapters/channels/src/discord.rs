@@ -215,6 +215,8 @@ fn discord_media_artifact_attachments(
             Ok(DiscordAttachment {
                 kind: discord_attachment_kind_for_artifact(artifact.kind),
                 target: artifact_delivery_uri("discord", artifact)?.to_string(),
+                label: artifact.label.clone(),
+                mime_type: artifact.mime_type.clone(),
             })
         })
         .collect()
@@ -224,6 +226,8 @@ fn discord_media_artifact_attachments(
 struct DiscordAttachment {
     kind: DiscordAttachmentKind,
     target: String,
+    label: Option<String>,
+    mime_type: Option<String>,
 }
 
 fn parse_attachment_markers(message: &str) -> (String, Vec<DiscordAttachment>) {
@@ -252,6 +256,8 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<DiscordAttachment>) {
             Some(DiscordAttachment {
                 kind,
                 target: target.to_string(),
+                label: None,
+                mime_type: None,
             })
         });
 
@@ -535,8 +541,8 @@ impl Channel for DiscordChannel {
             let upload = resolve_outbound_media_uri(
                 &client,
                 &attachment.target,
-                None,
-                None,
+                attachment.label.as_deref(),
+                attachment.mime_type.as_deref(),
                 fallback_file_name,
             )
             .await?;
@@ -1553,6 +1559,24 @@ mod tests {
         assert_eq!(attachments[0].target, "https://example.com/a.png");
         assert_eq!(attachments[1].kind, DiscordAttachmentKind::Document);
         assert_eq!(attachments[1].target, "/tmp/a.pdf");
+    }
+
+    #[test]
+    fn discord_media_artifacts_preserve_label_and_mime() {
+        let mut artifact = MediaArtifact::new(MediaArtifactKind::Voice, "/tmp/voice.ogg");
+        artifact.label = Some("assistant-voice.ogg".to_string());
+        artifact.mime_type = Some("audio/ogg; codecs=opus".to_string());
+
+        let attachments = discord_media_artifact_attachments(&[artifact]).unwrap();
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].kind, DiscordAttachmentKind::Audio);
+        assert_eq!(attachments[0].target, "/tmp/voice.ogg");
+        assert_eq!(attachments[0].label.as_deref(), Some("assistant-voice.ogg"));
+        assert_eq!(
+            attachments[0].mime_type.as_deref(),
+            Some("audio/ogg; codecs=opus")
+        );
     }
 
     #[test]

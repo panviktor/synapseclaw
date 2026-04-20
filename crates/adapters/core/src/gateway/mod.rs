@@ -1577,6 +1577,23 @@ pub async fn run_gateway(
             post(api::handle_api_agent_chat_media_upload_proxy),
         )
         .route("/api/status", get(api::handle_api_status))
+        .route("/api/voice/status", get(api::handle_api_voice_status))
+        .route("/api/voice/profiles", get(api::handle_api_voice_profiles))
+        .route("/api/voice/voices", get(api::handle_api_voice_voices))
+        .route(
+            "/api/voice/synthesize",
+            post(api::handle_api_voice_synthesize),
+        )
+        .route(
+            "/api/voice/transcribe",
+            post(api::handle_api_voice_transcribe),
+        )
+        .route(
+            "/api/voice/preferences",
+            get(api::handle_api_voice_preferences_get)
+                .post(api::handle_api_voice_preferences_post)
+                .delete(api::handle_api_voice_preferences_delete),
+        )
         .route("/api/heartbeat", get(api::handle_api_heartbeat))
         .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))
         .route("/api/config", get(api::handle_api_config_get))

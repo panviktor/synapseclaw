@@ -319,6 +319,12 @@ Examples:
         model_command: ModelCommands,
     },
 
+    /// Inspect and configure speech synthesis voices
+    Voice {
+        #[command(subcommand)]
+        voice_command: VoiceCommands,
+    },
+
     /// List supported AI providers
     Providers,
 
@@ -592,6 +598,101 @@ enum ModelCatalogCommands {
 }
 
 #[derive(Subcommand, Debug)]
+enum VoiceCommands {
+    /// Show resolved speech synthesis configuration and candidate failover order
+    Status,
+    /// Print channel delivery profiles used for voice/audio artifacts
+    Profiles {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List supported voices for every resolved speech_synthesis candidate
+    Voices {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Synthesize text to a local audio file using the speech_synthesis lane
+    Synthesize {
+        /// Text to synthesize
+        #[arg(long)]
+        text: String,
+        /// Output path; defaults to workspace/voice_out/voice_<uuid>.<ext>
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Preferred speech synthesis provider
+        #[arg(long)]
+        provider: Option<String>,
+        /// Preferred speech synthesis model
+        #[arg(long)]
+        model: Option<String>,
+        /// Voice id
+        #[arg(long)]
+        voice: Option<String>,
+        /// Preferred provider output format
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Transcribe a local audio file using the speech_transcription lane
+    Transcribe {
+        /// Audio file path
+        #[arg(long)]
+        file: PathBuf,
+        /// Optional provider override among configured STT providers
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Persist default voice and optional speech_synthesis lane selection
+    Set {
+        /// Voice id to store as the default voice
+        #[arg(long)]
+        voice: Option<String>,
+        /// TTS provider for the first speech_synthesis lane candidate
+        #[arg(long)]
+        provider: Option<String>,
+        /// TTS model for the first speech_synthesis lane candidate
+        #[arg(long)]
+        model: Option<String>,
+        /// Provider output format preference, for example opus, mp3, wav, pcm, or flac
+        #[arg(long)]
+        format: Option<String>,
+        /// Maximum text length passed to TTS
+        #[arg(long)]
+        max_text_length: Option<usize>,
+    },
+    /// Manage durable scoped voice preferences used by voice_reply
+    Preference {
+        /// Action: get, set, clear, or list
+        action: String,
+        /// Scope: global, channel, or conversation
+        #[arg(long, default_value = "global")]
+        scope: String,
+        /// Channel adapter name for channel/conversation scope
+        #[arg(long)]
+        channel: Option<String>,
+        /// Recipient/chat/room id for conversation scope
+        #[arg(long)]
+        recipient: Option<String>,
+        /// Preferred speech synthesis provider
+        #[arg(long)]
+        provider: Option<String>,
+        /// Preferred speech synthesis model
+        #[arg(long)]
+        model: Option<String>,
+        /// Preferred voice id
+        #[arg(long)]
+        voice: Option<String>,
+        /// Preferred output format
+        #[arg(long)]
+        format: Option<String>,
+        /// Auto TTS policy: inherit, off, always, inbound_voice, tagged, channel_default, conversation_default
+        #[arg(long)]
+        auto_tts_policy: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum DoctorCommands {
     /// Probe model catalogs across providers and report availability
     Models {
@@ -618,6 +719,661 @@ enum DoctorCommands {
         #[arg(long, default_value = "20")]
         limit: usize,
     },
+}
+
+async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Result<()> {
+    use synapse_domain::application::services::media_artifact_delivery::{
+        tts_output_extension, tts_output_mime, tts_provider_output_format,
+        voice_delivery_channel_profiles,
+    };
+    use synapse_domain::application::services::voice_preference_service::{
+        read_voice_settings, write_voice_settings, VoicePreference, VoiceSettings,
+    };
+    use synapse_domain::config::schema::{
+        ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
+    };
+    use synapse_domain::ports::user_profile_store::UserProfileStorePort;
+
+    match command {
+        VoiceCommands::Status => {
+            println!("Voice synthesis: {}", enabled_label(config.tts.enabled));
+            println!("Default voice:    {}", config.tts.default_voice);
+            println!("Base provider:    {}", config.tts.default_provider);
+            println!("Base format:      {}", config.tts.default_format);
+            println!("Max text length:  {}", config.tts.max_text_length);
+            println!();
+
+            match synapseclaw::channels::lane_selected_tts_candidate_configs(config) {
+                Ok(candidates) => {
+                    println!("Resolved speech_synthesis candidates:");
+                    for (position, (lane_index, tts)) in candidates.iter().enumerate() {
+                        let format = tts_provider_output_format(tts);
+                        println!(
+                            "  {}. lane_candidate={} provider={} model={} voice={} format={} ext=.{} mime={}",
+                            position + 1,
+                            lane_index,
+                            tts.default_provider,
+                            voice_selected_model(tts),
+                            tts.default_voice,
+                            format,
+                            tts_output_extension(&format),
+                            tts_output_mime(&format)
+                        );
+                    }
+                }
+                Err(error) => {
+                    println!("Resolved speech_synthesis candidates: not ready");
+                    println!("Reason: {error}");
+                }
+            }
+            println!();
+            match synapseclaw::channels::lane_selected_transcription_config(config) {
+                Ok(transcription) => {
+                    let providers =
+                        match synapseclaw::channels::transcription::TranscriptionManager::new(
+                            &transcription,
+                        ) {
+                            Ok(manager) => {
+                                let mut providers = manager
+                                    .available_providers()
+                                    .into_iter()
+                                    .map(ToString::to_string)
+                                    .collect::<Vec<_>>();
+                                providers.sort();
+                                providers
+                            }
+                            Err(_) => Vec::new(),
+                        };
+                    println!("Resolved speech_transcription:");
+                    println!("  provider: {}", transcription.default_provider);
+                    println!("  model:    {}", transcription.model);
+                    println!("  language: {:?}", transcription.language);
+                    println!("  max_secs: {}", transcription.max_duration_secs);
+                    println!("  available providers: {}", providers.join(", "));
+                }
+                Err(error) => {
+                    println!("Resolved speech_transcription: not ready");
+                    println!("Reason: {error}");
+                }
+            }
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("user_profiles.json");
+            if let Ok(store) =
+                synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path)
+            {
+                let mut items = store
+                    .list()
+                    .into_iter()
+                    .filter(|(key, _)| key.starts_with("voice:"))
+                    .map(|(key, profile)| {
+                        serde_json::json!({
+                            "key": key,
+                            "settings": read_voice_settings(Some(profile)),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                items.sort_by(|a, b| {
+                    a.get("key")
+                        .and_then(|value| value.as_str())
+                        .cmp(&b.get("key").and_then(|value| value.as_str()))
+                });
+                println!();
+                if items.is_empty() {
+                    println!("Stored voice preferences: none");
+                } else {
+                    println!("Stored voice preferences:");
+                    for item in items {
+                        println!("  {}", serde_json::to_string(&item)?);
+                    }
+                }
+            }
+            Ok(())
+        }
+        VoiceCommands::Profiles { json } => {
+            let profiles = voice_delivery_channel_profiles();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&profiles)?);
+            } else {
+                println!("Voice delivery profiles:");
+                for profile in profiles {
+                    println!(
+                        "  {}: native_voice={:?}; fallback={:?}; notes={:?}",
+                        profile.channel,
+                        profile.native_voice_formats,
+                        profile.fallback_mode,
+                        profile.notes
+                    );
+                }
+            }
+            Ok(())
+        }
+        VoiceCommands::Voices { json } => {
+            let candidates = synapseclaw::channels::lane_selected_tts_candidate_configs(config)?;
+            let voices = candidates
+                .into_iter()
+                .filter(|(_, tts)| tts.enabled)
+                .map(|(lane_candidate_index, tts)| {
+                    let manager = synapseclaw::channels::TtsManager::new(&tts)?;
+                    let provider = tts.default_provider.clone();
+                    let voices = manager.supported_voices(&provider)?;
+                    let format = tts_provider_output_format(&tts);
+                    Ok::<_, anyhow::Error>(serde_json::json!({
+                        "lane_candidate_index": lane_candidate_index,
+                        "provider": provider,
+                        "model": voice_selected_model(&tts),
+                        "default_voice": tts.default_voice,
+                        "format": format,
+                        "extension": tts_output_extension(&format),
+                        "mime_type": tts_output_mime(&format),
+                        "voices": voices,
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&voices)?);
+            } else {
+                println!("Configured TTS voices:");
+                for candidate in voices {
+                    println!(
+                        "  lane_candidate={} provider={} model={} default={} voices={}",
+                        candidate["lane_candidate_index"],
+                        candidate["provider"].as_str().unwrap_or("unknown"),
+                        candidate["model"].as_str().unwrap_or("unknown"),
+                        candidate["default_voice"].as_str().unwrap_or("unknown"),
+                        candidate["voices"]
+                            .as_array()
+                            .map(|items| items.len())
+                            .unwrap_or_default()
+                    );
+                    if let Some(list) = candidate["voices"].as_array() {
+                        for voice in list {
+                            if let Some(voice) = voice.as_str() {
+                                println!("    {voice}");
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        VoiceCommands::Synthesize {
+            text,
+            output,
+            provider,
+            model,
+            voice,
+            format,
+        } => {
+            let text = non_empty_cli_value("--text", text)?;
+            let mut preference = VoicePreference {
+                provider,
+                model,
+                voice,
+                format,
+            }
+            .normalized();
+            let mut tts = select_cli_tts_config(config, &preference)?;
+            if let Some(voice) = preference.voice.take() {
+                tts.default_voice = voice;
+            }
+            let manager = synapseclaw::channels::TtsManager::new(&tts)?;
+            let bytes = manager.synthesize(&text).await?;
+            if bytes.is_empty() {
+                bail!("voice synthesis returned empty audio");
+            }
+            let provider_format = tts_provider_output_format(&tts);
+            let extension = tts_output_extension(&provider_format);
+            let output = match output {
+                Some(path) => path,
+                None => {
+                    let dir = config.workspace_dir.join("voice_out");
+                    tokio::fs::create_dir_all(&dir)
+                        .await
+                        .with_context(|| format!("failed to create {}", dir.display()))?;
+                    dir.join(format!("voice_{}.{}", uuid::Uuid::new_v4(), extension))
+                }
+            };
+            if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            tokio::fs::write(&output, &bytes)
+                .await
+                .with_context(|| format!("failed to write {}", output.display()))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "ok",
+                    "path": output,
+                    "bytes": bytes.len(),
+                    "provider": tts.default_provider,
+                    "model": voice_selected_model(&tts),
+                    "voice": tts.default_voice,
+                    "format": provider_format,
+                    "mime_type": tts_output_mime(&provider_format),
+                }))?
+            );
+            Ok(())
+        }
+        VoiceCommands::Transcribe { file, provider } => {
+            let transcription = synapseclaw::channels::lane_selected_transcription_config(config)?;
+            if !transcription.enabled {
+                bail!("voice transcription is not enabled");
+            }
+            let file_name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .context("--file must include a valid file name")?
+                .to_string();
+            let audio = tokio::fs::read(&file)
+                .await
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            let manager =
+                synapseclaw::channels::transcription::TranscriptionManager::new(&transcription)?;
+            let selected_provider = provider
+                .as_deref()
+                .map(str::trim)
+                .filter(|provider| !provider.is_empty())
+                .unwrap_or(transcription.default_provider.as_str())
+                .to_string();
+            let text = if provider.is_some() {
+                manager
+                    .transcribe_with_provider(&audio, &file_name, &selected_provider)
+                    .await?
+            } else {
+                manager.transcribe(&audio, &file_name).await?
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "ok",
+                    "file": file,
+                    "provider": selected_provider,
+                    "text": text,
+                }))?
+            );
+            Ok(())
+        }
+        VoiceCommands::Set {
+            voice,
+            provider,
+            model,
+            format,
+            max_text_length,
+        } => {
+            if voice.is_none()
+                && provider.is_none()
+                && model.is_none()
+                && format.is_none()
+                && max_text_length.is_none()
+            {
+                bail!(
+                    "`voice set` needs at least one of --voice, --provider, --model, --format, or --max-text-length"
+                );
+            }
+
+            config.tts.enabled = true;
+
+            if let Some(voice) = voice {
+                let voice = non_empty_cli_value("--voice", voice)?;
+                config.tts.default_voice = voice;
+            }
+            if let Some(format) = format {
+                config.tts.default_format = non_empty_cli_value("--format", format)?;
+            }
+            if let Some(max_text_length) = max_text_length {
+                if max_text_length == 0 {
+                    bail!("--max-text-length must be greater than zero");
+                }
+                config.tts.max_text_length = max_text_length;
+            }
+
+            if provider.is_some() || model.is_some() {
+                let provider = provider
+                    .map(|value| non_empty_cli_value("--provider", value))
+                    .transpose()?;
+                let model = model
+                    .map(|value| non_empty_cli_value("--model", value))
+                    .transpose()?;
+                let default_provider = {
+                    let lane = ensure_speech_synthesis_lane(config);
+                    if lane.candidates.is_empty() {
+                        let Some(provider) = provider.clone() else {
+                            bail!("--provider is required when creating the first speech_synthesis candidate");
+                        };
+                        let Some(model) = model.clone() else {
+                            bail!("--model is required when creating the first speech_synthesis candidate");
+                        };
+                        lane.candidates.push(ModelLaneCandidateConfig {
+                            provider,
+                            model,
+                            api_key: None,
+                            api_key_env: None,
+                            dimensions: None,
+                            profile: ModelCandidateProfileConfig {
+                                features: vec![ModelFeature::SpeechSynthesis],
+                                ..ModelCandidateProfileConfig::default()
+                            },
+                        });
+                    } else {
+                        let candidate = &mut lane.candidates[0];
+                        if let Some(provider) = provider {
+                            candidate.provider = provider;
+                        }
+                        if let Some(model) = model {
+                            candidate.model = model;
+                        }
+                        if !candidate
+                            .profile
+                            .features
+                            .contains(&ModelFeature::SpeechSynthesis)
+                        {
+                            candidate
+                                .profile
+                                .features
+                                .push(ModelFeature::SpeechSynthesis);
+                        }
+                    }
+                    lane.candidates
+                        .first()
+                        .map(|candidate| candidate.provider.clone())
+                };
+                if let Some(provider) = default_provider {
+                    config.tts.default_provider = provider;
+                };
+            }
+
+            config.save().await?;
+            println!(
+                "Voice configuration saved to {}",
+                config.config_path.display()
+            );
+            Ok(())
+        }
+        VoiceCommands::Preference {
+            action,
+            scope,
+            channel,
+            recipient,
+            provider,
+            model,
+            voice,
+            format,
+            auto_tts_policy,
+        } => {
+            let scope = parse_voice_scope(&scope)?;
+            let target = cli_voice_target(scope, channel, recipient)?;
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("user_profiles.json");
+            let store = synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path)?;
+
+            if action.eq_ignore_ascii_case("list") {
+                let items = store
+                    .list()
+                    .into_iter()
+                    .filter(|(key, _)| key.starts_with("voice:"))
+                    .map(|(key, profile)| {
+                        serde_json::json!({
+                            "key": key,
+                            "settings": read_voice_settings(Some(profile)),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                println!("{}", serde_json::to_string_pretty(&items)?);
+                return Ok(());
+            }
+
+            let key = target.storage_key().map_err(anyhow::Error::msg)?;
+            if action.eq_ignore_ascii_case("get") {
+                let settings = read_voice_settings(store.load(&key));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "key": key,
+                        "target": target,
+                        "settings": settings,
+                    }))?
+                );
+                return Ok(());
+            }
+
+            if action.eq_ignore_ascii_case("clear") {
+                let removed = store.remove(&key)?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "key": key,
+                        "removed": removed,
+                    }))?
+                );
+                return Ok(());
+            }
+
+            if !action.eq_ignore_ascii_case("set") {
+                bail!("voice preference action must be get, set, clear, or list");
+            }
+
+            let preference = VoicePreference {
+                provider,
+                model,
+                voice,
+                format,
+            }
+            .normalized();
+            let mut settings = read_voice_settings(store.load(&key));
+            if !preference.is_empty() {
+                validate_cli_voice_preference(config, &preference)?;
+                settings.preference = Some(preference);
+            }
+            if let Some(policy) = auto_tts_policy {
+                settings.auto_tts_policy = parse_auto_tts_policy(&policy)?;
+            }
+            if settings == VoiceSettings::default() {
+                bail!("voice preference set requires a preference field or --auto-tts-policy");
+            }
+            if let Some(profile) = write_voice_settings(settings.clone()) {
+                store.upsert(&key, profile)?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "status": "ok",
+                    "key": key,
+                    "target": target,
+                    "settings": settings,
+                }))?
+            );
+            Ok(())
+        }
+    }
+}
+
+fn parse_voice_scope(
+    raw: &str,
+) -> Result<synapse_domain::application::services::voice_preference_service::VoicePreferenceScope> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "global" => Ok(synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Global),
+        "channel" => Ok(synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Channel),
+        "conversation" => Ok(synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Conversation),
+        _ => bail!("--scope must be global, channel, or conversation"),
+    }
+}
+
+fn parse_auto_tts_policy(
+    raw: &str,
+) -> Result<synapse_domain::application::services::voice_preference_service::AutoTtsPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "inherit" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::Inherit),
+        "off" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::Off),
+        "always" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::Always),
+        "inbound_voice" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::InboundVoice),
+        "tagged" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::Tagged),
+        "channel_default" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::ChannelDefault),
+        "conversation_default" => Ok(synapse_domain::application::services::voice_preference_service::AutoTtsPolicy::ConversationDefault),
+        _ => bail!("--auto-tts-policy must be inherit, off, always, inbound_voice, tagged, channel_default, or conversation_default"),
+    }
+}
+
+fn cli_voice_target(
+    scope: synapse_domain::application::services::voice_preference_service::VoicePreferenceScope,
+    channel: Option<String>,
+    recipient: Option<String>,
+) -> Result<synapse_domain::application::services::voice_preference_service::VoicePreferenceTarget>
+{
+    use synapse_domain::application::services::voice_preference_service::VoicePreferenceTarget;
+    match scope {
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Global => {
+            VoicePreferenceTarget::global().normalized().map_err(anyhow::Error::msg)
+        }
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Channel => {
+            let Some(channel) = channel else {
+                bail!("--scope channel requires --channel");
+            };
+            VoicePreferenceTarget::channel(channel)
+                .normalized()
+                .map_err(anyhow::Error::msg)
+        }
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Conversation => {
+            let Some(channel) = channel else {
+                bail!("--scope conversation requires --channel");
+            };
+            let Some(recipient) = recipient else {
+                bail!("--scope conversation requires --recipient");
+            };
+            VoicePreferenceTarget::conversation(channel, recipient)
+                .normalized()
+                .map_err(anyhow::Error::msg)
+        }
+    }
+}
+
+fn validate_cli_voice_preference(
+    config: &Config,
+    preference: &synapse_domain::application::services::voice_preference_service::VoicePreference,
+) -> Result<()> {
+    let _ = select_cli_tts_config(config, preference)?;
+    Ok(())
+}
+
+fn select_cli_tts_config(
+    config: &Config,
+    preference: &synapse_domain::application::services::voice_preference_service::VoicePreference,
+) -> Result<synapse_domain::config::schema::TtsConfig> {
+    use synapse_domain::application::services::voice_preference_service::candidate_matches_preference;
+    let candidates = synapseclaw::channels::lane_selected_tts_candidate_configs(config)?;
+    let matching = candidates
+        .into_iter()
+        .map(|(_, tts)| tts)
+        .filter(|tts| tts.enabled)
+        .filter(|tts| {
+            preference
+                .provider
+                .as_deref()
+                .is_none_or(|provider| tts.default_provider.eq_ignore_ascii_case(provider))
+        })
+        .filter(|tts| {
+            preference
+                .model
+                .as_deref()
+                .is_none_or(|model| voice_selected_model(tts).eq_ignore_ascii_case(model))
+        })
+        .filter(|tts| {
+            candidate_matches_preference(tts, Some(voice_selected_model(tts).as_str()), preference)
+        })
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        bail!("no active speech_synthesis lane candidate matches the requested preference");
+    }
+    if let Some(voice) = preference.voice.as_deref() {
+        for tts in matching {
+            let manager = synapseclaw::channels::TtsManager::new(&tts)?;
+            let voices = manager.supported_voices(&tts.default_provider)?;
+            if voices
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(voice))
+            {
+                return Ok(tts);
+            }
+        }
+        bail!("voice `{voice}` is not supported by matching speech_synthesis candidates");
+    }
+    matching
+        .into_iter()
+        .next()
+        .context("no active speech_synthesis lane candidate matches the requested preference")
+}
+
+fn ensure_speech_synthesis_lane(config: &mut Config) -> &mut config::schema::ModelLaneConfig {
+    if let Some(index) = config
+        .model_lanes
+        .iter()
+        .position(|lane| lane.lane == config::schema::CapabilityLane::SpeechSynthesis)
+    {
+        return &mut config.model_lanes[index];
+    }
+    config.model_lanes.push(config::schema::ModelLaneConfig {
+        lane: config::schema::CapabilityLane::SpeechSynthesis,
+        candidates: Vec::new(),
+    });
+    config
+        .model_lanes
+        .last_mut()
+        .expect("speech_synthesis lane was just pushed")
+}
+
+fn enabled_label(enabled: bool) -> &'static str {
+    if enabled {
+        "enabled"
+    } else {
+        "disabled"
+    }
+}
+
+fn non_empty_cli_value(flag: &str, value: String) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("{flag} cannot be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn voice_selected_model(config: &config::schema::TtsConfig) -> String {
+    match config.default_provider.as_str() {
+        "openai" => config
+            .openai
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "tts-1".to_string()),
+        "groq" => config
+            .groq
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "canopylabs/orpheus-v1-english".to_string()),
+        "elevenlabs" => "elevenlabs".to_string(),
+        "google" => "google-cloud-tts".to_string(),
+        "edge" => "edge-tts".to_string(),
+        "minimax" => config
+            .minimax
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "speech-02-hd".to_string()),
+        "mistral" => config
+            .mistral
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "voxtral-mini-tts-2603".to_string()),
+        "xai" => "tts".to_string(),
+        _ => config.default_provider.clone(),
+    }
 }
 
 // MemoryCommands imported from synapseclaw::commands (defined in src/commands.rs)
@@ -1208,6 +1964,8 @@ async fn main() -> Result<()> {
                 ModelCatalogCommands::Path => synapse_onboard::run_models_catalog_path().await,
             },
         },
+
+        Commands::Voice { voice_command } => handle_voice_command(&mut config, voice_command).await,
 
         Commands::Providers => {
             let providers = synapse_providers::list_providers();

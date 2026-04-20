@@ -89,3 +89,4 @@ pub mod turn_markup;
 pub mod turn_model_routing;
 pub mod turn_tool_narrowing;
 pub mod user_profile_service;
+pub mod voice_preference_service;

@@ -23,6 +23,18 @@ pub struct ClawdTalkChannel {
     client: Client,
     /// Webhook secret for verifying incoming calls
     webhook_secret: Option<String>,
+    /// Telnyx answering-machine detection mode
+    answering_machine_detection_mode: Option<String>,
+    /// Telnyx Call Control voice for speak actions
+    speak_voice: String,
+    /// Telnyx Call Control language for speak actions
+    speak_language: String,
+    /// Telnyx Call Control service level for speak actions
+    speak_service_level: String,
+    /// Telnyx AI conversation voice
+    ai_voice: String,
+    /// Telnyx AI conversation speed
+    ai_speed: f32,
 }
 
 // Re-export from synapse_domain::config — single source of truth.
@@ -41,6 +53,12 @@ impl ClawdTalkChannel {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             webhook_secret: config.webhook_secret,
+            answering_machine_detection_mode: config.answering_machine_detection_mode,
+            speak_voice: config.speak_voice,
+            speak_language: config.speak_language,
+            speak_service_level: config.speak_service_level,
+            ai_voice: config.ai_voice,
+            ai_speed: config.ai_speed,
         }
     }
 
@@ -71,9 +89,10 @@ impl ClawdTalkChannel {
             connection_id: self.connection_id.clone(),
             to: to.to_string(),
             from: self.from_number.clone(),
-            answering_machine_detection: Some(AnsweringMachineDetection {
-                mode: "premium".to_string(),
-            }),
+            answering_machine_detection: self
+                .answering_machine_detection_mode
+                .as_ref()
+                .map(|mode| AnsweringMachineDetection { mode: mode.clone() }),
             webhook_url: None,
             // AI voice settings via Telnyx Call Control
             command_id: None,
@@ -107,9 +126,9 @@ impl ClawdTalkChannel {
         let request = SpeakRequest {
             payload: text.to_string(),
             payload_type: "text".to_string(),
-            service_level: "premium".to_string(),
-            voice: "female".to_string(),
-            language: "en-US".to_string(),
+            service_level: self.speak_service_level.clone(),
+            voice: self.speak_voice.clone(),
+            language: self.speak_language.clone(),
         };
 
         let response = self
@@ -165,8 +184,8 @@ impl ClawdTalkChannel {
             system_prompt: system_prompt.to_string(),
             model: model.to_string(),
             voice_settings: VoiceSettings {
-                voice: "alloy".to_string(),
-                speed: 1.0,
+                voice: self.ai_voice.clone(),
+                speed: self.ai_speed,
             },
         };
 
@@ -347,6 +366,12 @@ mod tests {
             from_number: "+15551234567".to_string(),
             allowed_destinations: vec!["+1555".to_string()],
             webhook_secret: None,
+            answering_machine_detection_mode: Some("premium".to_string()),
+            speak_voice: "female".to_string(),
+            speak_language: "en-US".to_string(),
+            speak_service_level: "premium".to_string(),
+            ai_voice: "alloy".to_string(),
+            ai_speed: 1.0,
         }
     }
 
@@ -354,6 +379,11 @@ mod tests {
     fn creates_channel() {
         let channel = ClawdTalkChannel::new(test_config());
         assert_eq!(channel.name(), "ClawdTalk");
+        assert_eq!(channel.speak_voice, "female");
+        assert_eq!(channel.speak_language, "en-US");
+        assert_eq!(channel.speak_service_level, "premium");
+        assert_eq!(channel.ai_voice, "alloy");
+        assert_eq!(channel.ai_speed, 1.0);
     }
 
     #[test]

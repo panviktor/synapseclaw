@@ -11,6 +11,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use synapse_domain::application::services::media_artifact_delivery::{
+    tts_output_extension, tts_output_mime, tts_provider_output_format,
+    voice_delivery_channel_profiles,
+};
+use synapse_domain::application::services::voice_preference_service::{
+    candidate_matches_preference, read_voice_settings, write_voice_settings, AutoTtsPolicy,
+    VoicePreference, VoicePreferenceScope, VoicePreferenceTarget,
+};
 use synapse_domain::application::services::{
     skill_governance_service::SkillPatchCandidate,
     skill_patch_candidate_service,
@@ -114,6 +122,40 @@ pub struct UserSkillCreateBody {
     #[serde(default)]
     pub tags: Vec<String>,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoicePreferenceQuery {
+    pub scope: Option<VoicePreferenceScope>,
+    pub channel: Option<String>,
+    pub recipient: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoicePreferenceBody {
+    pub scope: Option<VoicePreferenceScope>,
+    pub channel: Option<String>,
+    pub recipient: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub voice: Option<String>,
+    pub format: Option<String>,
+    pub auto_tts_policy: Option<AutoTtsPolicy>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VoiceSynthesizeBody {
+    pub text: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub voice: Option<String>,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VoiceTranscribeBody {
+    pub path: std::path::PathBuf,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -299,6 +341,667 @@ pub async fn handle_api_status(
     });
 
     Json(body).into_response()
+}
+
+/// GET /api/voice/status — resolved speech synthesis status for dashboard clients.
+pub async fn handle_api_voice_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let mut preferences = state
+        .user_profile_store
+        .list()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("voice:"))
+        .map(|(key, profile)| {
+            serde_json::json!({
+                "key": key,
+                "settings": read_voice_settings(Some(profile)),
+            })
+        })
+        .collect::<Vec<_>>();
+    preferences.sort_by(|a, b| {
+        a.get("key")
+            .and_then(|value| value.as_str())
+            .cmp(&b.get("key").and_then(|value| value.as_str()))
+    });
+    let candidates = match crate::channels::lane_selected_tts_candidate_configs(&config) {
+        Ok(candidates) => serde_json::json!({
+            "ready": true,
+            "error": null,
+            "candidates": candidates.into_iter().map(|(lane_candidate_index, tts)| {
+                let format = tts_provider_output_format(&tts);
+                serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                })
+            }).collect::<Vec<_>>()
+        }),
+        Err(error) => serde_json::json!({
+            "ready": false,
+            "error": error.to_string(),
+            "candidates": []
+        }),
+    };
+    let transcription = match crate::channels::lane_selected_transcription_config(&config) {
+        Ok(transcription) => {
+            let providers =
+                synapse_channels::transcription::TranscriptionManager::new(&transcription)
+                    .map(|manager| {
+                        let mut providers = manager
+                            .available_providers()
+                            .into_iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>();
+                        providers.sort();
+                        providers
+                    })
+                    .unwrap_or_default();
+            serde_json::json!({
+                "ready": true,
+                "error": null,
+                "default_provider": transcription.default_provider,
+                "model": transcription.model,
+                "language": transcription.language,
+                "max_duration_secs": transcription.max_duration_secs,
+                "available_providers": providers,
+            })
+        }
+        Err(error) => serde_json::json!({
+            "ready": false,
+            "error": error.to_string(),
+            "available_providers": []
+        }),
+    };
+
+    Json(serde_json::json!({
+        "enabled": config.tts.enabled,
+        "default_voice": config.tts.default_voice,
+        "base_provider": config.tts.default_provider,
+        "base_format": config.tts.default_format,
+        "max_text_length": config.tts.max_text_length,
+        "resolution": candidates,
+        "transcription": transcription,
+        "delivery_profiles": voice_delivery_channel_profiles(),
+        "preferences": preferences,
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/profiles — channel-specific native voice/audio delivery profiles.
+pub async fn handle_api_voice_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    Json(serde_json::json!({
+        "profiles": voice_delivery_channel_profiles(),
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/voices — supported voice IDs for resolved speech_synthesis candidates.
+pub async fn handle_api_voice_voices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let candidates = match crate::channels::lane_selected_tts_candidate_configs(&config) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let voices = candidates
+        .into_iter()
+        .filter(|(_, tts)| tts.enabled)
+        .map(|(lane_candidate_index, tts)| {
+            let format = tts_provider_output_format(&tts);
+            match synapse_channels::TtsManager::new(&tts)
+                .and_then(|manager| manager.supported_voices(&tts.default_provider))
+            {
+                Ok(voices) => serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "default_voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                    "voices": voices,
+                    "error": null,
+                }),
+                Err(error) => serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "default_voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                    "voices": [],
+                    "error": error.to_string(),
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({ "voices": voices })).into_response()
+}
+
+/// POST /api/voice/synthesize — synthesize text to a local audio artifact.
+pub async fn handle_api_voice_synthesize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceSynthesizeBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "text must not be empty" })),
+        )
+            .into_response();
+    }
+
+    let preference = VoicePreference {
+        provider: body.provider,
+        model: body.model,
+        voice: body.voice,
+        format: body.format,
+    }
+    .normalized();
+    let config = state.config.lock().clone();
+    let mut tts = match select_voice_synthesis_config_for_api(&config, &preference) {
+        Ok(tts) => tts,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    if let Some(voice) = preference.voice {
+        tts.default_voice = voice;
+    }
+
+    let manager = match synapse_channels::TtsManager::new(&tts) {
+        Ok(manager) => manager,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let audio = match manager.synthesize(&text).await {
+        Ok(audio) if !audio.is_empty() => audio,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "voice synthesis returned empty audio" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    let provider_format = tts_provider_output_format(&tts);
+    let extension = tts_output_extension(&provider_format);
+    let dir = config.workspace_dir.join("voice_out");
+    if let Err(error) = tokio::fs::create_dir_all(&dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to create {}: {error}", dir.display()) })),
+        )
+            .into_response();
+    }
+    let path = dir.join(format!("voice_{}.{}", uuid::Uuid::new_v4(), extension));
+    if let Err(error) = tokio::fs::write(&path, &audio).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to write {}: {error}", path.display()) })),
+        )
+            .into_response();
+    }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "path": path,
+        "bytes": audio.len(),
+        "provider": tts.default_provider,
+        "model": selected_tts_model_for_api(&tts),
+        "voice": tts.default_voice,
+        "format": provider_format,
+        "mime_type": tts_output_mime(&provider_format),
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/transcribe — transcribe a local audio artifact.
+pub async fn handle_api_voice_transcribe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceTranscribeBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let audio = match tokio::fs::read(&body.path).await {
+        Ok(audio) if !audio.is_empty() => audio,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "audio file must not be empty" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("failed to read {}: {error}", body.path.display())
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let config = state.config.lock().clone();
+    let transcription = match crate::channels::lane_selected_transcription_config(&config) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let manager = match synapse_channels::transcription::TranscriptionManager::new(&transcription) {
+        Ok(manager) => manager,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let file_name = body
+        .path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio")
+        .to_string();
+    let provider = body
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let text = match provider {
+        Some(provider) => {
+            manager
+                .transcribe_with_provider(&audio, &file_name, provider)
+                .await
+        }
+        None => manager.transcribe(&audio, &file_name).await,
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "path": body.path,
+        "provider": provider.unwrap_or(transcription.default_provider.as_str()),
+        "model": transcription.model,
+        "text": text,
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/preferences — read scoped voice preferences.
+pub async fn handle_api_voice_preferences_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoicePreferenceQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    if query.scope.is_none() {
+        let preferences = state
+            .user_profile_store
+            .list()
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("voice:"))
+            .map(|(key, profile)| {
+                serde_json::json!({
+                    "key": key,
+                    "settings": read_voice_settings(Some(profile)),
+                })
+            })
+            .collect::<Vec<_>>();
+        return Json(serde_json::json!({ "voice_preferences": preferences })).into_response();
+    }
+
+    let target = match voice_preference_target(query.scope, query.channel, query.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let settings = read_voice_settings(state.user_profile_store.load(&key));
+    Json(serde_json::json!({
+        "key": key,
+        "target": target,
+        "settings": settings,
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/preferences — set scoped voice preference or auto-TTS policy.
+pub async fn handle_api_voice_preferences_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoicePreferenceBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let target = match voice_preference_target(body.scope, body.channel, body.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let preference = VoicePreference {
+        provider: body.provider,
+        model: body.model,
+        voice: body.voice,
+        format: body.format,
+    }
+    .normalized();
+
+    if !preference.is_empty() {
+        let config = state.config.lock().clone();
+        if let Err(error) = validate_voice_preference_for_api(&config, &preference) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    }
+
+    let mut settings = read_voice_settings(state.user_profile_store.load(&key));
+    if !preference.is_empty() {
+        settings.preference = Some(preference);
+    }
+    if let Some(policy) = body.auto_tts_policy {
+        settings.auto_tts_policy = policy;
+    }
+    if settings.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "request must set a voice preference field or auto_tts_policy"
+            })),
+        )
+            .into_response();
+    }
+
+    match write_voice_settings(settings.clone())
+        .map(|profile| state.user_profile_store.upsert(&key, profile))
+        .transpose()
+    {
+        Ok(_) => Json(serde_json::json!({
+            "status": "ok",
+            "key": key,
+            "target": target,
+            "settings": settings,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                serde_json::json!({ "error": format!("voice preference update failed: {error}") }),
+            ),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/voice/preferences — clear scoped voice preference and policy.
+pub async fn handle_api_voice_preferences_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoicePreferenceQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let target = match voice_preference_target(query.scope, query.channel, query.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    match state.user_profile_store.remove(&key) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "key": key,
+            "removed": removed,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("voice preference clear failed: {error}") })),
+        )
+            .into_response(),
+    }
+}
+
+fn voice_preference_target(
+    scope: Option<VoicePreferenceScope>,
+    channel: Option<String>,
+    recipient: Option<String>,
+) -> Result<VoicePreferenceTarget, String> {
+    match scope.unwrap_or(VoicePreferenceScope::Global) {
+        VoicePreferenceScope::Global => VoicePreferenceTarget::global().normalized(),
+        VoicePreferenceScope::Channel => channel
+            .map(VoicePreferenceTarget::channel)
+            .ok_or_else(|| "channel scope requires channel".to_string())?
+            .normalized(),
+        VoicePreferenceScope::Conversation => match (channel, recipient) {
+            (Some(channel), Some(recipient)) => {
+                VoicePreferenceTarget::conversation(channel, recipient).normalized()
+            }
+            _ => Err("conversation scope requires channel and recipient".into()),
+        },
+    }
+}
+
+fn validate_voice_preference_for_api(
+    config: &synapse_domain::config::schema::Config,
+    preference: &VoicePreference,
+) -> Result<(), String> {
+    let _ = select_voice_synthesis_config_for_api(config, preference)?;
+    Ok(())
+}
+
+fn select_voice_synthesis_config_for_api(
+    config: &synapse_domain::config::schema::Config,
+    preference: &VoicePreference,
+) -> Result<synapse_domain::config::schema::TtsConfig, String> {
+    let candidates = crate::channels::lane_selected_tts_candidate_configs(config)
+        .map_err(|error| format!("Voice synthesis is not ready: {error}"))?;
+    let matching = candidates
+        .into_iter()
+        .map(|(_, tts)| tts)
+        .filter(|tts| tts.enabled)
+        .filter(|tts| {
+            preference
+                .provider
+                .as_deref()
+                .is_none_or(|provider| tts.default_provider.eq_ignore_ascii_case(provider))
+        })
+        .filter(|tts| {
+            preference
+                .model
+                .as_deref()
+                .is_none_or(|model| selected_tts_model_for_api(tts).eq_ignore_ascii_case(model))
+        })
+        .filter(|tts| {
+            candidate_matches_preference(
+                tts,
+                Some(selected_tts_model_for_api(tts).as_str()),
+                preference,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Err("no active speech_synthesis lane candidate matches request".into());
+    }
+    if let Some(voice) = preference.voice.as_deref() {
+        for tts in matching {
+            let manager = synapse_channels::TtsManager::new(&tts)
+                .map_err(|error| format!("voice catalog unavailable: {error}"))?;
+            let voices = manager
+                .supported_voices(&tts.default_provider)
+                .map_err(|error| format!("voice catalog unavailable: {error}"))?;
+            if voices
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(voice))
+            {
+                return Ok(tts);
+            }
+        }
+        return Err(format!(
+            "voice `{voice}` is not supported by matching candidates"
+        ));
+    }
+    matching
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no active speech_synthesis lane candidate matches request".into())
+}
+
+fn selected_tts_model_for_api(config: &synapse_domain::config::schema::TtsConfig) -> String {
+    match config.default_provider.as_str() {
+        "openai" => config
+            .openai
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "tts-1".to_string()),
+        "groq" => config
+            .groq
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "canopylabs/orpheus-v1-english".to_string()),
+        "elevenlabs" => "elevenlabs".to_string(),
+        "google" => "google-cloud-tts".to_string(),
+        "edge" => "edge-tts".to_string(),
+        "minimax" => config
+            .minimax
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "speech-02-hd".to_string()),
+        "mistral" => config
+            .mistral
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "voxtral-mini-tts-2603".to_string()),
+        "xai" => "tts".to_string(),
+        _ => config.default_provider.clone(),
+    }
 }
 
 /// GET /api/agents — list registered agent daemons with live status (Phase 3.8).

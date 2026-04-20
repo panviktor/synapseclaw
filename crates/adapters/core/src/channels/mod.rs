@@ -132,7 +132,7 @@ fn required_lane_api_key(candidate: &ResolvedModelCandidate, purpose: &str) -> R
     })
 }
 
-fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionConfig> {
+pub fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionConfig> {
     let mut transcription = config.transcription.clone();
     if !transcription.enabled {
         return Ok(transcription);
@@ -411,9 +411,7 @@ fn apply_speech_synthesis_candidate_config(
     Ok(tts)
 }
 
-pub(crate) fn lane_selected_tts_candidate_configs(
-    config: &Config,
-) -> Result<Vec<(usize, TtsConfig)>> {
+pub fn lane_selected_tts_candidate_configs(config: &Config) -> Result<Vec<(usize, TtsConfig)>> {
     let tts = config.tts.clone();
     if !tts.enabled {
         return Ok(vec![(0, tts)]);
@@ -442,7 +440,7 @@ pub(crate) fn lane_selected_tts_candidate_configs(
     Ok(configs)
 }
 
-pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
+pub fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
     let configs = lane_selected_tts_candidate_configs(config)?;
     configs
         .into_iter()
@@ -532,6 +530,7 @@ impl InterruptOnNewMessageConfig {
 
 #[derive(Clone)]
 struct ChannelRuntimeContext {
+    root_config: Arc<Config>,
     channels_by_name: Arc<HashMap<String, Arc<dyn Channel>>>,
     provider: Arc<dyn Provider>,
     default_provider: Arc<String>,
@@ -936,7 +935,7 @@ fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
 }
 
 fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
-    let mut config = Config::default();
+    let mut config = ctx.root_config.as_ref().clone();
     config.workspace_dir = ctx.workspace_dir.as_ref().clone();
     config.api_key = ctx.api_key.clone();
     config.api_url = ctx.api_url.clone();
@@ -1424,6 +1423,7 @@ async fn handle_message_via_orchestrator(
             tracing::info!(%reason, "Message cancelled by hook");
         }
         Ok(uc::HandleResult::Response { output, .. }) => {
+            let output = maybe_apply_auto_tts_response(ctx, envelope, output).await;
             send_presented_output_to_channel(
                 &output,
                 target_channel.as_ref(),
@@ -1461,6 +1461,154 @@ async fn handle_message_via_orchestrator(
         tokio::spawn(async move {
             summarize_channel_session_if_needed(&ctx_summary, &key_summary).await;
         });
+    }
+}
+
+async fn maybe_apply_auto_tts_response(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+    output: synapse_domain::application::services::assistant_output_presentation::PresentedOutput,
+) -> synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
+    use synapse_domain::application::services::voice_preference_service::{
+        auto_tts_decision, read_voice_settings, resolve_auto_tts_policy, AutoTtsDecision,
+        AutoTtsPolicy, AutoTtsTrigger, VoicePreferenceTarget,
+    };
+    use synapse_domain::domain::channel::InboundMediaKind;
+
+    if output.delivery_hints.already_delivered
+        || output.text.trim().is_empty()
+        || !output.media_artifacts.is_empty()
+    {
+        return output;
+    }
+    let Some(store) = ctx.user_profile_store.as_ref() else {
+        return output;
+    };
+    let Some(channel_registry) = ctx.channel_registry.as_ref() else {
+        return output;
+    };
+    if !channel_registry
+        .capabilities(&envelope.source_adapter)
+        .contains(&synapse_domain::domain::channel::ChannelCapability::Attachments)
+    {
+        return output;
+    }
+
+    let global_key = match VoicePreferenceTarget::global().storage_key() {
+        Ok(key) => key,
+        Err(_) => return output,
+    };
+    let channel_key =
+        match VoicePreferenceTarget::channel(envelope.source_adapter.clone()).storage_key() {
+            Ok(key) => key,
+            Err(_) => return output,
+        };
+    let conversation_key = match VoicePreferenceTarget::conversation(
+        envelope.source_adapter.clone(),
+        envelope.reply_ref.clone(),
+    )
+    .storage_key()
+    {
+        Ok(key) => key,
+        Err(_) => return output,
+    };
+    let global = store.load(&global_key);
+    let channel = store.load(&channel_key);
+    let conversation = store.load(&conversation_key);
+    let resolved_policy = resolve_auto_tts_policy(
+        global.clone(),
+        channel.clone(),
+        conversation.clone(),
+        &envelope.source_adapter,
+        &envelope.reply_ref,
+    );
+    let Some(resolved_policy) = resolved_policy else {
+        return output;
+    };
+    let broader_policy = match resolved_policy.source {
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Conversation => {
+            let channel_policy = read_voice_settings(channel).auto_tts_policy;
+            if channel_policy != AutoTtsPolicy::Inherit {
+                Some(channel_policy)
+            } else {
+                let global_policy = read_voice_settings(global).auto_tts_policy;
+                (global_policy != AutoTtsPolicy::Inherit).then_some(global_policy)
+            }
+        }
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Channel => {
+            let global_policy = read_voice_settings(global).auto_tts_policy;
+            (global_policy != AutoTtsPolicy::Inherit).then_some(global_policy)
+        }
+        synapse_domain::application::services::voice_preference_service::VoicePreferenceScope::Global => None,
+    };
+    let trigger = if envelope
+        .media_attachments
+        .iter()
+        .any(|attachment| attachment.kind == InboundMediaKind::Audio)
+    {
+        AutoTtsTrigger::InboundVoice
+    } else {
+        AutoTtsTrigger::NormalReply
+    };
+    if auto_tts_decision(resolved_policy.policy, trigger, broader_policy)
+        != AutoTtsDecision::Synthesize
+    {
+        return output;
+    }
+
+    let context: Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort> =
+        ctx.conversation_context.clone().unwrap_or_else(|| {
+            Arc::new(
+                synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+            )
+        });
+    let turn_defaults: Arc<
+        dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort,
+    > = ctx.turn_defaults_context.clone().unwrap_or_else(|| {
+        Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::default(),
+        )
+    });
+    let voice_tool = tools::VoiceReplyTool::new(
+        Arc::clone(&ctx.root_config),
+        ctx.workspace_dir.as_ref().clone(),
+        context,
+        turn_defaults,
+        Arc::clone(channel_registry),
+        Arc::clone(store),
+    );
+    let mut target = serde_json::json!({
+        "channel": envelope.source_adapter.clone(),
+        "recipient": envelope.reply_ref.clone(),
+    });
+    if let Some(thread_ref) = envelope.thread_ref.as_ref() {
+        target["thread_ref"] = serde_json::Value::String(thread_ref.clone());
+    }
+    match voice_tool
+        .execute_with_facts(serde_json::json!({
+            "content": output.text.clone(),
+            "target": target,
+        }))
+        .await
+    {
+        Ok(execution) if execution.result.success => {
+            let mut delivered = output;
+            delivered.text.clear();
+            delivered.delivery_hints.already_delivered = true;
+            delivered
+        }
+        Ok(execution) => {
+            tracing::warn!(
+                policy = ?resolved_policy.policy,
+                output = %execution.result.output,
+                "auto TTS delivery failed; falling back to text response"
+            );
+            output
+        }
+        Err(error) => {
+            tracing::warn!(%error, "auto TTS delivery errored; falling back to text response");
+            output
+        }
     }
 }
 
@@ -3356,6 +3504,7 @@ pub async fn start_channels(
         );
 
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
+        root_config: Arc::new(config.clone()),
         channels_by_name,
         provider: Arc::clone(&provider),
         default_provider: Arc::new(provider_name),
@@ -3737,6 +3886,7 @@ mod tests {
         >,
     ) -> ChannelRuntimeContext {
         ChannelRuntimeContext {
+            root_config: Arc::new(Config::default()),
             channels_by_name: Arc::new(HashMap::new()),
             provider: Arc::new(DummyProvider),
             default_provider: Arc::new("test-provider".to_string()),
@@ -4248,6 +4398,7 @@ mod tests {
         channels_by_name.insert(channel.name().to_string(), channel);
 
         let runtime_ctx = Arc::new(ChannelRuntimeContext {
+            root_config: Arc::new(Config::default()),
             channels_by_name: Arc::new(channels_by_name),
             provider: Arc::new(SlowProvider {
                 delay: Duration::from_millis(250),
@@ -4367,6 +4518,7 @@ mod tests {
         });
 
         let runtime_ctx = Arc::new(ChannelRuntimeContext {
+            root_config: Arc::new(Config::default()),
             channels_by_name: Arc::new(channels_by_name),
             provider: provider_impl.clone(),
             default_provider: Arc::new("test-provider".to_string()),
@@ -4499,6 +4651,7 @@ mod tests {
         });
 
         let runtime_ctx = Arc::new(ChannelRuntimeContext {
+            root_config: Arc::new(Config::default()),
             channels_by_name: Arc::new(channels_by_name),
             provider: provider_impl.clone(),
             default_provider: Arc::new("test-provider".to_string()),
@@ -4626,6 +4779,7 @@ mod tests {
         channels_by_name.insert(channel.name().to_string(), channel);
 
         let runtime_ctx = Arc::new(ChannelRuntimeContext {
+            root_config: Arc::new(Config::default()),
             channels_by_name: Arc::new(channels_by_name),
             provider: Arc::new(SlowProvider {
                 delay: Duration::from_millis(180),
