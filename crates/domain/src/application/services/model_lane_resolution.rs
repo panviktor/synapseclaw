@@ -1,5 +1,6 @@
 use crate::application::services::model_capability_support::profile_supports_lane_confidently;
 use crate::application::services::model_preset_resolution::resolve_effective_model_lanes;
+use crate::config::model_catalog::model_profile as bundled_model_profile;
 use crate::config::schema::{CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature};
 use crate::ports::model_profile_catalog::{
     CatalogModelProfile, CatalogModelProfileSource, ModelProfileCatalogPort,
@@ -234,7 +235,9 @@ pub fn resolve_candidate_profile(
     manual: &ModelCandidateProfileConfig,
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> ResolvedModelProfile {
-    let auto = catalog.and_then(|catalog| catalog.lookup_model_profile(provider, model));
+    let auto = catalog
+        .and_then(|catalog| catalog.lookup_model_profile(provider, model))
+        .or_else(|| bundled_model_profile(provider, model));
     merge_profile(manual, auto)
 }
 

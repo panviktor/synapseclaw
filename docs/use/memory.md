@@ -4,3 +4,4 @@ Memory lets the runtime keep useful facts, traces, and procedural knowledge with
 
 Session, project, and memory replay stay limited until typed privacy classification is complete. Skills are the stable procedural-memory path: the runtime finds compact skill cards first and loads full instructions only when needed.
 
+Vector recall depends on an explicit `embedding` model lane. If embeddings are not configured, memory still works without vector search, and `synapseclaw doctor` reports the lane status.

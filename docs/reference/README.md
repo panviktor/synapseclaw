@@ -7,6 +7,7 @@ Reference pages are exact lookup material for commands, APIs, config keys, lifec
 - [CLI](cli.md) - current command map, with Skills commands called out.
 - [API](api.md) - gateway API groups.
 - [Config](config.md) - important config locations and settings.
+- [Model lanes](model-lanes.md) - auxiliary model routing for compaction, embeddings, media, validators, and cheap reasoning.
 - [Skills API](skills-api.md) - Skills gateway endpoints.
 - [Skill lifecycle](skill-lifecycle.md) - states, transitions, patch apply, rollback, and package porting.
 - [Tool contracts](tool-contracts.md) - typed tool protocol, privacy, and replay rules.

@@ -70,6 +70,7 @@ This is the main table of contents for the current English documentation.
 - [CLI](reference/cli.md)
 - [API](reference/api.md)
 - [Config](reference/config.md)
+- [Model lanes](reference/model-lanes.md)
 - [Skills API](reference/skills-api.md)
 - [Skill lifecycle](reference/skill-lifecycle.md)
 - [Tool contracts](reference/tool-contracts.md)

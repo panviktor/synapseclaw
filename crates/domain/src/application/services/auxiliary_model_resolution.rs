@@ -318,6 +318,24 @@ mod tests {
     }
 
     #[test]
+    fn bundled_preset_auxiliary_lane_is_configured_without_primary_fallback() {
+        let mut config = Config::default();
+        config.model_preset = Some("openrouter".into());
+        config.default_provider = Some("openrouter".into());
+        config.default_model = Some("anthropic/claude-sonnet-4-6".into());
+
+        let compaction = resolve_auxiliary_model(&config, AuxiliaryLane::Compaction, None).unwrap();
+        let embedding = resolve_auxiliary_model(&config, AuxiliaryLane::Embedding, None).unwrap();
+
+        assert_eq!(compaction.selected.provider, "openrouter");
+        assert_ne!(compaction.selected.model, "anthropic/claude-sonnet-4-6");
+        assert_eq!(compaction.candidates.len(), 2);
+        assert_eq!(embedding.selected.provider, "openrouter");
+        assert_eq!(embedding.selected.model, "qwen/qwen3-embedding-8b");
+        assert_eq!(embedding.selected.dimensions, Some(4096));
+    }
+
+    #[test]
     fn unsupported_modality_candidate_is_skipped_before_selection() {
         let mut unsupported = candidate("provider-a", "plain-model");
         unsupported.profile = ModelCandidateProfileConfig {

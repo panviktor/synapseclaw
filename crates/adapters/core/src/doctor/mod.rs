@@ -640,13 +640,7 @@ fn check_auxiliary_model_lanes(config: &Config, items: &mut Vec<DiagItem>) {
         check_auxiliary_model_lane(config, items, lane, true);
     }
     for lane in OPTIONAL_LANES {
-        if config
-            .model_lanes
-            .iter()
-            .any(|configured| configured.lane == lane.capability_lane())
-        {
-            check_auxiliary_model_lane(config, items, lane, false);
-        }
+        check_auxiliary_model_lane(config, items, lane, false);
     }
 }
 
@@ -1223,6 +1217,26 @@ mod tests {
                 && item
                     .message
                     .contains("auxiliary lane \"embedding\" is not configured")
+        }));
+    }
+
+    #[test]
+    fn config_validation_reports_optional_auxiliary_lanes_from_preset() {
+        let mut config = Config::default();
+        config.model_preset = Some("openrouter".into());
+        config.default_provider = Some("openrouter".into());
+        config.default_model = Some("anthropic/claude-sonnet-4-6".into());
+
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"cheap_reasoning\"")
+        }));
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"image_generation\"")
         }));
     }
 
