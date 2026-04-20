@@ -6,7 +6,7 @@ Purpose:
 - give a smaller/cheaper model enough structure to finish the next tool-porting batch safely
 
 This document is intentionally operational, not aspirational.
-It is based on live validation from [live-runtime-validation-2026-04-08.md](/home/protosik00/synapseclaw/docs/fork/live-runtime-validation-2026-04-08.md), not on guessed gaps.
+It is based on live validation from [live-runtime-validation-2026-04-08.md](live-runtime-validation-2026-04-08.md), not on guessed gaps.
 
 ## Current Baseline
 
@@ -84,11 +84,11 @@ Port these first, in this order:
 
 Reference implementations:
 
-- [user_profile.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/user_profile.rs)
-- [session_search.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/session_search.rs)
-- [precedent_search.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/precedent_search.rs)
-- [file_write.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/file_write.rs)
-- [file_edit.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/file_edit.rs)
+- [user_profile.rs](../../../crates/adapters/tools/src/user_profile.rs)
+- [session_search.rs](../../../crates/adapters/tools/src/session_search.rs)
+- [precedent_search.rs](../../../crates/adapters/tools/src/precedent_search.rs)
+- [file_write.rs](../../../crates/adapters/tools/src/file_write.rs)
+- [file_edit.rs](../../../crates/adapters/tools/src/file_edit.rs)
 
 ## Porting Rules
 
@@ -115,7 +115,7 @@ For this batch, “ported” means the facts are rich enough to improve:
 ### 1. `memory_recall`
 
 File:
-- [memory_recall.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/memory_recall.rs)
+- [memory_recall.rs](../../../crates/adapters/tools/src/memory_recall.rs)
 
 Current problem:
 - emits only a generic `FocusFact` over top entries
@@ -146,7 +146,7 @@ Tests to add:
 ### 2. `core_memory_update`
 
 File:
-- [core_memory_update.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/core_memory_update.rs)
+- [core_memory_update.rs](../../../crates/adapters/tools/src/core_memory_update.rs)
 
 Current problem:
 - current fact only says “core_memory_block X was appended/replaced”
@@ -188,7 +188,7 @@ Tests to add:
 ### 3. `shell`
 
 File:
-- [shell.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/shell.rs)
+- [shell.rs](../../../crates/adapters/tools/src/shell.rs)
 
 Current problem:
 - current facts are basically “cwd” + raw command focus
@@ -233,7 +233,7 @@ Tests to add:
 ### 4. `file_read`
 
 File:
-- [file_read.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/file_read.rs)
+- [file_read.rs](../../../crates/adapters/tools/src/file_read.rs)
 
 Current problem:
 - only emits a generic file resource read fact
@@ -261,7 +261,7 @@ Tests to add:
 ### 5. `content_search`
 
 File:
-- [content_search.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/content_search.rs)
+- [content_search.rs](../../../crates/adapters/tools/src/content_search.rs)
 
 Current problem:
 - it already emits a search fact, but live traces show it dominating archaeology loops
@@ -294,7 +294,7 @@ Tests to add:
 ### 6. `glob_search`
 
 File:
-- [glob_search.rs](/home/protosik00/synapseclaw/crates/adapters/tools/src/glob_search.rs)
+- [glob_search.rs](../../../crates/adapters/tools/src/glob_search.rs)
 
 Current problem:
 - current search fact is better than nothing, but still too shallow for ranking/bootstrap suppression

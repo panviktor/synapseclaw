@@ -15,14 +15,14 @@ best useful agent-runtime behavior I would want, not the easiest patch.
   - `crates/domain/src/application/services/*`
   - `crates/adapters/core/src/doctor/mod.rs`
 - Hermes local checkout:
-  - `/home/protosik00/hermes-agent/agent/context_compressor.py`
-  - `/home/protosik00/hermes-agent/agent/memory_provider.py`
-  - `/home/protosik00/hermes-agent/agent/memory_manager.py`
-  - `/home/protosik00/hermes-agent/agent/auxiliary_client.py`
-  - `/home/protosik00/hermes-agent/agent/model_metadata.py`
-  - `/home/protosik00/hermes-agent/agent/insights.py`
-  - `/home/protosik00/hermes-agent/agent/skill_commands.py`
-  - `/home/protosik00/hermes-agent/hermes_cli/doctor.py`
+  - `<local-hermes-agent-checkout>/agent/context_compressor.py`
+  - `<local-hermes-agent-checkout>/agent/memory_provider.py`
+  - `<local-hermes-agent-checkout>/agent/memory_manager.py`
+  - `<local-hermes-agent-checkout>/agent/auxiliary_client.py`
+  - `<local-hermes-agent-checkout>/agent/model_metadata.py`
+  - `<local-hermes-agent-checkout>/agent/insights.py`
+  - `<local-hermes-agent-checkout>/agent/skill_commands.py`
+  - `<local-hermes-agent-checkout>/hermes_cli/doctor.py`
 - OpenHands:
   - https://github.com/All-Hands-AI/OpenHands
   - https://docs.openhands.dev/sdk/guides/context-condenser

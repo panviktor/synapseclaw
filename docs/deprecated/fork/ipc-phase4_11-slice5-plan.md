@@ -41,12 +41,12 @@ resolver that returns explicit states such as `active`, `candidate`, `shadowed`,
 
 Local evidence reviewed:
 
-- `/home/protosik00/hermes-agent/tools/skills_tool.py`
-- `/home/protosik00/hermes-agent/tools/skill_manager_tool.py`
-- `/home/protosik00/hermes-agent/tools/skills_guard.py`
-- `/home/protosik00/hermes-agent/tools/skills_hub.py`
-- `/home/protosik00/hermes-agent/website/docs/user-guide/features/skills.md`
-- `/home/protosik00/hermes-agent/website/docs/developer-guide/creating-skills.md`
+- `<local-hermes-agent-checkout>/tools/skills_tool.py`
+- `<local-hermes-agent-checkout>/tools/skill_manager_tool.py`
+- `<local-hermes-agent-checkout>/tools/skills_guard.py`
+- `<local-hermes-agent-checkout>/tools/skills_hub.py`
+- `<local-hermes-agent-checkout>/website/docs/user-guide/features/skills.md`
+- `<local-hermes-agent-checkout>/website/docs/developer-guide/creating-skills.md`
 
 ### OpenHands Skills
 
@@ -979,6 +979,7 @@ Still open for later Slice 5 work:
 
 ## References
 
+- Hermes Agent local implementation: `<local-hermes-agent-checkout>`
 - Hermes Skills System: https://hermes-agent.nousresearch.com/docs/user-guide/features/skills
 - OpenHands Skills Overview: https://docs.openhands.dev/overview/skills
 - OpenHands SDK Skills Guide: https://docs.openhands.dev/sdk/guides/skill

@@ -305,7 +305,7 @@ References:
 - <https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop/>
 - <https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching/>
 - <https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files/>
-- local source audit clone: `/home/protosik00/hermes-agent`
+- local source audit clone: `<local-hermes-agent-checkout>`
 
 ### 7. OpenCode
 
