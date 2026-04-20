@@ -58,7 +58,9 @@ use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
 use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
+use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::message::ChatMessage;
+use crate::domain::tool_fact::{DeliveryTargetKind, OutcomeStatus, ToolFactPayload, TypedToolFact};
 use crate::domain::turn_admission::CandidateAdmissionReason;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
 use crate::ports::channel_output::ChannelOutputPort;
@@ -1292,7 +1294,12 @@ async fn execute_agent_turn(
             Ok(HandleResult::Response {
                 conversation_key: conversation_key.to_string(),
                 output: AssistantOutputPresenter::success(
-                    if draft_delivered && !turn_result.media_artifacts.is_empty() {
+                    if (draft_delivered && !turn_result.media_artifacts.is_empty())
+                        || voice_reply_delivered_to_current_conversation(
+                            &turn_result.tool_facts,
+                            envelope,
+                        )
+                    {
                         String::new()
                     } else {
                         response_text_for_delivery
@@ -1552,6 +1559,44 @@ fn admission_session_hygiene_keep_non_system_turns(
 
 fn channel_user_profile_key(agent_id: &str, envelope: &InboundEnvelope) -> String {
     inbound_message_service::conversation_identity(envelope, agent_id).actor_profile_key()
+}
+
+fn voice_reply_delivered_to_current_conversation(
+    facts: &[TypedToolFact],
+    envelope: &InboundEnvelope,
+) -> bool {
+    let succeeded = facts.iter().any(|fact| {
+        fact.tool_id == "voice_reply"
+            && matches!(
+                &fact.payload,
+                ToolFactPayload::Outcome(ref outcome)
+                    if outcome.status == OutcomeStatus::Succeeded
+            )
+    });
+    if !succeeded {
+        return false;
+    }
+
+    facts.iter().any(|fact| {
+        fact.tool_id == "voice_reply"
+            && matches!(
+                &fact.payload,
+                ToolFactPayload::Delivery(delivery)
+                    if match &delivery.target {
+                        DeliveryTargetKind::CurrentConversation => true,
+                        DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                            channel,
+                            recipient,
+                            thread_ref,
+                        }) => {
+                            channel == &envelope.source_adapter
+                                && recipient == &envelope.reply_ref
+                                && thread_ref.as_deref() == envelope.thread_ref.as_deref()
+                        }
+                        _ => false,
+                    }
+            )
+    })
 }
 
 #[cfg(test)]
@@ -2039,6 +2084,80 @@ mod tests {
 
     fn test_conversation_key() -> &'static str {
         "conversation:test-agent:telegram:telegram_user1:user1"
+    }
+
+    #[test]
+    fn detects_successful_voice_reply_to_current_conversation() {
+        let envelope = test_envelope("send this as voice");
+        let facts = vec![
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Outcome(crate::domain::tool_fact::OutcomeFact {
+                    status: OutcomeStatus::Succeeded,
+                    duration_ms: Some(10),
+                }),
+            },
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Delivery(crate::domain::tool_fact::DeliveryFact {
+                    target: DeliveryTargetKind::CurrentConversation,
+                    content_bytes: Some(128),
+                }),
+            },
+        ];
+
+        assert!(voice_reply_delivered_to_current_conversation(
+            &facts, &envelope
+        ));
+    }
+
+    #[test]
+    fn rejects_failed_or_mismatched_voice_reply_delivery() {
+        let envelope = test_envelope("send this as voice");
+        let failed = vec![
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Outcome(crate::domain::tool_fact::OutcomeFact {
+                    status: OutcomeStatus::ReportedFailure,
+                    duration_ms: Some(10),
+                }),
+            },
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Delivery(crate::domain::tool_fact::DeliveryFact {
+                    target: DeliveryTargetKind::CurrentConversation,
+                    content_bytes: Some(128),
+                }),
+            },
+        ];
+        assert!(!voice_reply_delivered_to_current_conversation(
+            &failed, &envelope
+        ));
+
+        let mismatched_target = vec![
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Outcome(crate::domain::tool_fact::OutcomeFact {
+                    status: OutcomeStatus::Succeeded,
+                    duration_ms: Some(10),
+                }),
+            },
+            TypedToolFact {
+                tool_id: "voice_reply".into(),
+                payload: ToolFactPayload::Delivery(crate::domain::tool_fact::DeliveryFact {
+                    target: DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                        channel: "matrix".into(),
+                        recipient: "!room:example".into(),
+                        thread_ref: None,
+                    }),
+                    content_bytes: Some(128),
+                }),
+            },
+        ];
+        assert!(!voice_reply_delivered_to_current_conversation(
+            &mismatched_target,
+            &envelope
+        ));
     }
 
     fn test_ports(response: &str) -> InboundMessagePorts {

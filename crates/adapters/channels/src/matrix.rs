@@ -257,6 +257,7 @@ fn matrix_attachment_kind_for_artifact(kind: MediaArtifactKind) -> MatrixOutgoin
     match kind {
         MediaArtifactKind::Image => MatrixOutgoingAttachmentKind::Image,
         MediaArtifactKind::Audio | MediaArtifactKind::Music => MatrixOutgoingAttachmentKind::Audio,
+        MediaArtifactKind::Voice => MatrixOutgoingAttachmentKind::Voice,
         MediaArtifactKind::Video => MatrixOutgoingAttachmentKind::File,
     }
 }

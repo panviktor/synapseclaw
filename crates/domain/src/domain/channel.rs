@@ -105,6 +105,8 @@ pub struct OutboundIntent {
     pub thread_ref: Option<String>,
     /// The content to deliver.
     pub content: RenderableContent,
+    /// Structured media attachments to deliver with, or instead of, text.
+    pub media_artifacts: Vec<MediaArtifact>,
     /// Capabilities required for full-fidelity delivery.
     pub required_capabilities: Vec<ChannelCapability>,
     /// Fallback behavior when capabilities are missing.
@@ -130,9 +132,15 @@ impl OutboundIntent {
             target_recipient: recipient.into(),
             thread_ref,
             content: RenderableContent::Text(text),
+            media_artifacts: Vec::new(),
             required_capabilities: vec![ChannelCapability::SendText],
             degradation_policy: DegradationPolicy::default(),
         }
+    }
+
+    pub fn with_media_artifacts(mut self, media_artifacts: Vec<MediaArtifact>) -> Self {
+        self.media_artifacts = media_artifacts;
+        self
     }
 }
 

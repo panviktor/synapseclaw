@@ -290,7 +290,8 @@ impl PromptSection for ChannelMediaSection {
             Messages from channels may contain media markers:\n\
             - `[Voice] <text>` — The user sent a voice/audio message that has already been transcribed to text. Respond to the transcribed content directly.\n\
             - `[IMAGE:<path>]` — An image attachment, processed by the vision pipeline.\n\
-            - `[Document: <name>] <path>` — A file attachment saved to the workspace."
+            - `[Document: <name>] <path>` — A file attachment saved to the workspace.\n\
+            Do not describe a plain text response as a voice note. If a voice delivery tool is registered and the user wants voice, use it."
             .into())
     }
 }
@@ -324,7 +325,13 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
     }
     if has_tool("message_send") {
         lines.push(
-            "- `message_send` uses `{ \"content\": \"...\" }` with omitted `target` for a resolved default, `\"current_conversation\"` to reply here, or `{ \"channel\": \"...\", \"recipient\": \"...\", \"thread_ref\": \"...\" }` for an explicit target."
+            "- `message_send` uses `{ \"content\": \"...\" }` with omitted `target` for a resolved default, `\"current_conversation\"` to reply here, or `{ \"channel\": \"...\", \"recipient\": \"...\", \"thread_ref\": \"...\" }` for an explicit target. Explicit targets must be objects, not JSON strings."
+                .to_string(),
+        );
+    }
+    if has_tool("voice_reply") {
+        lines.push(
+            "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use it when the user asks for voice/audio output or when replying in kind to `[Voice]` input. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."
                 .to_string(),
         );
     }

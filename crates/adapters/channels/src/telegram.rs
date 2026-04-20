@@ -163,6 +163,7 @@ fn telegram_attachment_kind_for_artifact(kind: MediaArtifactKind) -> TelegramAtt
     match kind {
         MediaArtifactKind::Image => TelegramAttachmentKind::Image,
         MediaArtifactKind::Audio | MediaArtifactKind::Music => TelegramAttachmentKind::Audio,
+        MediaArtifactKind::Voice => TelegramAttachmentKind::Voice,
         MediaArtifactKind::Video => TelegramAttachmentKind::Video,
     }
 }

@@ -1,19 +1,31 @@
 //! Multi-provider Text-to-Speech (TTS) subsystem.
 //!
-//! Supports OpenAI, ElevenLabs, Google Cloud, Edge, MiniMax, Mistral Voxtral, and xAI.
+//! Supports OpenAI, Groq Orpheus, ElevenLabs, Google Cloud, Edge, MiniMax, Mistral Voxtral, and xAI.
 //! Provider selection is driven by [`TtsConfig`] in `config.toml`.
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use synapse_domain::config::schema::{MiniMaxTtsConfig, MistralTtsConfig, TtsConfig, XaiTtsConfig};
+use synapse_domain::config::schema::{
+    GroqTtsConfig, MiniMaxTtsConfig, MistralTtsConfig, TtsConfig, XaiTtsConfig,
+};
 
 /// Maximum text length before synthesis is rejected (default: 4096 chars).
 const DEFAULT_MAX_TEXT_LENGTH: usize = 4096;
 
 /// Default HTTP request timeout for TTS API calls.
 const TTS_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn tts_http_error_message(provider: &str, status: reqwest::StatusCode, message: &str) -> String {
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        return format!("{provider} TTS API error ({status}): authentication failed");
+    }
+    format!("{provider} TTS API error ({status}): {message}")
+}
 
 // ── TtsProvider trait ────────────────────────────────────────────
 
@@ -99,7 +111,7 @@ impl TtsProvider for OpenAiTtsProvider {
             let msg = error_body["error"]["message"]
                 .as_str()
                 .unwrap_or("unknown error");
-            bail!("OpenAI TTS API error ({}): {}", status, msg);
+            bail!(tts_http_error_message("OpenAI", status, msg));
         }
 
         let bytes = resp
@@ -121,6 +133,94 @@ impl TtsProvider for OpenAiTtsProvider {
             .iter()
             .map(|s| (*s).to_string())
             .collect()
+    }
+}
+
+// ── Groq Orpheus TTS ────────────────────────────────────────────────
+
+/// Groq Orpheus TTS provider (`POST /openai/v1/audio/speech`).
+pub struct GroqTtsProvider {
+    api_key: String,
+    model: String,
+    response_format: String,
+    client: reqwest::Client,
+}
+
+impl GroqTtsProvider {
+    /// Create a new Groq TTS provider from a lane-resolved config.
+    pub fn new(config: &GroqTtsConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing Groq TTS API key from resolved speech_synthesis lane")?;
+
+        Ok(Self {
+            api_key,
+            model: config.model.clone(),
+            response_format: config.response_format.clone(),
+            client: synapse_providers::proxy::build_runtime_proxy_client("tts.groq"),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for GroqTtsProvider {
+    fn name(&self) -> &str {
+        "groq"
+    }
+
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": text,
+            "voice": voice,
+            "response_format": self.response_format,
+        });
+
+        let resp = self
+            .client
+            .post("https://api.groq.com/openai/v1/audio/speech")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send Groq TTS request")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_body: serde_json::Value = resp
+                .json()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"error": "unknown"}));
+            let msg = error_body["error"]["message"]
+                .as_str()
+                .or_else(|| error_body["message"].as_str())
+                .unwrap_or("unknown error");
+            bail!(tts_http_error_message("Groq", status, msg));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read Groq TTS response body")?;
+        Ok(bytes.to_vec())
+    }
+
+    fn supported_voices(&self) -> Vec<String> {
+        [
+            "autumn", "diana", "hannah", "austin", "daniel", "troy", "abdullah", "fahad", "sultan",
+            "lulwa", "noura", "aisha",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        ["wav"].iter().map(|s| (*s).to_string()).collect()
     }
 }
 
@@ -767,6 +867,17 @@ impl TtsManager {
             }
         }
 
+        if let Some(ref groq_cfg) = config.groq {
+            match GroqTtsProvider::new(groq_cfg) {
+                Ok(p) => {
+                    providers.insert("groq".to_string(), Box::new(p));
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping Groq TTS provider: {e}");
+                }
+            }
+        }
+
         if let Some(ref elevenlabs_cfg) = config.elevenlabs {
             match ElevenLabsTtsProvider::new(elevenlabs_cfg) {
                 Ok(p) => {
@@ -984,6 +1095,7 @@ mod tests {
         assert_eq!(config.default_format, "mp3");
         assert_eq!(config.max_text_length, DEFAULT_MAX_TEXT_LENGTH);
         assert!(config.openai.is_none());
+        assert!(config.groq.is_none());
         assert!(config.elevenlabs.is_none());
         assert!(config.google.is_none());
         assert!(config.edge.is_none());
@@ -1003,6 +1115,11 @@ mod tests {
     #[test]
     fn tts_manager_registers_voice_parity_providers() {
         let mut config = default_tts_config();
+        config.groq = Some(synapse_domain::config::schema::GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        });
         config.minimax = Some(synapse_domain::config::schema::MiniMaxTtsConfig {
             api_key: Some("minimax-key".into()),
             base_url: "https://api.minimax.io/v1/t2a_v2".into(),
@@ -1031,7 +1148,21 @@ mod tests {
         let manager = TtsManager::new(&config).unwrap();
         assert_eq!(
             manager.available_providers(),
-            vec!["minimax", "mistral", "xai"]
+            vec!["groq", "minimax", "mistral", "xai"]
         );
+    }
+
+    #[test]
+    fn groq_tts_provider_metadata_matches_orpheus_contract() {
+        let provider = GroqTtsProvider::new(&GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        })
+        .unwrap();
+
+        assert_eq!(provider.name(), "groq");
+        assert!(provider.supported_voices().contains(&"troy".to_string()));
+        assert_eq!(provider.supported_formats(), vec!["wav"]);
     }
 }

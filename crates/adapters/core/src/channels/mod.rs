@@ -52,8 +52,9 @@ use synapse_domain::application::services::auxiliary_model_resolution::{
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelCandidate;
 use synapse_domain::config::schema::{
     AssemblyAiSttConfig, Config, DeepgramSttConfig, EdgeTtsConfig, ElevenLabsTtsConfig,
-    GoogleSttConfig, GoogleTtsConfig, MiniMaxTtsConfig, MistralSttConfig, MistralTtsConfig,
-    OpenAiSttConfig, OpenAiTtsConfig, TranscriptionConfig, TtsConfig, XaiTtsConfig,
+    GoogleSttConfig, GoogleTtsConfig, GroqTtsConfig, MiniMaxTtsConfig, MistralSttConfig,
+    MistralTtsConfig, OpenAiSttConfig, OpenAiTtsConfig, TranscriptionConfig, TtsConfig,
+    XaiTtsConfig,
 };
 use synapse_memory::UnifiedMemoryPort;
 use synapse_observability::{self, Observer};
@@ -205,7 +206,7 @@ fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionCo
     Ok(transcription)
 }
 
-fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
+pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
     let mut tts = config.tts.clone();
     if !tts.enabled {
         return Ok(tts);
@@ -229,6 +230,22 @@ fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
                 model: selected.model.clone(),
                 speed,
             });
+        }
+        "groq" => {
+            let existing = tts.groq.clone();
+            let response_format = existing
+                .as_ref()
+                .map(|cfg| cfg.response_format.clone())
+                .unwrap_or_else(|| "wav".to_string());
+            tts.groq = Some(GroqTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                model: selected.model.clone(),
+                response_format: response_format.clone(),
+            });
+            tts.default_format = response_format;
+            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
+                tts.default_voice = "troy".to_string();
+            }
         }
         "elevenlabs" => {
             let existing = tts.elevenlabs.clone();

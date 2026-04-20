@@ -806,6 +806,14 @@ fn default_openai_tts_speed() -> f64 {
     1.0
 }
 
+fn default_groq_tts_model() -> String {
+    "canopylabs/orpheus-v1-english".into()
+}
+
+fn default_groq_tts_response_format() -> String {
+    "wav".into()
+}
+
 fn default_elevenlabs_model_id() -> String {
     "eleven_monolingual_v1".into()
 }
@@ -907,6 +915,9 @@ pub struct TtsConfig {
     /// OpenAI TTS provider configuration (`[tts.openai]`).
     #[serde(default)]
     pub openai: Option<OpenAiTtsConfig>,
+    /// Groq Orpheus TTS provider configuration (`[tts.groq]`).
+    #[serde(default)]
+    pub groq: Option<GroqTtsConfig>,
     /// ElevenLabs TTS provider configuration (`[tts.elevenlabs]`).
     #[serde(default)]
     pub elevenlabs: Option<ElevenLabsTtsConfig>,
@@ -936,6 +947,7 @@ impl Default for TtsConfig {
             default_format: default_tts_format(),
             max_text_length: default_tts_max_text_length(),
             openai: None,
+            groq: None,
             elevenlabs: None,
             google: None,
             edge: None,
@@ -958,6 +970,20 @@ pub struct OpenAiTtsConfig {
     /// Playback speed multiplier (default `1.0`).
     #[serde(default = "default_openai_tts_speed")]
     pub speed: f64,
+}
+
+/// Groq Orpheus TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GroqTtsConfig {
+    /// API key for Groq TTS.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Model name (default `"canopylabs/orpheus-v1-english"`).
+    #[serde(default = "default_groq_tts_model")]
+    pub model: String,
+    /// Response audio format. Groq Orpheus currently supports `"wav"`.
+    #[serde(default = "default_groq_tts_response_format")]
+    pub response_format: String,
 }
 
 /// ElevenLabs TTS provider configuration.

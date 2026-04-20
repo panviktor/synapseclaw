@@ -731,6 +731,9 @@ mod tests {
         assert!(whisper
             .features
             .contains(&ModelFeature::SpeechTranscription));
+        let groq_tts = model_profile("groq", "canopylabs/orpheus-v1-english")
+            .expect("groq orpheus profile should exist");
+        assert!(groq_tts.features.contains(&ModelFeature::SpeechSynthesis));
 
         let tts = model_profile("openai", "tts-1").expect("openai tts profile should exist");
         assert!(tts.features.contains(&ModelFeature::SpeechSynthesis));

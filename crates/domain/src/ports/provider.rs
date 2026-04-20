@@ -36,6 +36,7 @@ pub struct TokenUsage {
 pub enum MediaArtifactKind {
     Image,
     Audio,
+    Voice,
     Video,
     Music,
 }
@@ -45,6 +46,7 @@ impl MediaArtifactKind {
         match self {
             Self::Image => "IMAGE",
             Self::Audio => "AUDIO",
+            Self::Voice => "VOICE",
             Self::Video => "VIDEO",
             Self::Music => "MUSIC",
         }

@@ -189,7 +189,9 @@ impl DiscordAttachmentKind {
 fn discord_attachment_kind_for_artifact(kind: MediaArtifactKind) -> DiscordAttachmentKind {
     match kind {
         MediaArtifactKind::Image => DiscordAttachmentKind::Image,
-        MediaArtifactKind::Audio | MediaArtifactKind::Music => DiscordAttachmentKind::Audio,
+        MediaArtifactKind::Audio | MediaArtifactKind::Voice | MediaArtifactKind::Music => {
+            DiscordAttachmentKind::Audio
+        }
         MediaArtifactKind::Video => DiscordAttachmentKind::Video,
     }
 }

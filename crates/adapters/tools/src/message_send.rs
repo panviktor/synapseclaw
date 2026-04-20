@@ -75,8 +75,9 @@ impl MessageSendTool {
                         .to_string()
                 }),
             Some(serde_json::Value::String(_)) => Err(
-                "Invalid target. Use 'current_conversation', omit target for a resolved default, \
-                 or provide {channel, recipient}."
+                "Invalid target string. The only string target is 'current_conversation'. \
+                 For an explicit destination, pass target as an object, not a JSON-encoded string: \
+                 {\"target\":{\"channel\":\"matrix\",\"recipient\":\"...\"}}."
                     .into(),
             ),
             Some(obj) if obj.is_object() => Self::parse_explicit_target_object(obj),
@@ -104,7 +105,7 @@ impl MessageSendTool {
                 }),
             _ => Err(
                 "Invalid target. Use 'current_conversation', omit target for a resolved default, \
-                 or provide {channel, recipient}."
+                 or pass an explicit target object: {\"target\":{\"channel\":\"matrix\",\"recipient\":\"...\"}}."
                     .into(),
             ),
         }
@@ -135,7 +136,7 @@ impl Tool for MessageSendTool {
                     "description": "Message text to send"
                 },
                 "target": {
-                    "description": "Where to send. Use 'current_conversation' for here, omit target when a resolved runtime default already exists, or provide explicit target. Omitting target is preferred over file or shell discovery when the destination is already configured.",
+                    "description": "Where to send. Use 'current_conversation' for here, omit target when a resolved runtime default already exists, or provide explicit target as an object. Do not JSON-encode the explicit target object into a string. Omitting target is preferred over file or shell discovery when the destination is already configured.",
                     "oneOf": [
                         {
                             "type": "string",

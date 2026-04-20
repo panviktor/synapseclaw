@@ -302,7 +302,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
 
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {
         let text = intent.content.as_text();
-        if text.is_empty() {
+        if text.is_empty() && intent.media_artifacts.is_empty() {
             tracing::debug!(
                 channel = %intent.target_channel,
                 "ChannelRegistry: skipping empty intent"
@@ -333,7 +333,8 @@ impl ChannelRegistryPort for CachedChannelRegistry {
         }
 
         let msg = SendMessage::new(text, intent.target_recipient.as_str())
-            .in_thread(intent.thread_ref.clone());
+            .in_thread(intent.thread_ref.clone())
+            .with_media_artifacts(intent.media_artifacts.clone());
         channel.send(&msg).await
     }
 }
@@ -346,7 +347,7 @@ mod tests {
     /// Minimal test channel that records sends.
     struct MockChannel {
         name: String,
-        sent: std::sync::Mutex<Vec<String>>,
+        sent: std::sync::Mutex<Vec<(String, usize)>>,
     }
 
     impl MockChannel {
@@ -357,7 +358,7 @@ mod tests {
             }
         }
 
-        fn sent_messages(&self) -> Vec<String> {
+        fn sent_messages(&self) -> Vec<(String, usize)> {
             self.sent.lock().unwrap().clone()
         }
     }
@@ -369,7 +370,10 @@ mod tests {
         }
 
         async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-            self.sent.lock().unwrap().push(message.content.clone());
+            self.sent
+                .lock()
+                .unwrap()
+                .push((message.content.clone(), message.media_artifacts.len()));
             Ok(())
         }
 
@@ -386,7 +390,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         assert!(registry.resolve("nonexistent").is_err());
     }
@@ -396,7 +400,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock);
@@ -409,7 +413,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let tg = registry.capabilities("telegram");
         assert!(tg.contains(&ChannelCapability::SendText));
@@ -430,7 +434,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
@@ -445,7 +449,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
@@ -453,7 +457,7 @@ mod tests {
         let intent = OutboundIntent::notify("test", "recipient-1", "hello world".into());
         registry.deliver(&intent).await.unwrap();
 
-        assert_eq!(mock.sent_messages(), vec!["hello world"]);
+        assert_eq!(mock.sent_messages(), vec![("hello world".into(), 0)]);
     }
 
     #[tokio::test]
@@ -461,7 +465,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
@@ -473,11 +477,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deliver_allows_attachment_only_intent() {
+        let config = Config::default();
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
+        let mock = Arc::new(MockChannel::new("test"));
+        registry.inject("test", mock.clone());
+
+        let intent = OutboundIntent::notify("test", "recipient-1", String::new())
+            .with_media_artifacts(vec![synapse_domain::ports::provider::MediaArtifact::new(
+                synapse_domain::ports::provider::MediaArtifactKind::Voice,
+                "/tmp/voice.mp3",
+            )]);
+
+        registry.deliver(&intent).await.unwrap();
+
+        assert_eq!(mock.sent_messages(), vec![(String::new(), 1)]);
+    }
+
+    #[tokio::test]
     async fn deliver_drops_on_missing_capability_with_drop_policy() {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
@@ -496,7 +521,7 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(
             config,
-            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+            Arc::new(|_cfg, id| anyhow::bail!("no channels configured for {id}")),
         );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
@@ -506,7 +531,7 @@ mod tests {
         intent.degradation_policy = DegradationPolicy::PlainText;
 
         registry.deliver(&intent).await.unwrap();
-        assert_eq!(mock.sent_messages(), vec!["msg"]);
+        assert_eq!(mock.sent_messages(), vec![("msg".into(), 0)]);
     }
 
     #[test]

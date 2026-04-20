@@ -30,6 +30,7 @@ pub mod delegate;
 pub mod node_tool;
 pub mod skill_runtime;
 pub mod traits;
+pub mod voice_reply;
 
 pub use agents_ipc::{
     AgentsInboxTool, AgentsListTool, AgentsReplyTool, AgentsSendTool, AgentsSpawnTool, IpcClient,
@@ -39,6 +40,7 @@ pub use delegate::DelegateTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
 pub use skill_runtime::SkillReadTool;
+pub use voice_reply::VoiceReplyTool;
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
@@ -1013,6 +1015,13 @@ fn build_runtime_tool_registry(
         channel_registry.as_ref(),
     ) {
         tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(
+            Arc::clone(ctx),
+            Arc::clone(defaults),
+            Arc::clone(reg),
+        )));
+        tool_arcs.push(Arc::new(VoiceReplyTool::new(
+            Arc::clone(&config),
+            workspace_dir.to_path_buf(),
             Arc::clone(ctx),
             Arc::clone(defaults),
             Arc::clone(reg),

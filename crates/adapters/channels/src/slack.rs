@@ -2293,6 +2293,7 @@ impl SlackChannel {
             _ => match artifact.kind {
                 synapse_domain::ports::provider::MediaArtifactKind::Image => "png",
                 synapse_domain::ports::provider::MediaArtifactKind::Audio => "bin",
+                synapse_domain::ports::provider::MediaArtifactKind::Voice => "bin",
                 synapse_domain::ports::provider::MediaArtifactKind::Video => "mp4",
                 synapse_domain::ports::provider::MediaArtifactKind::Music => "bin",
             },
