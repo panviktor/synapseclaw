@@ -1120,6 +1120,31 @@ async fn create_resilient_provider_nonblocking(
     .context("failed to join provider initialization task")?
 }
 
+async fn create_routed_provider_nonblocking(
+    provider_name: &str,
+    api_key: Option<String>,
+    api_url: Option<String>,
+    reliability: synapse_domain::config::schema::ReliabilityConfig,
+    router_routes: Vec<synapse_domain::config::schema::ModelRouteConfig>,
+    default_model: String,
+    provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
+) -> anyhow::Result<Box<dyn Provider>> {
+    let provider_name = provider_name.to_string();
+    tokio::task::spawn_blocking(move || {
+        synapse_providers::create_routed_provider_with_options(
+            &provider_name,
+            api_key.as_deref(),
+            api_url.as_deref(),
+            &reliability,
+            &router_routes,
+            &default_model,
+            &provider_runtime_options,
+        )
+    })
+    .await
+    .context("failed to join routed provider initialization task")?
+}
+
 /// Phase 4.0 Slice 2: process an inbound message through the synapse_domain orchestrator.
 ///
 /// Builds ports from ChannelRuntimeContext, calls HandleInboundMessage,
@@ -2810,13 +2835,20 @@ pub async fn start_channels(
     };
 
     let provider_name = resolved_default_provider(&config)?;
+    let model = resolved_default_model(&config)?;
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
     let provider: Arc<dyn Provider> = Arc::from(
-        create_resilient_provider_nonblocking(
+        create_routed_provider_nonblocking(
             &provider_name,
             config.api_key.clone(),
             config.api_url.clone(),
             config.reliability.clone(),
+            router_routes,
+            model.clone(),
             provider_runtime_options.clone(),
         )
         .await?,
@@ -2851,7 +2883,6 @@ pub async fn start_channels(
         &config.autonomy,
         &config.workspace_dir,
     ));
-    let model = resolved_default_model(&config)?;
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {

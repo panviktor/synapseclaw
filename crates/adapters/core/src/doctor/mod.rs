@@ -6,7 +6,8 @@ use synapse_domain::application::services::auxiliary_model_resolution::{
     resolve_auxiliary_model, AuxiliaryLane, AuxiliaryModelResolutionError,
 };
 use synapse_domain::application::services::capability_doctor::CapabilityDoctorSeverity;
-use synapse_domain::config::schema::Config;
+use synapse_domain::application::services::model_preset_resolution::resolve_effective_model_lanes;
+use synapse_domain::config::schema::{CapabilityLane, Config};
 use synapse_domain::ports::route_selection::RouteSelection;
 
 const DAEMON_STALE_SECONDS: i64 = 30;
@@ -542,6 +543,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         items.push(DiagItem::warn(cat, "no default_model configured"));
     }
 
+    check_primary_reasoning_lane(config, items);
     check_auxiliary_model_lanes(config, items);
 
     // Temperature range
@@ -620,6 +622,53 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
                 ),
             ));
         }
+    }
+}
+
+fn check_primary_reasoning_lane(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "config";
+    let Some(lane) = resolve_effective_model_lanes(config)
+        .into_iter()
+        .find(|lane| lane.lane == CapabilityLane::Reasoning)
+    else {
+        return;
+    };
+    let Some(first) = lane.candidates.first() else {
+        items.push(DiagItem::warn(
+            cat,
+            "primary reasoning lane is configured without candidates",
+        ));
+        return;
+    };
+
+    let default_provider = config.default_provider.as_deref().unwrap_or("");
+    let default_model = config.default_model.as_deref().unwrap_or("");
+    let message = format!(
+        "primary reasoning lane: {}/{} selected (candidate #0 of {})",
+        first.provider,
+        first.model,
+        lane.candidates.len()
+    );
+
+    if first.provider == default_provider && first.model == default_model {
+        if lane.candidates.len() > 1 {
+            items.push(DiagItem::ok(
+                cat,
+                format!("{message}; failover candidates available"),
+            ));
+        } else {
+            items.push(DiagItem::ok(
+                cat,
+                format!("{message}; no failover candidate"),
+            ));
+        }
+    } else {
+        items.push(DiagItem::warn(
+            cat,
+            format!(
+                "{message}; first candidate does not match default_provider/default_model, so normal turns will not use this failover chain"
+            ),
+        ));
     }
 }
 
@@ -1205,6 +1254,44 @@ mod tests {
             item.severity == Severity::Ok
                 && item.message.contains("auxiliary lane \"embedding\"")
                 && item.message.contains("dimensions=4096")
+        }));
+    }
+
+    #[test]
+    fn config_validation_reports_primary_reasoning_failover_candidates() {
+        let mut config = Config::default();
+        config.default_provider = Some("openai-codex".into());
+        config.default_model = Some("gpt-5.4".into());
+        config.model_lanes = vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![
+                synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "openai-codex".into(),
+                    model: "gpt-5.4".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: Default::default(),
+                },
+                synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "anthropic".into(),
+                    model: "claude-sonnet-4-6".into(),
+                    api_key: None,
+                    api_key_env: Some("ANTHROPIC_API_KEY".into()),
+                    dimensions: None,
+                    profile: Default::default(),
+                },
+            ],
+        }];
+
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("primary reasoning lane")
+                && item.message.contains("candidate #0 of 2")
+                && item.message.contains("failover candidates available")
         }));
     }
 

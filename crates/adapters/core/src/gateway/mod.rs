@@ -517,14 +517,6 @@ pub async fn run_gateway(
         .clone()
         .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
         .context("no default provider configured and model catalog has no default preset")?;
-    let provider: Arc<dyn Provider> =
-        Arc::from(synapse_providers::create_resilient_provider_with_options(
-            default_provider.as_str(),
-            config.api_key.as_deref(),
-            config.api_url.as_deref(),
-            &config.reliability,
-            &synapse_providers::provider_runtime_options_from_config(&config),
-        )?);
     let model = config
         .default_model
         .clone()
@@ -535,6 +527,20 @@ pub async fn run_gateway(
         .with_context(|| {
             format!("no default model configured for provider '{default_provider}'")
         })?;
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
+    let provider: Arc<dyn Provider> =
+        Arc::from(synapse_providers::create_routed_provider_with_options(
+            default_provider.as_str(),
+            config.api_key.as_deref(),
+            config.api_url.as_deref(),
+            &config.reliability,
+            &router_routes,
+            &model,
+            &synapse_providers::provider_runtime_options_from_config(&config),
+        )?);
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {

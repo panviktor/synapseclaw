@@ -1,5 +1,7 @@
+use super::reliable::classify_provider_error;
 use super::traits::{ChatMessage, ChatRequest, ChatResponse};
 use super::Provider;
+use anyhow::Context;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -20,6 +22,8 @@ pub struct Route {
 /// This wraps multiple pre-created providers and selects the right one per request.
 pub struct RouterProvider {
     routes: HashMap<String, (usize, String)>, // hint → (provider_index, model)
+    route_chains: HashMap<String, Vec<(usize, String)>>, // hint → ordered failover chain
+    default_chain: Vec<(usize, String)>,
     providers: Vec<(String, Box<dyn Provider>)>,
     default_index: usize,
     default_model: String,
@@ -33,6 +37,15 @@ impl RouterProvider {
     pub fn new(
         providers: Vec<(String, Box<dyn Provider>)>,
         routes: Vec<(String, Route)>,
+        default_model: String,
+    ) -> Self {
+        Self::new_with_chains(providers, routes, Vec::new(), default_model)
+    }
+
+    pub fn new_with_chains(
+        providers: Vec<(String, Box<dyn Provider>)>,
+        routes: Vec<(String, Route)>,
+        route_chains: Vec<(String, Vec<Route>)>,
         default_model: String,
     ) -> Self {
         // Build provider name → index lookup
@@ -61,8 +74,40 @@ impl RouterProvider {
             })
             .collect();
 
+        let resolved_chains: HashMap<String, Vec<(usize, String)>> = route_chains
+            .into_iter()
+            .filter_map(|(hint, chain)| {
+                let mut resolved = Vec::new();
+                for route in chain {
+                    let Some(index) = name_to_index.get(route.provider_name.as_str()).copied()
+                    else {
+                        tracing::warn!(
+                            hint = hint.as_str(),
+                            provider = route.provider_name.as_str(),
+                            "Route chain references unknown provider, skipping candidate"
+                        );
+                        continue;
+                    };
+                    resolved.push((index, route.model));
+                }
+                (!resolved.is_empty()).then_some((hint, resolved))
+            })
+            .collect();
+
+        let default_chain = resolved_chains
+            .get("reasoning")
+            .filter(|chain| {
+                chain
+                    .first()
+                    .is_some_and(|(idx, model)| *idx == 0 && model == &default_model)
+            })
+            .cloned()
+            .unwrap_or_else(|| vec![(0, default_model.clone())]);
+
         Self {
             routes: resolved_routes,
+            route_chains: resolved_chains,
+            default_chain,
             providers,
             default_index: 0,
             default_model,
@@ -83,6 +128,47 @@ impl RouterProvider {
 
         Ok((self.default_index, model.to_string()))
     }
+
+    fn resolve_chain(&self, model: &str) -> anyhow::Result<Vec<(usize, String)>> {
+        if let Some(hint) = model.strip_prefix("hint:") {
+            if let Some(chain) = self
+                .route_chains
+                .get(hint)
+                .filter(|chain| !chain.is_empty())
+            {
+                return Ok(chain.clone());
+            }
+            return self.resolve(model).map(|route| vec![route]);
+        }
+
+        if model == self.default_model {
+            return Ok(self.default_chain.clone());
+        }
+
+        self.resolve(model).map(|route| vec![route])
+    }
+
+    fn push_failure(
+        failures: &mut Vec<String>,
+        provider_name: &str,
+        model: &str,
+        error: &anyhow::Error,
+    ) -> bool {
+        let class = classify_provider_error(error);
+        failures.push(format!(
+            "provider={provider_name} model={model} kind={} error={}",
+            class.kind.as_str(),
+            class.detail
+        ));
+        class.failover_candidate
+    }
+
+    fn failover_error_context(failures: &[String]) -> String {
+        format!(
+            "Router provider/model attempts failed. Attempts:\n{}",
+            failures.join("\n")
+        )
+    }
 }
 
 #[async_trait]
@@ -94,18 +180,54 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model)?;
+        let chain = self.resolve_chain(model)?;
+        let mut failures = Vec::new();
 
-        let (provider_name, provider) = &self.providers[provider_idx];
-        tracing::info!(
-            provider = provider_name.as_str(),
-            model = resolved_model.as_str(),
-            "Router dispatching request"
-        );
+        for (position, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+            tracing::info!(
+                provider = provider_name.as_str(),
+                model = resolved_model.as_str(),
+                route_position = position,
+                route_candidate_count = chain.len(),
+                "Router dispatching request"
+            );
 
-        provider
-            .chat_with_system(system_prompt, message, &resolved_model, temperature)
-            .await
+            match provider
+                .chat_with_system(system_prompt, message, resolved_model, temperature)
+                .await
+            {
+                Ok(response) => {
+                    if position > 0 {
+                        tracing::info!(
+                            provider = provider_name.as_str(),
+                            model = resolved_model.as_str(),
+                            failed_candidates = position,
+                            "Router recovered via candidate failover"
+                        );
+                    }
+                    return Ok(response);
+                }
+                Err(error) => {
+                    let failover = Self::push_failure(
+                        &mut failures,
+                        provider_name.as_str(),
+                        resolved_model,
+                        &error,
+                    );
+                    if !failover || position + 1 == chain.len() {
+                        return Err(error).context(Self::failover_error_context(&failures));
+                    }
+                    tracing::warn!(
+                        provider = provider_name.as_str(),
+                        model = resolved_model.as_str(),
+                        "Router candidate failed; trying next candidate"
+                    );
+                }
+            }
+        }
+
+        anyhow::bail!("{}", Self::failover_error_context(&failures))
     }
 
     async fn chat_with_history(
@@ -114,11 +236,36 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model)?;
-        let (_, provider) = &self.providers[provider_idx];
-        provider
-            .chat_with_history(messages, &resolved_model, temperature)
-            .await
+        let chain = self.resolve_chain(model)?;
+        let mut failures = Vec::new();
+
+        for (position, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+            match provider
+                .chat_with_history(messages, resolved_model, temperature)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let failover = Self::push_failure(
+                        &mut failures,
+                        provider_name.as_str(),
+                        resolved_model,
+                        &error,
+                    );
+                    if !failover || position + 1 == chain.len() {
+                        return Err(error).context(Self::failover_error_context(&failures));
+                    }
+                    tracing::warn!(
+                        provider = provider_name.as_str(),
+                        model = resolved_model.as_str(),
+                        "Router history candidate failed; trying next candidate"
+                    );
+                }
+            }
+        }
+
+        anyhow::bail!("{}", Self::failover_error_context(&failures))
     }
 
     async fn chat(
@@ -127,9 +274,40 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model)?;
-        let (_, provider) = &self.providers[provider_idx];
-        provider.chat(request, &resolved_model, temperature).await
+        let chain = self.resolve_chain(model)?;
+        let mut failures = Vec::new();
+
+        for (position, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+            let candidate_request = ChatRequest {
+                messages: request.messages,
+                tools: request.tools,
+            };
+            match provider
+                .chat(candidate_request, resolved_model, temperature)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let failover = Self::push_failure(
+                        &mut failures,
+                        provider_name.as_str(),
+                        resolved_model,
+                        &error,
+                    );
+                    if !failover || position + 1 == chain.len() {
+                        return Err(error).context(Self::failover_error_context(&failures));
+                    }
+                    tracing::warn!(
+                        provider = provider_name.as_str(),
+                        model = resolved_model.as_str(),
+                        "Router chat candidate failed; trying next candidate"
+                    );
+                }
+            }
+        }
+
+        anyhow::bail!("{}", Self::failover_error_context(&failures))
     }
 
     async fn chat_with_tools(
@@ -139,11 +317,36 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model)?;
-        let (_, provider) = &self.providers[provider_idx];
-        provider
-            .chat_with_tools(messages, tools, &resolved_model, temperature)
-            .await
+        let chain = self.resolve_chain(model)?;
+        let mut failures = Vec::new();
+
+        for (position, (provider_idx, resolved_model)) in chain.iter().enumerate() {
+            let (provider_name, provider) = &self.providers[*provider_idx];
+            match provider
+                .chat_with_tools(messages, tools, resolved_model, temperature)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let failover = Self::push_failure(
+                        &mut failures,
+                        provider_name.as_str(),
+                        resolved_model,
+                        &error,
+                    );
+                    if !failover || position + 1 == chain.len() {
+                        return Err(error).context(Self::failover_error_context(&failures));
+                    }
+                    tracing::warn!(
+                        provider = provider_name.as_str(),
+                        model = resolved_model.as_str(),
+                        "Router tool candidate failed; trying next candidate"
+                    );
+                }
+            }
+        }
+
+        anyhow::bail!("{}", Self::failover_error_context(&failures))
     }
 
     fn supports_native_tools(&self) -> bool {
@@ -197,6 +400,49 @@ mod tests {
 
         fn last_model(&self) -> String {
             self.last_model.lock().clone()
+        }
+    }
+
+    struct FailingProvider {
+        calls: Arc<AtomicUsize>,
+        error: &'static str,
+        last_model: parking_lot::Mutex<String>,
+    }
+
+    impl FailingProvider {
+        fn new(error: &'static str) -> Self {
+            Self {
+                calls: Arc::new(AtomicUsize::new(0)),
+                error,
+                last_model: parking_lot::Mutex::new(String::new()),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn last_model(&self) -> String {
+            self.last_model.lock().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for FailingProvider {
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_model.lock() = model.to_string();
+            anyhow::bail!("{}", self.error)
         }
     }
 
@@ -302,6 +548,25 @@ mod tests {
         ) -> anyhow::Result<ChatResponse> {
             self.as_ref()
                 .chat_with_tools(messages, tools, model, temperature)
+                .await
+        }
+    }
+
+    #[async_trait]
+    impl Provider for Arc<FailingProvider> {
+        fn supports_native_tools(&self) -> bool {
+            self.as_ref().supports_native_tools()
+        }
+
+        async fn chat_with_system(
+            &self,
+            system_prompt: Option<&str>,
+            message: &str,
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<String> {
+            self.as_ref()
+                .chat_with_system(system_prompt, message, model, temperature)
                 .await
         }
     }
@@ -467,6 +732,92 @@ mod tests {
         assert_eq!(result.text.as_deref(), Some("tool-response"));
         assert_eq!(mock.call_count(), 1);
         assert_eq!(mock.last_model(), "model");
+    }
+
+    #[tokio::test]
+    async fn default_model_fails_over_across_reasoning_chain_on_quota() {
+        let primary = Arc::new(FailingProvider::new(
+            "API error (429 Too Many Requests): insufficient quota",
+        ));
+        let secondary = Arc::new(MockProvider::new("secondary-response"));
+        let router = RouterProvider::new_with_chains(
+            vec![
+                (
+                    "primary".to_string(),
+                    Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "secondary".to_string(),
+                    Box::new(Arc::clone(&secondary)) as Box<dyn Provider>,
+                ),
+            ],
+            vec![],
+            vec![(
+                "reasoning".to_string(),
+                vec![
+                    Route {
+                        provider_name: "primary".to_string(),
+                        model: "gpt-5.4".to_string(),
+                    },
+                    Route {
+                        provider_name: "secondary".to_string(),
+                        model: "claude-sonnet-4-6".to_string(),
+                    },
+                ],
+            )],
+            "gpt-5.4".to_string(),
+        );
+
+        let result = router.simple_chat("hello", "gpt-5.4", 0.5).await.unwrap();
+        assert_eq!(result, "secondary-response");
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(primary.last_model(), "gpt-5.4");
+        assert_eq!(secondary.call_count(), 1);
+        assert_eq!(secondary.last_model(), "claude-sonnet-4-6");
+    }
+
+    #[tokio::test]
+    async fn default_model_does_not_fail_over_on_context_window_error() {
+        let primary = Arc::new(FailingProvider::new(
+            "input exceeds the context window of this model",
+        ));
+        let secondary = Arc::new(MockProvider::new("secondary-response"));
+        let router = RouterProvider::new_with_chains(
+            vec![
+                (
+                    "primary".to_string(),
+                    Box::new(Arc::clone(&primary)) as Box<dyn Provider>,
+                ),
+                (
+                    "secondary".to_string(),
+                    Box::new(Arc::clone(&secondary)) as Box<dyn Provider>,
+                ),
+            ],
+            vec![],
+            vec![(
+                "reasoning".to_string(),
+                vec![
+                    Route {
+                        provider_name: "primary".to_string(),
+                        model: "gpt-5.4".to_string(),
+                    },
+                    Route {
+                        provider_name: "secondary".to_string(),
+                        model: "claude-sonnet-4-6".to_string(),
+                    },
+                ],
+            )],
+            "gpt-5.4".to_string(),
+        );
+
+        let error = router
+            .simple_chat("hello", "gpt-5.4", 0.5)
+            .await
+            .expect_err("context-window overflow should stay on the selected model");
+        assert!(error.to_string().contains("context window"));
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(primary.last_model(), "gpt-5.4");
+        assert_eq!(secondary.call_count(), 0);
     }
 
     #[tokio::test]

@@ -40,7 +40,7 @@ Candidates are ordered. The runtime records the candidate order and selected can
 
 ### Two Primary Models: ChatGPT And Anthropic
 
-Use this when you want ChatGPT as the normal default, but Anthropic available as an explicit reasoning candidate for operator-selected routes and future policy routing. Keep the current default as the first `reasoning` candidate if you want normal turns to stay on that model.
+Use this when you want ChatGPT as the normal default, but Anthropic available as the next main-reasoning candidate if the primary provider is unavailable. Keep the current default provider/model as the first `reasoning` candidate; normal turns stay on that model, and failover only moves on typed provider failures such as quota, payment, hard rate limit, timeout, connection, or server errors.
 
 ```toml
 default_provider = "openai-codex"
@@ -127,7 +127,7 @@ api_key_env = "OPENROUTER_API_KEY"
 
 ### Ordered Candidates For One Lane
 
-Use multiple candidates when several models can serve the same lane and you want a clear operator-reviewed order. Selection validates lane capabilities before provider calls; it is not a hidden return to the primary model.
+Use multiple candidates when several models can serve the same lane and you want a clear operator-reviewed order. Selection validates lane capabilities before provider calls; it is not a hidden return to an unrelated model.
 
 ```toml
 default_provider = "openrouter"
@@ -148,7 +148,9 @@ model = "qwen/qwen3.6-plus"
 api_key_env = "OPENROUTER_API_KEY"
 ```
 
-For `compaction`, `embedding`, and `speech_synthesis`, ordered candidates are also the failover order. Payment errors, exhausted quota, hard rate limits, connection failures, timeouts, and server failures can move to the next candidate; context-window overflow does not, because another provider should not hide a prompt budget bug.
+For `reasoning`, `compaction`, `embedding`, and `speech_synthesis`, ordered candidates are also the failover order. Payment errors, exhausted quota, hard rate limits, connection failures, timeouts, and server failures can move to the next candidate; context-window overflow does not, because another provider should not hide a prompt budget bug.
+
+The primary conversation path uses the `reasoning` failover chain only when the first candidate is exactly the configured `default_provider` and `default_model`. That keeps accidental lane edits from silently changing the normal chat model.
 
 Embedding failover only uses candidates with the same vector dimensions as the selected candidate. This prevents one outage from silently mixing incompatible vector sizes in the same memory store.
 

@@ -532,12 +532,18 @@ pub async fn run(
             std::sync::Arc<dyn synapse_providers::traits::Provider>,
             String,
         )>;
+        let router_routes =
+            synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+                &config,
+            );
         let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-            match synapse_providers::create_resilient_provider_with_options(
+            match synapse_providers::create_routed_provider_with_options(
                 default_provider.as_str(),
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
+                &router_routes,
+                &consolidation_model,
                 &synapse_providers::provider_runtime_options_from_config(&config),
             ) {
                 Ok(p) => {
