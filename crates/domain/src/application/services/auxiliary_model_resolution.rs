@@ -138,11 +138,18 @@ pub struct AuxiliaryModelCandidateDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuxiliaryModelSupportedCandidate {
+    pub index: usize,
+    pub candidate: ResolvedModelCandidate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuxiliaryModelResolution {
     pub lane: AuxiliaryLane,
     pub selected_index: usize,
     pub selected: ResolvedModelCandidate,
     pub candidates: Vec<AuxiliaryModelCandidateDecision>,
+    pub supported_candidates: Vec<AuxiliaryModelSupportedCandidate>,
 }
 
 pub fn resolve_auxiliary_model(
@@ -157,10 +164,17 @@ pub fn resolve_auxiliary_model(
 
     let mut decisions = Vec::with_capacity(candidates.len());
     let mut selected: Option<(usize, ResolvedModelCandidate)> = None;
+    let mut supported_candidates = Vec::new();
 
     for (index, candidate) in candidates.iter().enumerate() {
         let skip_reason = auxiliary_candidate_skip_reason(lane, candidate);
         let can_select = skip_reason.is_none() && selected.is_none();
+        if skip_reason.is_none() {
+            supported_candidates.push(AuxiliaryModelSupportedCandidate {
+                index,
+                candidate: candidate.clone(),
+            });
+        }
         decisions.push(candidate_decision(
             index,
             candidate,
@@ -178,6 +192,7 @@ pub fn resolve_auxiliary_model(
             selected_index,
             selected,
             candidates: decisions,
+            supported_candidates,
         });
     }
 
@@ -290,6 +305,8 @@ mod tests {
         assert_eq!(resolved.selected.model, "summary-model");
         assert_eq!(resolved.selected_index, 0);
         assert_eq!(resolved.candidates.len(), 1);
+        assert_eq!(resolved.supported_candidates.len(), 1);
+        assert_eq!(resolved.supported_candidates[0].index, 0);
         assert!(resolved.candidates[0].selected);
     }
 
@@ -375,6 +392,8 @@ mod tests {
         );
         assert!(!resolved.candidates[0].selected);
         assert!(resolved.candidates[1].selected);
+        assert_eq!(resolved.supported_candidates.len(), 1);
+        assert_eq!(resolved.supported_candidates[0].index, 1);
     }
 
     #[test]

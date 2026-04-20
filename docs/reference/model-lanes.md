@@ -148,6 +148,10 @@ model = "qwen/qwen3.6-plus"
 api_key_env = "OPENROUTER_API_KEY"
 ```
 
+For `compaction`, `embedding`, and `speech_synthesis`, ordered candidates are also the failover order. Payment errors, exhausted quota, hard rate limits, connection failures, timeouts, and server failures can move to the next candidate; context-window overflow does not, because another provider should not hide a prompt budget bug.
+
+Embedding failover only uses candidates with the same vector dimensions as the selected candidate. This prevents one outage from silently mixing incompatible vector sizes in the same memory store.
+
 ### Voice Notes: STT And TTS
 
 Use this when Matrix, Telegram, or WhatsApp voice messages should be transcribed, or when a voice-capable channel should speak replies back. The lane picks the speech provider and model; `[transcription]` and `[tts]` only keep voice-specific knobs such as language, voice id, format, duration, and text length.
@@ -278,7 +282,7 @@ Runtime logs also emit compact lane decisions:
 - `Inbound session summary auxiliary lane selected`
 - `Agent history compaction auxiliary lane ready`
 - `Speech transcription lane selected`
-- `Speech synthesis lane selected`
+- `Speech synthesis lane candidates resolved`
 
 ## Removed Config
 

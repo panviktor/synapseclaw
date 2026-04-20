@@ -129,6 +129,251 @@ fn is_non_retryable_rate_limit(err: &anyhow::Error) -> bool {
     false
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderErrorKind {
+    ContextWindow,
+    PaymentRequired,
+    QuotaExceeded,
+    RateLimited,
+    Authentication,
+    Permission,
+    UnsupportedCapability,
+    Timeout,
+    Connection,
+    Server,
+    Client,
+    Unknown,
+}
+
+impl ProviderErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderErrorKind::ContextWindow => "context_window",
+            ProviderErrorKind::PaymentRequired => "payment_required",
+            ProviderErrorKind::QuotaExceeded => "quota_exceeded",
+            ProviderErrorKind::RateLimited => "rate_limited",
+            ProviderErrorKind::Authentication => "authentication",
+            ProviderErrorKind::Permission => "permission",
+            ProviderErrorKind::UnsupportedCapability => "unsupported_capability",
+            ProviderErrorKind::Timeout => "timeout",
+            ProviderErrorKind::Connection => "connection",
+            ProviderErrorKind::Server => "server",
+            ProviderErrorKind::Client => "client",
+            ProviderErrorKind::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderErrorClassification {
+    pub kind: ProviderErrorKind,
+    pub status_code: Option<u16>,
+    pub failover_candidate: bool,
+    pub retryable_same_candidate: bool,
+    pub detail: String,
+}
+
+pub fn classify_provider_error(err: &anyhow::Error) -> ProviderErrorClassification {
+    let detail = compact_error_detail(err);
+    if is_context_window_exceeded(err) {
+        return ProviderErrorClassification {
+            kind: ProviderErrorKind::ContextWindow,
+            status_code: None,
+            failover_candidate: false,
+            retryable_same_candidate: false,
+            detail,
+        };
+    }
+
+    if let Some(reqwest_err) = err.downcast_ref::<reqwest::Error>() {
+        if reqwest_err.is_timeout() {
+            return ProviderErrorClassification {
+                kind: ProviderErrorKind::Timeout,
+                status_code: reqwest_err.status().map(|status| status.as_u16()),
+                failover_candidate: true,
+                retryable_same_candidate: true,
+                detail,
+            };
+        }
+        if reqwest_err.is_connect() {
+            return ProviderErrorClassification {
+                kind: ProviderErrorKind::Connection,
+                status_code: reqwest_err.status().map(|status| status.as_u16()),
+                failover_candidate: true,
+                retryable_same_candidate: true,
+                detail,
+            };
+        }
+        if let Some(status) = reqwest_err.status() {
+            return classify_provider_status_error(status.as_u16(), &detail);
+        }
+    }
+
+    classify_provider_message_error(&detail)
+}
+
+fn classify_provider_status_error(status_code: u16, detail: &str) -> ProviderErrorClassification {
+    let lower = detail.to_ascii_lowercase();
+    let kind = match status_code {
+        401 => ProviderErrorKind::Authentication,
+        402 => ProviderErrorKind::PaymentRequired,
+        403 => ProviderErrorKind::Permission,
+        408 => ProviderErrorKind::Timeout,
+        429 if provider_message_has_quota_or_billing_hint(&lower) => {
+            ProviderErrorKind::QuotaExceeded
+        }
+        429 => ProviderErrorKind::RateLimited,
+        400..500 if provider_message_has_unsupported_hint(&lower) => {
+            ProviderErrorKind::UnsupportedCapability
+        }
+        400..500 => ProviderErrorKind::Client,
+        500..600 => ProviderErrorKind::Server,
+        _ => ProviderErrorKind::Unknown,
+    };
+    provider_classification_from_kind(kind, Some(status_code), detail)
+}
+
+fn classify_provider_message_error(detail: &str) -> ProviderErrorClassification {
+    let lower = detail.to_ascii_lowercase();
+    let status_code = extract_http_status_code(&lower);
+    if let Some(status_code) = status_code {
+        return classify_provider_status_error(status_code, detail);
+    }
+
+    let kind = if provider_message_has_quota_or_billing_hint(&lower) {
+        ProviderErrorKind::QuotaExceeded
+    } else if provider_message_has_auth_hint(&lower) {
+        ProviderErrorKind::Authentication
+    } else if provider_message_has_permission_hint(&lower) {
+        ProviderErrorKind::Permission
+    } else if provider_message_has_unsupported_hint(&lower) {
+        ProviderErrorKind::UnsupportedCapability
+    } else if provider_message_has_timeout_hint(&lower) {
+        ProviderErrorKind::Timeout
+    } else if provider_message_has_connection_hint(&lower) {
+        ProviderErrorKind::Connection
+    } else {
+        ProviderErrorKind::Unknown
+    };
+    provider_classification_from_kind(kind, None, detail)
+}
+
+fn provider_classification_from_kind(
+    kind: ProviderErrorKind,
+    status_code: Option<u16>,
+    detail: &str,
+) -> ProviderErrorClassification {
+    let failover_candidate = matches!(
+        kind,
+        ProviderErrorKind::PaymentRequired
+            | ProviderErrorKind::QuotaExceeded
+            | ProviderErrorKind::RateLimited
+            | ProviderErrorKind::Authentication
+            | ProviderErrorKind::Permission
+            | ProviderErrorKind::UnsupportedCapability
+            | ProviderErrorKind::Timeout
+            | ProviderErrorKind::Connection
+            | ProviderErrorKind::Server
+    );
+    let retryable_same_candidate = matches!(
+        kind,
+        ProviderErrorKind::RateLimited
+            | ProviderErrorKind::Timeout
+            | ProviderErrorKind::Connection
+            | ProviderErrorKind::Server
+    );
+
+    ProviderErrorClassification {
+        kind,
+        status_code,
+        failover_candidate,
+        retryable_same_candidate,
+        detail: detail.to_string(),
+    }
+}
+
+fn extract_http_status_code(lower: &str) -> Option<u16> {
+    lower
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter_map(|token| token.parse::<u16>().ok())
+        .find(|code| (400..600).contains(code))
+}
+
+fn provider_message_has_quota_or_billing_hint(lower: &str) -> bool {
+    [
+        "billing",
+        "balance",
+        "credit",
+        "credits",
+        "quota",
+        "insufficient",
+        "plan does not include",
+        "doesn't include",
+        "not include",
+        "package not active",
+        "purchase package",
+        "payment required",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
+fn provider_message_has_auth_hint(lower: &str) -> bool {
+    [
+        "invalid api key",
+        "incorrect api key",
+        "missing api key",
+        "api key not set",
+        "authentication failed",
+        "auth failed",
+        "unauthorized",
+        "invalid token",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
+fn provider_message_has_permission_hint(lower: &str) -> bool {
+    ["forbidden", "permission denied", "access denied"]
+        .iter()
+        .any(|hint| lower.contains(hint))
+}
+
+fn provider_message_has_unsupported_hint(lower: &str) -> bool {
+    [
+        "unsupported",
+        "not supported",
+        "model not found",
+        "model does not exist",
+        "unknown model",
+        "invalid model",
+        "does not support",
+        "not available for your plan",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
+fn provider_message_has_timeout_hint(lower: &str) -> bool {
+    ["timeout", "timed out", "deadline exceeded"]
+        .iter()
+        .any(|hint| lower.contains(hint))
+}
+
+fn provider_message_has_connection_hint(lower: &str) -> bool {
+    [
+        "connection refused",
+        "connection reset",
+        "connection closed",
+        "dns",
+        "network",
+        "tls",
+        "temporary failure",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
+}
+
 /// Try to extract a Retry-After value (in milliseconds) from an error message.
 /// Looks for patterns like `Retry-After: 5` or `retry_after: 2.5` in the error string.
 fn parse_retry_after_ms(err: &anyhow::Error) -> Option<u64> {
@@ -1353,6 +1598,42 @@ mod tests {
         assert!(class.context_window_exceeded);
         assert!(class.non_retryable);
         assert_eq!(class.failure_reason, "non_retryable");
+    }
+
+    #[test]
+    fn public_provider_error_classifier_marks_quota_as_failover_candidate() {
+        let err = anyhow::anyhow!(
+            "{}",
+            r#"API error (429 Too Many Requests): {"code":1113,"message":"insufficient balance"}"#
+        );
+
+        let class = classify_provider_error(&err);
+
+        assert_eq!(class.kind, ProviderErrorKind::QuotaExceeded);
+        assert_eq!(class.status_code, Some(429));
+        assert!(class.failover_candidate);
+        assert!(!class.retryable_same_candidate);
+    }
+
+    #[test]
+    fn public_provider_error_classifier_marks_connection_as_failover_candidate() {
+        let err = anyhow::anyhow!("provider request failed: connection reset by peer");
+
+        let class = classify_provider_error(&err);
+
+        assert_eq!(class.kind, ProviderErrorKind::Connection);
+        assert!(class.failover_candidate);
+        assert!(class.retryable_same_candidate);
+    }
+
+    #[test]
+    fn public_provider_error_classifier_keeps_context_window_out_of_failover() {
+        let err = anyhow::anyhow!("Request exceeds the context window of this model");
+
+        let class = classify_provider_error(&err);
+
+        assert_eq!(class.kind, ProviderErrorKind::ContextWindow);
+        assert!(!class.failover_candidate);
     }
 
     #[test]

@@ -2277,7 +2277,6 @@ mod tests {
                 }),
             }]),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
         };
 
         let parsed = OpenAiCompatibleProvider::parse_native_response(message).unwrap();
@@ -2966,7 +2965,6 @@ mod tests {
         let message = ResponseMessage {
             content: Some("hello".to_string()),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             tool_calls: None,
         };
 

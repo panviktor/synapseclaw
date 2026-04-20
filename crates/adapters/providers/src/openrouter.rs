@@ -1425,7 +1425,6 @@ mod tests {
             images: Vec::new(),
             generated_media: Default::default(),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
                 id: Some("call_789".into()),
@@ -1456,7 +1455,6 @@ mod tests {
             }],
             generated_media: Default::default(),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: None,
         };
@@ -1490,7 +1488,6 @@ mod tests {
                 ..Default::default()
             },
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: None,
         };
@@ -1667,7 +1664,6 @@ mod tests {
             images: Vec::new(),
             generated_media: Default::default(),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             reasoning: Some("normalized thinking".into()),
             tool_calls: None,
         };
@@ -1687,7 +1683,6 @@ mod tests {
             images: Vec::new(),
             generated_media: Default::default(),
             reasoning_content: None,
-            media_artifacts: Vec::new(),
             reasoning: None,
             tool_calls: None,
         };

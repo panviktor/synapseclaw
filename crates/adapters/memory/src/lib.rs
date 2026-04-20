@@ -141,48 +141,105 @@ fn create_embedding_provider(config: &Config) -> Arc<dyn embeddings::EmbeddingPr
         }
     };
 
-    let candidate = &resolution.selected;
-    let Some(dimensions) = candidate.dimensions.filter(|value| *value > 0) else {
+    let selected = &resolution.selected;
+    let Some(selected_dimensions) = selected.dimensions.filter(|value| *value > 0) else {
         tracing::warn!(
-            provider = candidate.provider.as_str(),
-            model = candidate.model.as_str(),
+            provider = selected.provider.as_str(),
+            model = selected.model.as_str(),
             auxiliary_lane = resolution.lane.as_str(),
             selected_candidate_index = resolution.selected_index,
             "Embedding lane candidate has no positive dimensions value; vector embeddings disabled"
         );
         return Arc::new(embeddings::NoopEmbedding);
     };
-    let api_key = candidate
-        .api_key_env
-        .as_deref()
-        .and_then(|env| std::env::var(env).ok())
-        .or_else(|| candidate.api_key.clone());
-    let inner = embeddings::create_embedding_provider(
-        candidate.provider.as_str(),
-        api_key.as_deref(),
-        candidate.model.as_str(),
-        dimensions,
-    );
 
-    if inner.dimensions() == 0 {
-        tracing::warn!(
-            provider = candidate.provider.as_str(),
-            model = candidate.model.as_str(),
+    let mut providers = Vec::new();
+    for supported in &resolution.supported_candidates {
+        let candidate = &supported.candidate;
+        let Some(dimensions) = candidate.dimensions.filter(|value| *value > 0) else {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate has no positive dimensions value; skipping candidate"
+            );
+            continue;
+        };
+
+        if dimensions != selected_dimensions {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                dimensions,
+                selected_dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate dimensions differ from selected candidate; skipping failover candidate"
+            );
+            continue;
+        }
+
+        let api_key = candidate
+            .api_key_env
+            .as_deref()
+            .and_then(|env| std::env::var(env).ok())
+            .or_else(|| candidate.api_key.clone());
+        let inner = embeddings::create_embedding_provider(
+            candidate.provider.as_str(),
+            api_key.as_deref(),
+            candidate.model.as_str(),
             dimensions,
-            auxiliary_lane = resolution.lane.as_str(),
-            selected_candidate_index = resolution.selected_index,
-            "Embedding lane candidate could not initialize; vector embeddings disabled"
         );
-        return Arc::new(embeddings::NoopEmbedding);
+
+        if inner.dimensions() == 0 {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate could not initialize; skipping candidate"
+            );
+            continue;
+        }
+
+        providers.push(embeddings::EmbeddingFailoverCandidate {
+            index: supported.index,
+            provider: candidate.provider.as_str().to_string(),
+            model: candidate.model.as_str().to_string(),
+            inner,
+        });
     }
 
+    let provider_count = providers.len();
+    let inner: Box<dyn embeddings::EmbeddingProvider> = match provider_count {
+        0 => {
+            tracing::warn!(
+                provider = selected.provider.as_str(),
+                model = selected.model.as_str(),
+                dimensions = selected_dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                selected_candidate_index = resolution.selected_index,
+                "Embedding lane has no initialized candidates; vector embeddings disabled"
+            );
+            return Arc::new(embeddings::NoopEmbedding);
+        }
+        1 => providers.pop().expect("provider").inner,
+        _ => Box::new(
+            embeddings::FailoverEmbeddingProvider::new(providers)
+                .expect("embedding failover candidates"),
+        ),
+    };
+
     tracing::info!(
-        provider = candidate.provider.as_str(),
-        model = candidate.model.as_str(),
-        dimensions,
+        provider = selected.provider.as_str(),
+        model = selected.model.as_str(),
+        dimensions = selected_dimensions,
         auxiliary_lane = resolution.lane.as_str(),
         selected_candidate_index = resolution.selected_index,
         candidate_count = resolution.candidates.len(),
+        initialized_candidate_count = provider_count,
         "Embedding auxiliary lane selected"
     );
     Arc::new(embeddings::CachedEmbeddingProvider::new(

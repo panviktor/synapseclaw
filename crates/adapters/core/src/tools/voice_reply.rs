@@ -21,6 +21,7 @@ use synapse_domain::ports::tool::{
     ToolRuntimeRole,
 };
 use synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort;
+use synapse_providers::reliable::classify_provider_error;
 
 #[async_trait]
 trait VoiceSynthesizer: Send + Sync {
@@ -207,9 +208,11 @@ impl VoiceReplyTool {
         Ok(Some(canonical_voice))
     }
 
-    fn resolved_tts_config(&self) -> Result<TtsConfig, String> {
-        match crate::channels::lane_selected_tts_config(&self.root_config) {
-            Ok(config) if config.enabled => Ok(config),
+    fn resolved_tts_configs(&self) -> Result<Vec<TtsConfig>, String> {
+        match crate::channels::lane_selected_tts_candidate_configs(&self.root_config) {
+            Ok(configs) if configs.iter().any(|(_, config)| config.enabled) => {
+                Ok(configs.into_iter().map(|(_, config)| config).collect())
+            }
             Ok(_) => Err("Voice synthesis is not enabled".to_string()),
             Err(error) => Err(format!("Voice synthesis is not ready: {error}")),
         }
@@ -363,38 +366,79 @@ impl Tool for VoiceReplyTool {
             )));
         }
 
-        let mut tts_config = match self.resolved_tts_config() {
-            Ok(config) => config,
+        let tts_configs = match self.resolved_tts_configs() {
+            Ok(configs) => configs,
             Err(output) => return Ok(Self::failure_execution(output)),
         };
-        if args.get("voice").is_some() {
-            let (provider, voices) = match self.synthesizer.supported_voices(&tts_config) {
-                Ok(voices) => voices,
-                Err(error) => {
-                    return Ok(Self::failure_execution(format!(
-                        "Voice catalog is not available: {error}"
-                    )))
+
+        let mut failures = Vec::new();
+        let mut synthesized: Option<(TtsConfig, Vec<u8>)> = None;
+        for (index, mut tts_config) in tts_configs.into_iter().enumerate() {
+            if args.get("voice").is_some() {
+                let (provider, voices) = match self.synthesizer.supported_voices(&tts_config) {
+                    Ok(voices) => voices,
+                    Err(error) => {
+                        failures.push(format!(
+                            "candidate={index} provider={} voice_catalog_error={error}",
+                            tts_config.default_provider
+                        ));
+                        continue;
+                    }
+                };
+                match Self::resolve_voice_override(&args, &provider, &voices) {
+                    Ok(Some(voice)) => tts_config.default_voice = voice,
+                    Ok(None) => {}
+                    Err(output) => {
+                        failures.push(format!(
+                            "candidate={index} provider={} unsupported_voice={output}",
+                            tts_config.default_provider
+                        ));
+                        continue;
+                    }
                 }
-            };
-            match Self::resolve_voice_override(&args, &provider, &voices) {
-                Ok(Some(voice)) => tts_config.default_voice = voice,
-                Ok(None) => {}
-                Err(output) => return Ok(Self::failure_execution(output)),
+            }
+
+            match self.synthesizer.synthesize(&content, &tts_config).await {
+                Ok(bytes) if !bytes.is_empty() => {
+                    synthesized = Some((tts_config, bytes));
+                    break;
+                }
+                Ok(_) => {
+                    failures.push(format!(
+                        "candidate={index} provider={} error=empty_audio",
+                        tts_config.default_provider
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    let class = classify_provider_error(&error);
+                    failures.push(format!(
+                        "candidate={index} provider={} kind={} error={}",
+                        tts_config.default_provider,
+                        class.kind.as_str(),
+                        class.detail
+                    ));
+                    tracing::warn!(
+                        %error,
+                        failure_kind = class.kind.as_str(),
+                        failover_candidate = class.failover_candidate,
+                        provider = tts_config.default_provider.as_str(),
+                        "Voice synthesis candidate failed"
+                    );
+                    if class.failover_candidate {
+                        continue;
+                    }
+                    return Ok(Self::failure_execution(format!(
+                        "Voice synthesis failed: {error}"
+                    )));
+                }
             }
         }
-
-        let audio = match self.synthesizer.synthesize(&content, &tts_config).await {
-            Ok(bytes) if !bytes.is_empty() => bytes,
-            Ok(_) => {
-                return Ok(Self::failure_execution(
-                    "Voice synthesis returned empty audio",
-                ))
-            }
-            Err(error) => {
-                return Ok(Self::failure_execution(format!(
-                    "Voice synthesis failed: {error}"
-                )))
-            }
+        let Some((tts_config, audio)) = synthesized else {
+            return Ok(Self::failure_execution(format!(
+                "Voice synthesis failed for all candidates: {}",
+                failures.join(" | ")
+            )));
         };
 
         let extension = Self::output_extension(&tts_config);
@@ -553,6 +597,33 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct FailoverSynthesizer {
+        attempts: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl VoiceSynthesizer for FailoverSynthesizer {
+        async fn synthesize(&self, _text: &str, config: &TtsConfig) -> Result<Vec<u8>> {
+            self.attempts.lock().push(format!(
+                "{}:{}",
+                config.default_provider, config.default_voice
+            ));
+            if config.default_provider == "groq" {
+                anyhow::bail!("Groq TTS API error (429): insufficient quota");
+            }
+            Ok(vec![9, 8, 7])
+        }
+
+        fn supported_voices(&self, config: &TtsConfig) -> Result<(String, Vec<String>)> {
+            Ok((
+                config.default_provider.clone(),
+                synapse_channels::TtsManager::new(config)?
+                    .supported_voices(&config.default_provider)?,
+            ))
+        }
+    }
+
+    #[derive(Default)]
     struct TestConversationContext {
         current: Mutex<Option<CurrentConversationContext>>,
     }
@@ -647,6 +718,39 @@ mod tests {
         config
     }
 
+    fn enabled_groq_then_openai_config(workspace: &Path) -> Config {
+        let mut config = Config {
+            workspace_dir: workspace.to_path_buf(),
+            ..Config::default()
+        };
+        config.tts.enabled = true;
+        config.tts.default_voice = "hannah".into();
+        config
+            .model_lanes
+            .push(synapse_domain::config::schema::ModelLaneConfig {
+                lane: synapse_domain::config::schema::CapabilityLane::SpeechSynthesis,
+                candidates: vec![
+                    synapse_domain::config::schema::ModelLaneCandidateConfig {
+                        provider: "groq".into(),
+                        model: "canopylabs/orpheus-v1-english".into(),
+                        api_key: Some("test-groq-key".into()),
+                        api_key_env: None,
+                        dimensions: None,
+                        profile: Default::default(),
+                    },
+                    synapse_domain::config::schema::ModelLaneCandidateConfig {
+                        provider: "openai".into(),
+                        model: "tts-1".into(),
+                        api_key: Some("test-openai-key".into()),
+                        api_key_env: None,
+                        dimensions: None,
+                        profile: Default::default(),
+                    },
+                ],
+            });
+        config
+    }
+
     #[tokio::test]
     async fn voice_reply_sends_voice_artifact_to_current_conversation() {
         let tmp = tempfile::tempdir().unwrap();
@@ -730,6 +834,44 @@ mod tests {
 
         assert!(execution.result.success);
         assert_eq!(registry.delivered.lock()[0].target_channel, "telegram");
+    }
+
+    #[tokio::test]
+    async fn voice_reply_fails_over_to_next_tts_candidate_on_quota_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let context = Arc::new(TestConversationContext::default());
+        context.set(CurrentConversationContext {
+            source_adapter: "matrix".into(),
+            conversation_id: "conv".into(),
+            reply_ref: "!room:example".into(),
+            thread_ref: None,
+            actor_id: "@user:example".into(),
+        });
+        let registry = Arc::new(TestRegistry::default());
+        let synth = Arc::new(FailoverSynthesizer::default());
+        let tool = VoiceReplyTool::new_with_synthesizer(
+            Arc::new(enabled_groq_then_openai_config(tmp.path())),
+            tmp.path().join("workspace"),
+            context,
+            Arc::new(InMemoryTurnDefaultsContext::default()),
+            registry.clone(),
+            synth.clone(),
+        );
+
+        let execution = tool
+            .execute_with_facts(json!({
+                "content": "hello",
+                "target": "current_conversation"
+            }))
+            .await
+            .unwrap();
+
+        assert!(execution.result.success);
+        assert_eq!(registry.delivered.lock().len(), 1);
+        assert_eq!(
+            synth.attempts.lock().as_slice(),
+            ["groq:hannah", "openai:alloy"]
+        );
     }
 
     #[tokio::test]

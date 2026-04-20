@@ -1,7 +1,9 @@
+use anyhow::Context;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use synapse_domain::domain::memory::EmbeddingProfile;
+use synapse_providers::reliable::classify_provider_error;
 
 /// Trait for embedding providers — convert text to vectors
 #[async_trait]
@@ -328,6 +330,91 @@ impl EmbeddingProvider for CachedEmbeddingProvider {
     }
 }
 
+pub struct EmbeddingFailoverCandidate {
+    pub index: usize,
+    pub provider: String,
+    pub model: String,
+    pub inner: Box<dyn EmbeddingProvider>,
+}
+
+pub struct FailoverEmbeddingProvider {
+    candidates: Vec<EmbeddingFailoverCandidate>,
+}
+
+impl FailoverEmbeddingProvider {
+    pub fn new(candidates: Vec<EmbeddingFailoverCandidate>) -> Option<Self> {
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(Self { candidates })
+    }
+
+    fn primary(&self) -> &dyn EmbeddingProvider {
+        self.candidates[0].inner.as_ref()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for FailoverEmbeddingProvider {
+    fn name(&self) -> &str {
+        self.primary().name()
+    }
+
+    fn dimensions(&self) -> usize {
+        self.primary().dimensions()
+    }
+
+    fn profile(&self) -> EmbeddingProfile {
+        self.primary().profile()
+    }
+
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut attempts = Vec::new();
+        for (position, candidate) in self.candidates.iter().enumerate() {
+            match candidate.inner.embed(texts).await {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    let class = classify_provider_error(&error);
+                    attempts.push(format!(
+                        "#{} {}:{} {}",
+                        candidate.index,
+                        candidate.provider,
+                        candidate.model,
+                        class.kind.as_str()
+                    ));
+
+                    if !class.failover_candidate || position + 1 == self.candidates.len() {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "embedding provider failed without failover; attempts: {}",
+                                attempts.join(" | ")
+                            )
+                        });
+                    }
+
+                    tracing::warn!(
+                        provider = candidate.provider.as_str(),
+                        model = candidate.model.as_str(),
+                        candidate_index = candidate.index,
+                        failure_kind = class.kind.as_str(),
+                        error_detail = class.detail.as_str(),
+                        "Embedding candidate failed; trying next candidate"
+                    );
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "embedding provider failover exhausted; attempts: {}",
+            attempts.join(" | ")
+        )
+    }
+}
+
 pub fn resolve_embedding_profile(
     provider: &str,
     model: &str,
@@ -427,6 +514,10 @@ pub fn create_embedding_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc as StdArc,
+    };
     use synapse_domain::domain::memory::EmbeddingDistanceMetric;
 
     fn test_profile(provider_family: &str, model: &str, dims: usize) -> EmbeddingProfile {
@@ -444,6 +535,65 @@ mod tests {
             recommended_chunk_chars: 900,
             recommended_top_k: 8,
         }
+    }
+
+    enum TestEmbeddingResponse {
+        Ok(Vec<Vec<f32>>),
+        Err(&'static str),
+    }
+
+    struct TestEmbeddingProvider {
+        name: String,
+        dims: usize,
+        profile: EmbeddingProfile,
+        responses: Mutex<Vec<TestEmbeddingResponse>>,
+        calls: StdArc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl EmbeddingProvider for TestEmbeddingProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn dimensions(&self) -> usize {
+            self.dims
+        }
+
+        fn profile(&self) -> EmbeddingProfile {
+            self.profile.clone()
+        }
+
+        async fn embed(&self, _texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let response = self.responses.lock().remove(0);
+            match response {
+                TestEmbeddingResponse::Ok(value) => Ok(value),
+                TestEmbeddingResponse::Err(message) => anyhow::bail!(message),
+            }
+        }
+    }
+
+    fn test_failover_candidate(
+        index: usize,
+        provider: &str,
+        model: &str,
+        responses: Vec<TestEmbeddingResponse>,
+    ) -> (EmbeddingFailoverCandidate, StdArc<AtomicUsize>) {
+        let calls = StdArc::new(AtomicUsize::new(0));
+        let candidate = EmbeddingFailoverCandidate {
+            index,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            inner: Box::new(TestEmbeddingProvider {
+                name: provider.to_string(),
+                dims: 3,
+                profile: test_profile(provider, model, 3),
+                responses: Mutex::new(responses),
+                calls: calls.clone(),
+            }),
+        };
+        (candidate, calls)
     }
 
     #[test]
@@ -496,6 +646,56 @@ mod tests {
         let result = cached.embed(&["hello"]).await.unwrap();
         // NoopEmbedding returns empty vec for any input
         assert!(result.is_empty() || result[0].is_empty());
+    }
+
+    #[tokio::test]
+    async fn failover_embedding_provider_tries_next_on_quota_error() {
+        let (primary, primary_calls) = test_failover_candidate(
+            0,
+            "openrouter",
+            "qwen/qwen3-embedding-8b",
+            vec![TestEmbeddingResponse::Err(
+                "Embedding API error 429 Too Many Requests: insufficient quota",
+            )],
+        );
+        let (secondary, secondary_calls) = test_failover_candidate(
+            1,
+            "openai",
+            "text-embedding-3-small",
+            vec![TestEmbeddingResponse::Ok(vec![vec![0.1, 0.2, 0.3]])],
+        );
+        let provider = FailoverEmbeddingProvider::new(vec![primary, secondary]).unwrap();
+
+        let result = provider.embed(&["hello"]).await.unwrap();
+
+        assert_eq!(result, vec![vec![0.1, 0.2, 0.3]]);
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(secondary_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn failover_embedding_provider_does_not_mask_context_window_error() {
+        let (primary, primary_calls) = test_failover_candidate(
+            0,
+            "openrouter",
+            "qwen/qwen3-embedding-8b",
+            vec![TestEmbeddingResponse::Err(
+                "input exceeds the context window of this model",
+            )],
+        );
+        let (secondary, secondary_calls) = test_failover_candidate(
+            1,
+            "openai",
+            "text-embedding-3-small",
+            vec![TestEmbeddingResponse::Ok(vec![vec![0.1, 0.2, 0.3]])],
+        );
+        let provider = FailoverEmbeddingProvider::new(vec![primary, secondary]).unwrap();
+
+        let result = provider.embed(&["hello"]).await;
+
+        assert!(result.is_err());
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(secondary_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

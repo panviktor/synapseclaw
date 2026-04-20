@@ -219,30 +219,42 @@ fn apply_lane_default_tts_voice(
 ) {
     let schema_default = TtsConfig::default();
     let current_voice = tts.default_voice.trim();
+    let catalog = synapse_domain::config::model_catalog::tts_voice_catalog(provider, model);
+    let catalog_rejects_current_voice = catalog
+        .as_ref()
+        .is_some_and(|catalog| !catalog.voices.is_empty())
+        && !catalog.as_ref().is_some_and(|catalog| {
+            catalog
+                .voices
+                .iter()
+                .any(|voice| voice.eq_ignore_ascii_case(current_voice))
+        })
+        && !configured_voice
+            .as_deref()
+            .is_some_and(|voice| voice.eq_ignore_ascii_case(current_voice));
     let needs_lane_voice = current_voice.is_empty()
         || (current_voice.eq_ignore_ascii_case(&schema_default.default_voice)
-            && !provider.eq_ignore_ascii_case(&schema_default.default_provider));
+            && !provider.eq_ignore_ascii_case(&schema_default.default_provider))
+        || catalog_rejects_current_voice;
 
     if !needs_lane_voice {
         return;
     }
 
-    if let Some(voice) = catalog_default_tts_voice(provider, model).or(configured_voice) {
+    if let Some(voice) = catalog
+        .and_then(|catalog| catalog.voices.into_iter().next())
+        .or(configured_voice)
+    {
         tts.default_voice = voice;
     }
 }
 
-pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
-    let mut tts = config.tts.clone();
-    if !tts.enabled {
-        return Ok(tts);
-    }
-
-    let resolution = resolve_auxiliary_model(config, AuxiliaryLane::SpeechSynthesis, None)
-        .with_context(|| "TTS is enabled but `speech_synthesis` model lane is not ready")?;
-    let selected = &resolution.selected;
+fn apply_speech_synthesis_candidate_config(
+    base_tts: &TtsConfig,
+    selected: &ResolvedModelCandidate,
+) -> Result<TtsConfig> {
+    let mut tts = base_tts.clone();
     let provider = selected.provider.as_str();
-
     tts.default_provider = if provider == "minimax-cn" {
         "minimax".to_string()
     } else {
@@ -385,13 +397,47 @@ pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
         }
     }
 
-    tracing::info!(
-        provider = selected.provider.as_str(),
-        model = selected.model.as_str(),
-        candidate_index = resolution.selected_index,
-        "Speech synthesis lane selected"
-    );
     Ok(tts)
+}
+
+pub(crate) fn lane_selected_tts_candidate_configs(
+    config: &Config,
+) -> Result<Vec<(usize, TtsConfig)>> {
+    let tts = config.tts.clone();
+    if !tts.enabled {
+        return Ok(vec![(0, tts)]);
+    }
+
+    let resolution = resolve_auxiliary_model(config, AuxiliaryLane::SpeechSynthesis, None)
+        .with_context(|| "TTS is enabled but `speech_synthesis` model lane is not ready")?;
+    let mut configs = Vec::new();
+    for supported in &resolution.supported_candidates {
+        configs.push((
+            supported.index,
+            apply_speech_synthesis_candidate_config(&tts, &supported.candidate)?,
+        ));
+    }
+    if configs.is_empty() {
+        anyhow::bail!("speech_synthesis lane has no supported TTS candidates");
+    }
+
+    tracing::info!(
+        provider = resolution.selected.provider.as_str(),
+        model = resolution.selected.model.as_str(),
+        candidate_index = resolution.selected_index,
+        supported_candidate_count = configs.len(),
+        "Speech synthesis lane candidates resolved"
+    );
+    Ok(configs)
+}
+
+pub(crate) fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
+    let configs = lane_selected_tts_candidate_configs(config)?;
+    configs
+        .into_iter()
+        .next()
+        .map(|(_, config)| config)
+        .context("speech_synthesis lane did not produce a TTS config")
 }
 
 pub(crate) fn build_channel_session_backend(

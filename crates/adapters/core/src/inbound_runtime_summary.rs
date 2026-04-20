@@ -94,43 +94,17 @@ pub(crate) async fn summarize_session_if_needed(
         summary_provider = summary_route.selected.provider.as_str(),
         compaction_model = summary_route.selected.model.as_str(),
         selected_candidate_index = summary_route.selected_index,
+        supported_candidate_count = summary_route.supported_candidates.len(),
         candidate_count = summary_route.candidates.len(),
         "Inbound session summary auxiliary lane selected"
     );
 
-    let provider = {
-        let provider_name = summary_route.selected.provider.as_str();
-        let api_key = summary_route
-            .selected
-            .api_key_env
-            .as_deref()
-            .and_then(|env| std::env::var(env).ok())
-            .or_else(|| summary_route.selected.api_key.clone());
-        match synapse_providers::create_provider_with_options(
-            provider_name,
-            api_key.as_deref(),
-            input.provider_runtime_options,
-        ) {
-            Ok(provider) => Arc::from(provider),
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    transport = input.transport_label,
-                    summary_provider = provider_name,
-                    compaction_model = summary_route.selected.model.as_str(),
-                    "Summary provider init failed"
-                );
-                return Err(error);
-            }
-        }
-    };
-
     let generator =
-        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-            provider,
-            summary_route.selected.model,
+        crate::memory_adapters::summary_generator_adapter::FailoverSummaryGenerator::from_auxiliary_resolution(
+            &summary_route,
+            input.provider_runtime_options,
             input.config.summary.temperature,
-        );
+        )?;
 
     conversation_service::generate_session_summary(
         input.store,

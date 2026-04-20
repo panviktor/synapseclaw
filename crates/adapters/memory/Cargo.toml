@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 synapse_domain = { path = "../../domain" }
+synapse_providers = { path = "../providers" }
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

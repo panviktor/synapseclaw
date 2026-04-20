@@ -1465,51 +1465,32 @@ impl Agent {
         };
         let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = match summary_route {
             None => None,
-            Some(summary_route) => {
-                let summary_provider_name = summary_route.selected.provider.as_str();
-                let api_key = summary_route
-                    .selected
-                    .api_key_env
-                    .as_deref()
-                    .and_then(|env| std::env::var(env).ok())
-                    .or_else(|| summary_route.selected.api_key.clone());
-                let provider_result: Result<Arc<dyn Provider>> =
-                    synapse_providers::create_provider_with_options(
-                        summary_provider_name,
-                        api_key.as_deref(),
-                        &provider_runtime_options,
-                    )
-                    .map(Arc::from);
-
-                match provider_result {
-                    Ok(provider) => {
-                        tracing::debug!(
-                            auxiliary_lane = summary_route.lane.as_str(),
-                            summary_provider = summary_provider_name,
-                            compaction_model = summary_route.selected.model.as_str(),
-                            selected_candidate_index = summary_route.selected_index,
-                            candidate_count = summary_route.candidates.len(),
-                            "Agent history compaction auxiliary lane ready"
-                        );
-                        Some(Arc::new(
-                        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-                            provider,
-                            summary_route.selected.model.clone(),
-                            config.summary.temperature,
-                        ),
-                    ))
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            %error,
-                            auxiliary_lane = summary_route.lane.as_str(),
-                            compaction_model = summary_route.selected.model.as_str(),
-                            "Failed to initialize agent history summary generator; live compaction disabled"
-                        );
-                        None
-                    }
+            Some(summary_route) => match crate::memory_adapters::summary_generator_adapter::FailoverSummaryGenerator::from_auxiliary_resolution(
+                &summary_route,
+                &provider_runtime_options,
+                config.summary.temperature,
+            ) {
+                Ok(generator) => {
+                    tracing::debug!(
+                        auxiliary_lane = summary_route.lane.as_str(),
+                        summary_provider = summary_route.selected.provider.as_str(),
+                        compaction_model = summary_route.selected.model.as_str(),
+                        selected_candidate_index = summary_route.selected_index,
+                        supported_candidate_count = summary_route.supported_candidates.len(),
+                        candidate_count = summary_route.candidates.len(),
+                        "Agent history compaction auxiliary lane ready"
+                    );
+                    Some(Arc::new(generator))
                 }
-            }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        auxiliary_lane = summary_route.lane.as_str(),
+                        "Failed to initialize agent history summary generator candidates; live compaction disabled"
+                    );
+                    None
+                }
+            },
         };
         let history_compaction_cache = runtime_ports
             .history_compaction_cache
