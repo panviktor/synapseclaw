@@ -108,6 +108,8 @@ pub fn lane_required_feature(lane: CapabilityLane) -> Option<ModelFeature> {
         | CapabilityLane::WebExtraction
         | CapabilityLane::ToolValidator => None,
         CapabilityLane::Embedding => Some(ModelFeature::Embedding),
+        CapabilityLane::SpeechTranscription => Some(ModelFeature::SpeechTranscription),
+        CapabilityLane::SpeechSynthesis => Some(ModelFeature::SpeechSynthesis),
         CapabilityLane::ImageGeneration => Some(ModelFeature::ImageGeneration),
         CapabilityLane::AudioGeneration => Some(ModelFeature::AudioGeneration),
         CapabilityLane::VideoGeneration => Some(ModelFeature::VideoGeneration),

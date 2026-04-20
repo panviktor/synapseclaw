@@ -192,7 +192,12 @@
         { "id": "gpt-5.4-mini", "label": "GPT-5.4 mini (faster, cheaper)" },
         { "id": "gpt-5.2", "label": "GPT-5.2 (previous-gen stable)" },
         { "id": "o3", "label": "o3 (deep reasoning)" },
-        { "id": "o4-mini", "label": "o4-mini (efficient reasoning)" }
+        { "id": "o4-mini", "label": "o4-mini (efficient reasoning)" },
+        { "id": "whisper-1", "label": "Whisper 1 (speech transcription)" },
+        { "id": "gpt-4o-mini-transcribe", "label": "GPT-4o mini Transcribe (speech transcription)" },
+        { "id": "gpt-4o-transcribe", "label": "GPT-4o Transcribe (speech transcription)" },
+        { "id": "tts-1", "label": "TTS 1 (speech synthesis)" },
+        { "id": "gpt-4o-mini-tts", "label": "GPT-4o mini TTS (speech synthesis)" }
       ]
     },
     {
@@ -222,7 +227,8 @@
       "curated_models": [
         { "id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (fast, recommended)" },
         { "id": "llama-4-maverick", "label": "Llama 4 Maverick (latest open)" },
-        { "id": "mistral-large-3", "label": "Mistral Large 3 (flagship)" }
+        { "id": "mistral-large-3", "label": "Mistral Large 3 (flagship)" },
+        { "id": "whisper-large-v3-turbo", "label": "Whisper Large V3 Turbo (speech transcription)" }
       ]
     },
     {
@@ -231,7 +237,9 @@
       "curated_models": [
         { "id": "mistral-large-3", "label": "Mistral Large 3 (latest flagship)" },
         { "id": "mistral-medium-3.1", "label": "Mistral Medium 3.1 (balanced)" },
-        { "id": "mistral-small-3.2", "label": "Mistral Small 3.2 (cost-efficient)" }
+        { "id": "mistral-small-3.2", "label": "Mistral Small 3.2 (cost-efficient)" },
+        { "id": "voxtral-mini-latest", "label": "Voxtral Mini Transcribe (speech transcription)" },
+        { "id": "voxtral-mini-tts-2603", "label": "Voxtral Mini TTS (speech synthesis)" }
       ]
     },
     {
@@ -250,7 +258,8 @@
       "curated_models": [
         { "id": "grok-4.20", "label": "Grok 4.20 (recommended)" },
         { "id": "grok-4.20-multi-agent", "label": "Grok 4.20 Multi-Agent" },
-        { "id": "grok-4", "label": "Grok 4 (max quality)" }
+        { "id": "grok-4", "label": "Grok 4 (max quality)" },
+        { "id": "tts", "label": "xAI TTS (speech synthesis)" }
       ]
     },
     {
@@ -354,6 +363,7 @@
         { "id": "MiniMax-M2.5", "label": "MiniMax M2.5 (latest flagship)" },
         { "id": "MiniMax-M2.1", "label": "MiniMax M2.1 (strong coding/reasoning)" },
         { "id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 High-Speed (fast)" },
+        { "id": "speech-2.8-hd", "label": "MiniMax Speech 2.8 HD (speech synthesis)" },
         { "id": "speech-2.5-hd-preview", "label": "MiniMax Speech 2.5 HD Preview (direct audio API)" },
         { "id": "MiniMax-Hailuo-2.3-Fast", "label": "MiniMax Hailuo 2.3 Fast (direct video API)" },
         { "id": "music-01", "label": "MiniMax Music 01 (direct music API)" }
@@ -613,6 +623,86 @@
         "prompt_caching",
         "server_continuation"
       ]
+    },
+    {
+      "provider": "openai",
+      "model": "whisper-1",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini-transcribe",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-transcribe",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "openai",
+      "model": "tts-1",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini-tts",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "groq",
+      "model": "whisper-large-v3-turbo",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "mistral",
+      "model": "voxtral-mini-latest",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "mistral",
+      "model": "voxtral-mini-tts-2603",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "deepgram",
+      "model": "nova-2",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "assemblyai",
+      "model": "default",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "google",
+      "model": "cloud-speech-to-text",
+      "features": ["speech_transcription"]
+    },
+    {
+      "provider": "elevenlabs",
+      "model": "eleven_monolingual_v1",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "google",
+      "model": "cloud-text-to-speech",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "edge",
+      "model": "edge-tts",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "minimax",
+      "model": "speech-2.8-hd",
+      "features": ["speech_synthesis"]
+    },
+    {
+      "provider": "xai",
+      "model": "tts",
+      "features": ["speech_synthesis"]
     },
     {
       "provider": "deepseek",

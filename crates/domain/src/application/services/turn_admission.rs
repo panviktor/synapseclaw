@@ -411,6 +411,8 @@ fn current_candidate_supports_lane(
         | CapabilityLane::WebExtraction
         | CapabilityLane::ToolValidator => true,
         CapabilityLane::Embedding
+        | CapabilityLane::SpeechTranscription
+        | CapabilityLane::SpeechSynthesis
         | CapabilityLane::ImageGeneration
         | CapabilityLane::AudioGeneration
         | CapabilityLane::VideoGeneration
@@ -449,6 +451,8 @@ fn lane_is_specialized(lane: CapabilityLane) -> bool {
     matches!(
         lane,
         CapabilityLane::Embedding
+            | CapabilityLane::SpeechTranscription
+            | CapabilityLane::SpeechSynthesis
             | CapabilityLane::ImageGeneration
             | CapabilityLane::AudioGeneration
             | CapabilityLane::VideoGeneration
@@ -489,6 +493,8 @@ fn current_candidate_explicitly_lacks_tool_support(
         current_lane,
         Some(
             CapabilityLane::Embedding
+                | CapabilityLane::SpeechTranscription
+                | CapabilityLane::SpeechSynthesis
                 | CapabilityLane::ImageGeneration
                 | CapabilityLane::AudioGeneration
                 | CapabilityLane::VideoGeneration

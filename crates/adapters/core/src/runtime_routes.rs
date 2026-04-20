@@ -1832,6 +1832,8 @@ fn model_feature_name(feature: &ModelFeature) -> &'static str {
         ModelFeature::AudioGeneration => "audio",
         ModelFeature::VideoGeneration => "video",
         ModelFeature::MusicGeneration => "music",
+        ModelFeature::SpeechTranscription => "speech_transcription",
+        ModelFeature::SpeechSynthesis => "speech_synthesis",
         ModelFeature::Embedding => "embedding",
         ModelFeature::MultimodalUnderstanding => "multimodal",
         ModelFeature::ServerContinuation => "continuation",

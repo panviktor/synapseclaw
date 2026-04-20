@@ -4253,8 +4253,8 @@ mod tests {
         }
 
         // 1. Load pre-recorded fixture (TTS-generated "hello", ~7 KB MP3)
-        let fixture_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.mp3");
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/hello.mp3");
         let audio_data = std::fs::read(&fixture_path)
             .unwrap_or_else(|e| panic!("Failed to read fixture {}: {e}", fixture_path.display()));
         assert!(
@@ -4266,6 +4266,7 @@ mod tests {
         // 2. Call transcribe_audio() — real Groq Whisper API
         let config = synapse_domain::config::schema::TranscriptionConfig {
             enabled: true,
+            api_key: std::env::var("GROQ_API_KEY").ok(),
             ..Default::default()
         };
         let transcript: String =

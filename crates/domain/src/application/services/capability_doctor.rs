@@ -804,6 +804,8 @@ fn model_feature_name(feature: &ModelFeature) -> String {
         ModelFeature::AudioGeneration => "audio_generation",
         ModelFeature::VideoGeneration => "video_generation",
         ModelFeature::MusicGeneration => "music_generation",
+        ModelFeature::SpeechTranscription => "speech_transcription",
+        ModelFeature::SpeechSynthesis => "speech_synthesis",
         ModelFeature::Embedding => "embedding",
         ModelFeature::MultimodalUnderstanding => "multimodal_understanding",
         ModelFeature::ServerContinuation => "server_continuation",

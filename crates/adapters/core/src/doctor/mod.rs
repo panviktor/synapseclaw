@@ -625,11 +625,13 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
 
 fn check_auxiliary_model_lanes(config: &Config, items: &mut Vec<DiagItem>) {
     const CORE_LANES: [AuxiliaryLane; 2] = [AuxiliaryLane::Compaction, AuxiliaryLane::Embedding];
-    const OPTIONAL_LANES: [AuxiliaryLane; 8] = [
+    const OPTIONAL_LANES: [AuxiliaryLane; 10] = [
         AuxiliaryLane::CheapReasoning,
         AuxiliaryLane::WebExtraction,
         AuxiliaryLane::ToolValidator,
         AuxiliaryLane::MultimodalUnderstanding,
+        AuxiliaryLane::SpeechTranscription,
+        AuxiliaryLane::SpeechSynthesis,
         AuxiliaryLane::ImageGeneration,
         AuxiliaryLane::AudioGeneration,
         AuxiliaryLane::VideoGeneration,

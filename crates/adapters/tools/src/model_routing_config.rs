@@ -247,6 +247,8 @@ impl ModelRoutingConfigTool {
             CapabilityLane::Embedding => "embedding",
             CapabilityLane::WebExtraction => "web_extraction",
             CapabilityLane::ToolValidator => "tool_validator",
+            CapabilityLane::SpeechTranscription => "speech_transcription",
+            CapabilityLane::SpeechSynthesis => "speech_synthesis",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",
@@ -1014,7 +1016,7 @@ impl Tool for ModelRoutingConfigTool {
                 },
                 "lane": {
                     "type": "string",
-                    "description": "Capability lane for upsert_scenario/remove_scenario (reasoning, cheap_reasoning, embedding, multimodal_understanding, image_generation, audio_generation, video_generation, music_generation)"
+                    "description": "Capability lane for upsert_scenario/remove_scenario (reasoning, cheap_reasoning, compaction, embedding, speech_transcription, speech_synthesis, multimodal_understanding, image_generation, audio_generation, video_generation, music_generation)"
                 },
                 "preset": {
                     "type": ["string", "null"],

@@ -312,7 +312,7 @@ pub struct Config {
     #[serde(default)]
     pub hooks: HooksConfig,
 
-    /// Voice transcription configuration (Whisper API via Groq).
+    /// Voice transcription configuration for channel audio input.
     #[serde(default)]
     pub transcription: TranscriptionConfig,
 
@@ -599,25 +599,24 @@ fn default_deepgram_stt_model() -> String {
     "nova-2".into()
 }
 
+fn default_mistral_stt_model() -> String {
+    "voxtral-mini-latest".into()
+}
+
 fn default_google_stt_language_code() -> String {
     "en-US".into()
 }
 
 /// Voice transcription configuration with multi-provider support.
-///
-/// The top-level `api_url`, `model`, and `api_key` fields remain for backward
-/// compatibility with existing Groq-based configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TranscriptionConfig {
     /// Enable voice transcription for channels that support it.
     #[serde(default)]
     pub enabled: bool,
-    /// Default STT provider: "groq", "openai", "deepgram", "assemblyai", "google".
+    /// Default STT provider selected by the `speech_transcription` lane.
     #[serde(default = "default_transcription_provider")]
     pub default_provider: String,
-    /// API key used for transcription requests (Groq provider).
-    ///
-    /// If unset, runtime falls back to `GROQ_API_KEY` for backward compatibility.
+    /// API key used for Groq transcription requests after lane resolution.
     #[serde(default)]
     pub api_key: Option<String>,
     /// Whisper API endpoint URL (Groq provider).
@@ -649,6 +648,9 @@ pub struct TranscriptionConfig {
     /// Google Cloud Speech-to-Text provider configuration.
     #[serde(default)]
     pub google: Option<GoogleSttConfig>,
+    /// Mistral Voxtral transcription provider configuration.
+    #[serde(default)]
+    pub mistral: Option<MistralSttConfig>,
 }
 
 impl Default for TranscriptionConfig {
@@ -666,6 +668,7 @@ impl Default for TranscriptionConfig {
             deepgram: None,
             assemblyai: None,
             google: None,
+            mistral: None,
         }
     }
 }
@@ -823,13 +826,73 @@ fn default_edge_tts_binary_path() -> String {
     "edge-tts".into()
 }
 
+fn default_minimax_tts_model() -> String {
+    "speech-2.8-hd".into()
+}
+
+fn default_minimax_tts_base_url() -> String {
+    "https://api.minimax.io/v1/t2a_v2".into()
+}
+
+fn default_minimax_tts_voice_id() -> String {
+    "English_Graceful_Lady".into()
+}
+
+fn default_minimax_tts_speed() -> f64 {
+    1.0
+}
+
+fn default_minimax_tts_volume() -> f64 {
+    1.0
+}
+
+fn default_minimax_tts_pitch() -> i32 {
+    0
+}
+
+fn default_minimax_tts_sample_rate() -> u32 {
+    32_000
+}
+
+fn default_minimax_tts_bitrate() -> u32 {
+    128_000
+}
+
+fn default_mistral_tts_model() -> String {
+    "voxtral-mini-tts-2603".into()
+}
+
+fn default_mistral_tts_voice_id() -> String {
+    "c69964a6-ab8b-4f8a-9465-ec0925096ec8".into()
+}
+
+fn default_mistral_tts_response_format() -> String {
+    "mp3".into()
+}
+
+fn default_xai_tts_language() -> String {
+    "auto".into()
+}
+
+fn default_xai_tts_codec() -> String {
+    "mp3".into()
+}
+
+fn default_xai_tts_sample_rate() -> u32 {
+    24_000
+}
+
+fn default_xai_tts_bitrate() -> u32 {
+    128_000
+}
+
 /// Text-to-Speech configuration (`[tts]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TtsConfig {
     /// Enable TTS synthesis.
     #[serde(default)]
     pub enabled: bool,
-    /// Default TTS provider (`"openai"`, `"elevenlabs"`, `"google"`, `"edge"`).
+    /// Default TTS provider selected by the `speech_synthesis` lane.
     #[serde(default = "default_tts_provider")]
     pub default_provider: String,
     /// Default voice ID passed to the selected provider.
@@ -853,6 +916,15 @@ pub struct TtsConfig {
     /// Edge TTS provider configuration (`[tts.edge]`).
     #[serde(default)]
     pub edge: Option<EdgeTtsConfig>,
+    /// MiniMax TTS provider configuration (`[tts.minimax]`).
+    #[serde(default)]
+    pub minimax: Option<MiniMaxTtsConfig>,
+    /// Mistral Voxtral TTS provider configuration (`[tts.mistral]`).
+    #[serde(default)]
+    pub mistral: Option<MistralTtsConfig>,
+    /// xAI TTS provider configuration (`[tts.xai]`).
+    #[serde(default)]
+    pub xai: Option<XaiTtsConfig>,
 }
 
 impl Default for TtsConfig {
@@ -867,6 +939,9 @@ impl Default for TtsConfig {
             elevenlabs: None,
             google: None,
             edge: None,
+            minimax: None,
+            mistral: None,
+            xai: None,
         }
     }
 }
@@ -919,6 +994,75 @@ pub struct EdgeTtsConfig {
     /// Path to the `edge-tts` binary (default `"edge-tts"`).
     #[serde(default = "default_edge_tts_binary_path")]
     pub binary_path: String,
+}
+
+/// MiniMax TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MiniMaxTtsConfig {
+    /// MiniMax API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// MiniMax T2A endpoint.
+    #[serde(default = "default_minimax_tts_base_url")]
+    pub base_url: String,
+    /// MiniMax speech model.
+    #[serde(default = "default_minimax_tts_model")]
+    pub model: String,
+    /// MiniMax voice id.
+    #[serde(default = "default_minimax_tts_voice_id")]
+    pub voice_id: String,
+    /// Playback speed.
+    #[serde(default = "default_minimax_tts_speed")]
+    pub speed: f64,
+    /// Output volume.
+    #[serde(default = "default_minimax_tts_volume")]
+    pub volume: f64,
+    /// Pitch shift.
+    #[serde(default = "default_minimax_tts_pitch")]
+    pub pitch: i32,
+    /// Output sample rate.
+    #[serde(default = "default_minimax_tts_sample_rate")]
+    pub sample_rate: u32,
+    /// Output bitrate.
+    #[serde(default = "default_minimax_tts_bitrate")]
+    pub bitrate: u32,
+}
+
+/// Mistral Voxtral TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MistralTtsConfig {
+    /// Mistral API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Voxtral TTS model.
+    #[serde(default = "default_mistral_tts_model")]
+    pub model: String,
+    /// Saved Mistral voice id.
+    #[serde(default = "default_mistral_tts_voice_id")]
+    pub voice_id: String,
+    /// Response audio format.
+    #[serde(default = "default_mistral_tts_response_format")]
+    pub response_format: String,
+}
+
+/// xAI TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct XaiTtsConfig {
+    /// xAI API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Output language or `auto`.
+    #[serde(default = "default_xai_tts_language")]
+    pub language: String,
+    /// Output codec.
+    #[serde(default = "default_xai_tts_codec")]
+    pub codec: String,
+    /// Output sample rate.
+    #[serde(default = "default_xai_tts_sample_rate")]
+    pub sample_rate: u32,
+    /// MP3 bitrate.
+    #[serde(default = "default_xai_tts_bitrate")]
+    pub bitrate: u32,
 }
 
 /// Determines when a `ToolFilterGroup` is active.
@@ -1005,6 +1149,17 @@ pub struct GoogleSttConfig {
     /// BCP-47 language code (default: "en-US").
     #[serde(default = "default_google_stt_language_code")]
     pub language_code: String,
+}
+
+/// Mistral Voxtral STT provider configuration (`[transcription.mistral]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MistralSttConfig {
+    /// Mistral API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Voxtral transcription model.
+    #[serde(default = "default_mistral_stt_model")]
+    pub model: String,
 }
 
 /// Agent orchestration configuration (`[agent]` section).
@@ -4175,6 +4330,8 @@ pub enum CapabilityLane {
     Embedding,
     WebExtraction,
     ToolValidator,
+    SpeechTranscription,
+    SpeechSynthesis,
     ImageGeneration,
     AudioGeneration,
     VideoGeneration,
@@ -4183,13 +4340,15 @@ pub enum CapabilityLane {
 }
 
 impl CapabilityLane {
-    pub const ALL: [CapabilityLane; 11] = [
+    pub const ALL: [CapabilityLane; 13] = [
         CapabilityLane::Reasoning,
         CapabilityLane::CheapReasoning,
         CapabilityLane::Compaction,
         CapabilityLane::Embedding,
         CapabilityLane::WebExtraction,
         CapabilityLane::ToolValidator,
+        CapabilityLane::SpeechTranscription,
+        CapabilityLane::SpeechSynthesis,
         CapabilityLane::ImageGeneration,
         CapabilityLane::AudioGeneration,
         CapabilityLane::VideoGeneration,
@@ -4205,6 +4364,8 @@ impl CapabilityLane {
             CapabilityLane::Embedding => "embedding",
             CapabilityLane::WebExtraction => "web_extraction",
             CapabilityLane::ToolValidator => "tool_validator",
+            CapabilityLane::SpeechTranscription => "speech_transcription",
+            CapabilityLane::SpeechSynthesis => "speech_synthesis",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",
@@ -4236,6 +4397,8 @@ pub enum ModelFeature {
     AudioGeneration,
     VideoGeneration,
     MusicGeneration,
+    SpeechTranscription,
+    SpeechSynthesis,
     Embedding,
     MultimodalUnderstanding,
     ServerContinuation,

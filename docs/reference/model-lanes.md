@@ -1,10 +1,10 @@
 # Model Lanes Reference
 
-Model lanes route non-primary model work without changing the main chat model. The same `[[model_lanes]]` mechanism is used for compaction, embeddings, cheap reasoning, web extraction, tool validation, multimodal understanding, and media generation.
+Model lanes route non-primary model work without changing the main chat model. The same `[[model_lanes]]` mechanism is used for compaction, embeddings, cheap reasoning, web extraction, tool validation, multimodal understanding, speech transcription, speech synthesis, and media generation.
 
 ## Why Lanes Exist
 
-The primary model should stay focused on the user turn. Auxiliary work often needs different tradeoffs: compaction should be cheap and reliable, embeddings need vector dimensions, image or audio generation need capability-specific models, and tool validators should be isolated from normal chat routing.
+The primary model should stay focused on the user turn. Auxiliary work often needs different tradeoffs: compaction should be cheap and reliable, embeddings need vector dimensions, voice input/output uses direct speech APIs, image or audio generation needs capability-specific models, and tool validators should be isolated from normal chat routing.
 
 Older keys such as `summary_model`, `[summary].provider`, `embedding_routes`, and `[memory].embedding_*` are not supported. Configure auxiliary models through `[[model_lanes]]` only.
 
@@ -148,6 +148,56 @@ model = "qwen/qwen3.6-plus"
 api_key_env = "OPENROUTER_API_KEY"
 ```
 
+### Voice Notes: STT And TTS
+
+Use this when Matrix, Telegram, or WhatsApp voice messages should be transcribed, or when a voice-capable channel should speak replies back. The lane picks the speech provider and model; `[transcription]` and `[tts]` only keep voice-specific knobs such as language, voice id, format, duration, and text length.
+
+```toml
+[transcription]
+enabled = true
+max_duration_secs = 120
+
+[[model_lanes]]
+lane = "speech_transcription"
+
+[[model_lanes.candidates]]
+provider = "groq"
+model = "whisper-large-v3-turbo"
+api_key_env = "GROQ_API_KEY"
+
+[tts]
+enabled = true
+default_voice = "eve"
+default_format = "mp3"
+max_text_length = 4096
+
+[[model_lanes]]
+lane = "speech_synthesis"
+
+[[model_lanes.candidates]]
+provider = "xai"
+model = "tts"
+api_key_env = "XAI_API_KEY"
+```
+
+For provider-specific voice defaults, keep small blocks under `[tts.<provider>]`. For example, MiniMax keeps voice tuning under `[tts.minimax]`, while the model and key are selected through `speech_synthesis`.
+
+```toml
+[tts.minimax]
+voice_id = "English_Graceful_Lady"
+speed = 1.0
+volume = 1.0
+pitch = 0
+
+[[model_lanes]]
+lane = "speech_synthesis"
+
+[[model_lanes.candidates]]
+provider = "minimax"
+model = "speech-2.8-hd"
+api_key_env = "MINIMAX_API_KEY"
+```
+
 ## Secrets On Linux
 
 On Linux with the systemd user service, keep provider keys in a local environment file such as `~/.config/systemd/user/synapseclaw.env`. Reference those keys from config with `api_key_env`; do not put raw API keys in tracked repository files.
@@ -156,6 +206,10 @@ On Linux with the systemd user service, keep provider keys in a local environmen
 OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
 OPENROUTER_API_KEY=...
+GROQ_API_KEY=...
+MISTRAL_API_KEY=...
+MINIMAX_API_KEY=...
+XAI_API_KEY=...
 ```
 
 After changing the environment file, restart the user service so systemd reloads the variables.
@@ -168,6 +222,8 @@ After changing the environment file, restart the user service so systemd reloads
 - `embedding`
 - `web_extraction`
 - `tool_validator`
+- `speech_transcription`
+- `speech_synthesis`
 - `multimodal_understanding`
 - `image_generation`
 - `audio_generation`
@@ -201,9 +257,11 @@ Use explicit lanes for production fleets. That makes compaction, embedding, and 
 
 ## Voice I/O
 
-The `audio_generation` lane is for model-generated audio turns, not the current channel voice stack. Voice transcription and TTS still use their dedicated `[transcription]` and `[tts]` provider configs because they call direct speech APIs with provider-specific request shapes, voices, formats, and language hints.
+The `speech_transcription` lane selects the STT provider/model for channel voice notes. Supported direct adapters include Groq Whisper, OpenAI Whisper/transcribe models, Deepgram, AssemblyAI, Google STT, and Mistral Voxtral Transcribe.
 
-Do not configure WhatsApp, Telegram, or Matrix voice transcription by setting `audio_generation`. Use `audio_generation` for models that produce audio as an agent output, and keep speech-to-text or text-to-speech provider keys in the voice configs until the voice stack is moved onto a typed lane contract.
+The `speech_synthesis` lane selects the TTS provider/model for spoken replies. Supported direct adapters include OpenAI TTS, ElevenLabs, Google Cloud TTS, Edge TTS, MiniMax Speech, Mistral Voxtral TTS, and xAI TTS.
+
+The `audio_generation` lane is different: it is for model-generated audio as an agent output, not for channel voice-note transcription or reply playback. Live voice calls, Discord voice channels, LiveKit/WebRTC, and video calls require a streaming channel/runtime layer on top of these lanes; they are not enabled just by selecting a TTS model.
 
 ## Operator Checks
 
@@ -220,6 +278,8 @@ Runtime logs also emit compact lane decisions:
 - `Embedding auxiliary lane selected`
 - `Inbound session summary auxiliary lane selected`
 - `Agent history compaction auxiliary lane ready`
+- `Speech transcription lane selected`
+- `Speech synthesis lane selected`
 
 ## Removed Config
 

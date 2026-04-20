@@ -669,7 +669,7 @@ fn hydrate_candidate_api_key(candidate: &mut ModelLaneCandidateConfig, api_key: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::CapabilityLane;
+    use crate::config::schema::{CapabilityLane, ModelFeature};
 
     #[test]
     fn bundled_catalog_exposes_known_presets() {
@@ -722,6 +722,33 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
+    }
+
+    #[test]
+    fn bundled_catalog_exposes_speech_profiles() {
+        let whisper = model_profile("groq", "whisper-large-v3-turbo")
+            .expect("groq whisper profile should exist");
+        assert!(whisper
+            .features
+            .contains(&ModelFeature::SpeechTranscription));
+
+        let tts = model_profile("openai", "tts-1").expect("openai tts profile should exist");
+        assert!(tts.features.contains(&ModelFeature::SpeechSynthesis));
+
+        let mistral_stt = model_profile("mistral", "voxtral-mini-latest")
+            .expect("mistral voxtral stt profile should exist");
+        assert!(mistral_stt
+            .features
+            .contains(&ModelFeature::SpeechTranscription));
+
+        let minimax_tts =
+            model_profile("minimax", "speech-2.8-hd").expect("minimax speech profile should exist");
+        assert!(minimax_tts
+            .features
+            .contains(&ModelFeature::SpeechSynthesis));
+
+        let xai_tts = model_profile("xai", "tts").expect("xai tts profile should exist");
+        assert!(xai_tts.features.contains(&ModelFeature::SpeechSynthesis));
     }
 
     #[test]

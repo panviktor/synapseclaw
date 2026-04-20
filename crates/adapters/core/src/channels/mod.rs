@@ -46,7 +46,15 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use synapse_domain::config::schema::Config;
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane,
+};
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelCandidate;
+use synapse_domain::config::schema::{
+    AssemblyAiSttConfig, Config, DeepgramSttConfig, EdgeTtsConfig, ElevenLabsTtsConfig,
+    GoogleSttConfig, GoogleTtsConfig, MiniMaxTtsConfig, MistralSttConfig, MistralTtsConfig,
+    OpenAiSttConfig, OpenAiTtsConfig, TranscriptionConfig, TtsConfig, XaiTtsConfig,
+};
 use synapse_memory::UnifiedMemoryPort;
 use synapse_observability::{self, Observer};
 use synapse_providers::{self, ChatMessage, Provider};
@@ -87,6 +95,263 @@ type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 /// Phase 4.0: RouteSelection from synapse_domain replaces the old ChannelRouteSelection.
 type ChannelRouteSelection = synapse_domain::ports::route_selection::RouteSelection;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
+
+fn lane_api_key(candidate: &ResolvedModelCandidate, purpose: &str) -> Result<Option<String>> {
+    if let Some(key) = candidate
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(Some(key.to_string()));
+    }
+    if let Some(env_name) = candidate
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let value = std::env::var(env_name)
+            .with_context(|| format!("{purpose} lane key env `{env_name}` is not set"))?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("{purpose} lane key env `{env_name}` is empty");
+        }
+        return Ok(Some(trimmed.to_string()));
+    }
+    Ok(None)
+}
+
+fn required_lane_api_key(candidate: &ResolvedModelCandidate, purpose: &str) -> Result<String> {
+    lane_api_key(candidate, purpose)?.with_context(|| {
+        format!(
+            "{purpose} lane candidate {}/{} must set api_key_env or api_key",
+            candidate.provider, candidate.model
+        )
+    })
+}
+
+fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionConfig> {
+    let mut transcription = config.transcription.clone();
+    if !transcription.enabled {
+        return Ok(transcription);
+    }
+
+    let resolution = resolve_auxiliary_model(config, AuxiliaryLane::SpeechTranscription, None)
+        .with_context(|| {
+            "voice transcription is enabled but `speech_transcription` model lane is not ready"
+        })?;
+    let selected = &resolution.selected;
+    let provider = selected.provider.as_str();
+
+    transcription.default_provider = provider.to_string();
+    match provider {
+        "groq" => {
+            transcription.model = selected.model.clone();
+            transcription.api_key = Some(required_lane_api_key(selected, "speech_transcription")?);
+        }
+        "openai" => {
+            transcription.api_key = None;
+            transcription.openai = Some(OpenAiSttConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
+                model: selected.model.clone(),
+            });
+        }
+        "deepgram" => {
+            transcription.api_key = None;
+            transcription.deepgram = Some(DeepgramSttConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
+                model: selected.model.clone(),
+            });
+        }
+        "assemblyai" => {
+            transcription.api_key = None;
+            transcription.assemblyai = Some(AssemblyAiSttConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
+            });
+        }
+        "google" => {
+            transcription.api_key = None;
+            let language_code = transcription
+                .google
+                .as_ref()
+                .map(|cfg| cfg.language_code.clone())
+                .unwrap_or_else(|| "en-US".to_string());
+            transcription.google = Some(GoogleSttConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
+                language_code,
+            });
+        }
+        "mistral" => {
+            transcription.api_key = None;
+            transcription.mistral = Some(MistralSttConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
+                model: selected.model.clone(),
+            });
+        }
+        other => {
+            anyhow::bail!(
+                "speech_transcription lane selected unsupported channel STT provider `{other}`"
+            );
+        }
+    }
+
+    tracing::info!(
+        provider = selected.provider.as_str(),
+        model = selected.model.as_str(),
+        candidate_index = resolution.selected_index,
+        "Speech transcription lane selected"
+    );
+    Ok(transcription)
+}
+
+fn lane_selected_tts_config(config: &Config) -> Result<TtsConfig> {
+    let mut tts = config.tts.clone();
+    if !tts.enabled {
+        return Ok(tts);
+    }
+
+    let resolution = resolve_auxiliary_model(config, AuxiliaryLane::SpeechSynthesis, None)
+        .with_context(|| "TTS is enabled but `speech_synthesis` model lane is not ready")?;
+    let selected = &resolution.selected;
+    let provider = selected.provider.as_str();
+
+    tts.default_provider = if provider == "minimax-cn" {
+        "minimax".to_string()
+    } else {
+        provider.to_string()
+    };
+    match provider {
+        "openai" => {
+            let speed = tts.openai.as_ref().map(|cfg| cfg.speed).unwrap_or(1.0);
+            tts.openai = Some(OpenAiTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                model: selected.model.clone(),
+                speed,
+            });
+        }
+        "elevenlabs" => {
+            let existing = tts.elevenlabs.clone();
+            tts.elevenlabs = Some(ElevenLabsTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                model_id: selected.model.clone(),
+                stability: existing.as_ref().map(|cfg| cfg.stability).unwrap_or(0.5),
+                similarity_boost: existing
+                    .as_ref()
+                    .map(|cfg| cfg.similarity_boost)
+                    .unwrap_or(0.5),
+            });
+        }
+        "google" => {
+            let language_code = tts
+                .google
+                .as_ref()
+                .map(|cfg| cfg.language_code.clone())
+                .unwrap_or_else(|| "en-US".to_string());
+            tts.google = Some(GoogleTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                language_code,
+            });
+        }
+        "edge" => {
+            let binary_path = tts
+                .edge
+                .as_ref()
+                .map(|cfg| cfg.binary_path.clone())
+                .unwrap_or_else(|| "edge-tts".to_string());
+            tts.edge = Some(EdgeTtsConfig { binary_path });
+            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
+                tts.default_voice = "en-US-AriaNeural".to_string();
+            }
+        }
+        "minimax" | "minimax-cn" => {
+            let existing = tts.minimax.clone();
+            let voice_id = existing
+                .as_ref()
+                .map(|cfg| cfg.voice_id.clone())
+                .unwrap_or_else(|| "English_Graceful_Lady".to_string());
+            let base_url = existing
+                .as_ref()
+                .map(|cfg| cfg.base_url.clone())
+                .unwrap_or_else(|| {
+                    if provider == "minimax-cn" {
+                        "https://api.minimaxi.com/v1/t2a_v2".to_string()
+                    } else {
+                        "https://api.minimax.io/v1/t2a_v2".to_string()
+                    }
+                });
+            tts.minimax = Some(MiniMaxTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                base_url,
+                model: selected.model.clone(),
+                voice_id: voice_id.clone(),
+                speed: existing.as_ref().map(|cfg| cfg.speed).unwrap_or(1.0),
+                volume: existing.as_ref().map(|cfg| cfg.volume).unwrap_or(1.0),
+                pitch: existing.as_ref().map(|cfg| cfg.pitch).unwrap_or(0),
+                sample_rate: existing
+                    .as_ref()
+                    .map(|cfg| cfg.sample_rate)
+                    .unwrap_or(32_000),
+                bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
+            });
+            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
+                tts.default_voice = voice_id;
+            }
+        }
+        "mistral" => {
+            let existing = tts.mistral.clone();
+            let voice_id = existing
+                .as_ref()
+                .map(|cfg| cfg.voice_id.clone())
+                .unwrap_or_else(|| "c69964a6-ab8b-4f8a-9465-ec0925096ec8".to_string());
+            tts.mistral = Some(MistralTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                model: selected.model.clone(),
+                voice_id: voice_id.clone(),
+                response_format: existing
+                    .as_ref()
+                    .map(|cfg| cfg.response_format.clone())
+                    .unwrap_or_else(|| tts.default_format.clone()),
+            });
+            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
+                tts.default_voice = voice_id;
+            }
+        }
+        "xai" => {
+            let existing = tts.xai.clone();
+            tts.xai = Some(XaiTtsConfig {
+                api_key: Some(required_lane_api_key(selected, "speech_synthesis")?),
+                language: existing
+                    .as_ref()
+                    .map(|cfg| cfg.language.clone())
+                    .unwrap_or_else(|| "auto".to_string()),
+                codec: existing
+                    .as_ref()
+                    .map(|cfg| cfg.codec.clone())
+                    .unwrap_or_else(|| tts.default_format.clone()),
+                sample_rate: existing
+                    .as_ref()
+                    .map(|cfg| cfg.sample_rate)
+                    .unwrap_or(24_000),
+                bitrate: existing.as_ref().map(|cfg| cfg.bitrate).unwrap_or(128_000),
+            });
+            if tts.default_voice.is_empty() || tts.default_voice == "alloy" {
+                tts.default_voice = "eve".to_string();
+            }
+        }
+        other => {
+            anyhow::bail!("speech_synthesis lane selected unsupported TTS provider `{other}`");
+        }
+    }
+
+    tracing::info!(
+        provider = selected.provider.as_str(),
+        model = selected.model.as_str(),
+        candidate_index = resolution.selected_index,
+        "Speech synthesis lane selected"
+    );
+    Ok(tts)
+}
 
 pub(crate) fn build_channel_session_backend(
     config: &Config,
@@ -422,6 +687,34 @@ async fn load_runtime_defaults_from_config_file(path: &Path) -> Result<ChannelRu
                 &store,
                 &mut google.api_key,
                 "config.tts.google.api_key",
+            )?;
+        }
+        if let Some(ref mut minimax) = parsed.tts.minimax {
+            decrypt_optional_secret_for_runtime_reload(
+                &store,
+                &mut minimax.api_key,
+                "config.tts.minimax.api_key",
+            )?;
+        }
+        if let Some(ref mut mistral) = parsed.tts.mistral {
+            decrypt_optional_secret_for_runtime_reload(
+                &store,
+                &mut mistral.api_key,
+                "config.tts.mistral.api_key",
+            )?;
+        }
+        if let Some(ref mut xai) = parsed.tts.xai {
+            decrypt_optional_secret_for_runtime_reload(
+                &store,
+                &mut xai.api_key,
+                "config.tts.xai.api_key",
+            )?;
+        }
+        if let Some(ref mut mistral) = parsed.transcription.mistral {
+            decrypt_optional_secret_for_runtime_reload(
+                &store,
+                &mut mistral.api_key,
+                "config.transcription.mistral.api_key",
             )?;
         }
     }
@@ -1807,7 +2100,7 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
                     tg.mention_only,
                 )
                 .with_streaming(tg.stream_mode, tg.draft_update_interval_ms)
-                .with_transcription(config.transcription.clone())
+                .with_transcription(lane_selected_transcription_config(config)?)
                 .with_workspace_dir(config.workspace_dir.clone()),
             ))
         }
@@ -1861,7 +2154,7 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
                 )
                 .with_password(mx.password.clone())
                 .with_max_media_download_mb(mx.max_media_download_mb)
-                .with_transcription(config.transcription.clone()),
+                .with_transcription(lane_selected_transcription_config(config)?),
             ))
         }
         "mattermost" => {
@@ -1916,9 +2209,11 @@ struct ConfiguredChannel {
 fn collect_configured_channels(
     config: &Config,
     matrix_skip_context: &str,
-) -> Vec<ConfiguredChannel> {
+) -> Result<Vec<ConfiguredChannel>> {
     let _ = matrix_skip_context;
     let mut channels = Vec::new();
+    let transcription_config = lane_selected_transcription_config(config)?;
+    let tts_config = lane_selected_tts_config(config)?;
 
     if let Some(ref tg) = config.channels_config.telegram {
         channels.push(ConfiguredChannel {
@@ -1930,7 +2225,7 @@ fn collect_configured_channels(
                     tg.mention_only,
                 )
                 .with_streaming(tg.stream_mode, tg.draft_update_interval_ms)
-                .with_transcription(config.transcription.clone())
+                .with_transcription(transcription_config.clone())
                 .with_workspace_dir(config.workspace_dir.clone()),
             ),
         });
@@ -2003,7 +2298,7 @@ fn collect_configured_channels(
                 )
                 .with_password(mx.password.clone())
                 .with_max_media_download_mb(mx.max_media_download_mb)
-                .with_transcription(config.transcription.clone()),
+                .with_transcription(transcription_config.clone()),
             ),
         });
     }
@@ -2067,8 +2362,8 @@ fn collect_configured_channels(
                                 wa.pair_code.clone(),
                                 wa.allowed_numbers.clone(),
                             )
-                            .with_transcription(config.transcription.clone())
-                            .with_tts(config.tts.clone()),
+                            .with_transcription(transcription_config.clone())
+                            .with_tts(tts_config.clone()),
                         ),
                     });
                 } else {
@@ -2311,13 +2606,13 @@ fn collect_configured_channels(
         });
     }
 
-    channels
+    Ok(channels)
 }
 
 /// Run health checks for configured channels.
 pub async fn doctor_channels(config: Config) -> Result<()> {
     #[allow(unused_mut)]
-    let mut channels = collect_configured_channels(&config, "health check");
+    let mut channels = collect_configured_channels(&config, "health check")?;
 
     #[cfg(feature = "channel-nostr")]
     if let Some(ref ns) = config.channels_config.nostr {
@@ -2736,7 +3031,7 @@ pub async fn start_channels(
     // Collect active channels from a shared builder to keep startup and doctor parity.
     #[allow(unused_mut)]
     let mut channels: Vec<Arc<dyn Channel>> =
-        collect_configured_channels(&config, "runtime startup")
+        collect_configured_channels(&config, "runtime startup")?
             .into_iter()
             .map(|configured| configured.channel)
             .collect();
@@ -4914,7 +5209,7 @@ mod tests {
                 mention_only: Some(false),
             });
 
-        let channels = collect_configured_channels(&config, "test");
+        let channels = collect_configured_channels(&config, "test").unwrap();
 
         assert!(channels
             .iter()

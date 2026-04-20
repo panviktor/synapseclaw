@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::multipart::{Form, Part};
 
-use synapse_domain::config::schema::TranscriptionConfig;
+use synapse_domain::config::schema::{MistralSttConfig, TranscriptionConfig};
 
 /// Maximum upload size accepted by most Whisper-compatible APIs (25 MB).
 const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
@@ -18,6 +18,7 @@ const TRANSCRIPTION_TIMEOUT_SECS: u64 = 120;
 fn mime_for_audio(extension: &str) -> Option<&'static str> {
     match extension.to_ascii_lowercase().as_str() {
         "flac" => Some("audio/flac"),
+        "aac" => Some("audio/aac"),
         "mp3" | "mpeg" | "mpga" => Some("audio/mpeg"),
         "mp4" | "m4a" => Some("audio/mp4"),
         "ogg" | "oga" => Some("audio/ogg"),
@@ -39,47 +40,6 @@ fn normalize_audio_filename(file_name: &str) -> String {
     }
 }
 
-/// Resolve the API key for voice transcription.
-///
-/// Priority order:
-/// 1. Explicit `config.api_key` (if set and non-empty).
-/// 2. Provider-specific env var based on `api_url`:
-///    - URL contains "openai.com" -> `OPENAI_API_KEY`
-///    - URL contains "groq.com"   -> `GROQ_API_KEY`
-/// 3. Fallback chain: `TRANSCRIPTION_API_KEY` -> `GROQ_API_KEY` -> `OPENAI_API_KEY`.
-fn resolve_transcription_api_key(config: &TranscriptionConfig) -> Result<String> {
-    // 1. Explicit config key
-    if let Some(ref key) = config.api_key {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-
-    // 2. Provider-specific env var based on API URL
-    if config.api_url.contains("openai.com") {
-        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-            return Ok(key);
-        }
-    } else if config.api_url.contains("groq.com") {
-        if let Ok(key) = std::env::var("GROQ_API_KEY") {
-            return Ok(key);
-        }
-    }
-
-    // 3. Fallback chain
-    for var in ["TRANSCRIPTION_API_KEY", "GROQ_API_KEY", "OPENAI_API_KEY"] {
-        if let Ok(key) = std::env::var(var) {
-            return Ok(key);
-        }
-    }
-
-    bail!(
-        "No API key found for voice transcription — set one of: \
-         transcription.api_key in config, TRANSCRIPTION_API_KEY, GROQ_API_KEY, or OPENAI_API_KEY"
-    );
-}
-
 /// Validate audio data and resolve MIME type from file name.
 ///
 /// Returns `(normalized_filename, mime_type)` on success.
@@ -98,7 +58,7 @@ fn validate_audio(audio_data: &[u8], file_name: &str) -> Result<(String, &'stati
         .unwrap_or("");
     let mime = mime_for_audio(extension).ok_or_else(|| {
         anyhow::anyhow!(
-            "Unsupported audio format '.{extension}' — accepted: flac, mp3, mp4, mpeg, mpga, m4a, ogg, opus, wav, webm"
+            "Unsupported audio format '.{extension}' — accepted: aac, flac, mp3, mp4, mpeg, mpga, m4a, ogg, opus, wav, webm"
         )
     })?;
 
@@ -120,7 +80,7 @@ pub trait TranscriptionProvider: Send + Sync {
     /// List of supported audio file extensions.
     fn supported_formats(&self) -> Vec<String> {
         vec![
-            "flac", "mp3", "mpeg", "mpga", "mp4", "m4a", "ogg", "oga", "opus", "wav", "webm",
+            "aac", "flac", "mp3", "mpeg", "mpga", "mp4", "m4a", "ogg", "oga", "opus", "wav", "webm",
         ]
         .into_iter()
         .map(String::from)
@@ -130,7 +90,7 @@ pub trait TranscriptionProvider: Send + Sync {
 
 // ── GroqProvider ────────────────────────────────────────────────
 
-/// Groq Whisper API provider (default, backward-compatible with existing config).
+/// Groq Whisper API provider.
 pub struct GroqProvider {
     api_url: String,
     model: String,
@@ -139,11 +99,6 @@ pub struct GroqProvider {
 }
 
 impl GroqProvider {
-    /// Build from the existing `TranscriptionConfig` fields.
-    ///
-    /// Credential resolution order:
-    /// 1. `config.api_key`
-    /// 2. `GROQ_API_KEY` environment variable (backward compatibility)
     pub fn from_config(config: &TranscriptionConfig) -> Result<Self> {
         let api_key = config
             .api_key
@@ -151,15 +106,7 @@ impl GroqProvider {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(ToOwned::to_owned)
-            .or_else(|| {
-                std::env::var("GROQ_API_KEY")
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            })
-            .context(
-                "Missing transcription API key: set [transcription].api_key or GROQ_API_KEY environment variable",
-            )?;
+            .context("Missing Groq STT API key from resolved speech_transcription lane")?;
 
         Ok(Self {
             api_url: config.api_url.clone(),
@@ -589,6 +536,63 @@ impl TranscriptionProvider for GoogleSttProvider {
     }
 }
 
+// ── MistralSttProvider ──────────────────────────────────────────
+
+/// Mistral Voxtral transcription provider.
+pub struct MistralSttProvider {
+    api_key: String,
+    model: String,
+}
+
+impl MistralSttProvider {
+    pub fn from_config(config: &MistralSttConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing Mistral STT API key from resolved speech_transcription lane")?;
+
+        Ok(Self {
+            api_key,
+            model: config.model.clone(),
+        })
+    }
+}
+
+#[async_trait]
+impl TranscriptionProvider for MistralSttProvider {
+    fn name(&self) -> &str {
+        "mistral"
+    }
+
+    async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
+        let (normalized_name, mime) = validate_audio(audio_data, file_name)?;
+
+        let client = synapse_providers::proxy::build_runtime_proxy_client("transcription.mistral");
+
+        let file_part = Part::bytes(audio_data.to_vec())
+            .file_name(normalized_name)
+            .mime_str(mime)?;
+
+        let form = Form::new()
+            .part("file", file_part)
+            .text("model", self.model.clone());
+
+        let resp = client
+            .post("https://api.mistral.ai/v1/audio/transcriptions")
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(TRANSCRIPTION_TIMEOUT_SECS))
+            .send()
+            .await
+            .context("Failed to send transcription request to Mistral")?;
+
+        parse_whisper_response(resp).await
+    }
+}
+
 // ── Shared response parsing ─────────────────────────────────────
 
 /// Parse a standard Whisper-compatible JSON response (`{ "text": "..." }`).
@@ -660,6 +664,12 @@ impl TranscriptionManager {
             }
         }
 
+        if let Some(ref mistral_cfg) = config.mistral {
+            if let Ok(p) = MistralSttProvider::from_config(mistral_cfg) {
+                providers.insert("mistral".to_string(), Box::new(p));
+            }
+        }
+
         let default_provider = config.default_provider.clone();
 
         if config.enabled && !providers.contains_key(&default_provider) {
@@ -705,19 +715,11 @@ impl TranscriptionManager {
     }
 }
 
-// ── Backward-compatible convenience function ────────────────────
+// ── Convenience function ────────────────────────────────────────
 
-/// Transcribe audio bytes via a Whisper-compatible transcription API.
+/// Transcribe audio bytes via the configured transcription provider.
 ///
 /// Returns the transcribed text on success.
-///
-/// This is the backward-compatible entry point that preserves the original
-/// function signature. It uses the Groq provider directly, matching the
-/// original single-provider behavior.
-///
-/// Credential resolution order:
-/// 1. `config.transcription.api_key`
-/// 2. `GROQ_API_KEY` environment variable (backward compatibility)
 ///
 /// The caller is responsible for enforcing duration limits *before* downloading
 /// the file; this function enforces the byte-size cap.
@@ -726,12 +728,12 @@ pub async fn transcribe_audio(
     file_name: &str,
     config: &TranscriptionConfig,
 ) -> Result<String> {
-    // Validate audio before resolving credentials so that size/format errors
-    // are reported before missing-key errors (preserves original behavior).
+    // Validate audio before resolving credentials so size/format errors are
+    // reported before missing-key errors.
     validate_audio(&audio_data, file_name)?;
 
-    let groq = GroqProvider::from_config(config)?;
-    groq.transcribe(&audio_data, file_name).await
+    let manager = TranscriptionManager::new(config)?;
+    manager.transcribe(&audio_data, file_name).await
 }
 
 #[cfg(test)]
@@ -765,10 +767,7 @@ mod tests {
         let err = transcribe_audio(data, "test.ogg", &config)
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("transcription API key"),
-            "expected missing-key error, got: {err}"
-        );
+        assert!(err.to_string().contains("not configured"));
     }
 
     #[tokio::test]
@@ -779,8 +778,7 @@ mod tests {
         let mut config = TranscriptionConfig::default();
         config.api_key = Some("transcription-key".to_string());
 
-        // Keep invalid extension so we fail before network, but after key resolution.
-        let err = transcribe_audio(data, "recording.aac", &config)
+        let err = transcribe_audio(data, "recording.xyz", &config)
             .await
             .unwrap_err();
         assert!(
@@ -793,6 +791,7 @@ mod tests {
     fn mime_for_audio_maps_accepted_formats() {
         let cases = [
             ("flac", "audio/flac"),
+            ("aac", "audio/aac"),
             ("mp3", "audio/mpeg"),
             ("mpeg", "audio/mpeg"),
             ("mpga", "audio/mpeg"),
@@ -824,7 +823,6 @@ mod tests {
     fn mime_for_audio_rejects_unknown() {
         assert_eq!(mime_for_audio("txt"), None);
         assert_eq!(mime_for_audio("pdf"), None);
-        assert_eq!(mime_for_audio("aac"), None);
         assert_eq!(mime_for_audio(""), None);
     }
 
@@ -851,7 +849,7 @@ mod tests {
         let data = vec![0u8; 100];
         let config = TranscriptionConfig::default();
 
-        let err = transcribe_audio(data, "recording.aac", &config)
+        let err = transcribe_audio(data, "recording.xyz", &config)
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -860,7 +858,7 @@ mod tests {
             "expected unsupported-format error, got: {msg}"
         );
         assert!(
-            msg.contains(".aac"),
+            msg.contains(".xyz"),
             "error should mention the rejected extension, got: {msg}"
         );
     }
@@ -904,12 +902,17 @@ mod tests {
             api_key: Some("test-deepgram-key".to_string()),
             model: "nova-2".to_string(),
         });
+        config.mistral = Some(synapse_domain::config::schema::MistralSttConfig {
+            api_key: Some("test-mistral-key".to_string()),
+            model: "voxtral-mini-latest".to_string(),
+        });
 
         let manager = TranscriptionManager::new(&config).unwrap();
         assert!(manager.providers.contains_key("groq"));
         assert!(manager.providers.contains_key("openai"));
         assert!(manager.providers.contains_key("deepgram"));
-        assert_eq!(manager.available_providers().len(), 3);
+        assert!(manager.providers.contains_key("mistral"));
+        assert_eq!(manager.available_providers().len(), 4);
     }
 
     #[tokio::test]
@@ -955,7 +958,7 @@ mod tests {
     #[test]
     fn validate_audio_rejects_unsupported_format() {
         let data = vec![0u8; 100];
-        let err = validate_audio(&data, "test.aac").unwrap_err();
+        let err = validate_audio(&data, "test.xyz").unwrap_err();
         assert!(err.to_string().contains("Unsupported audio format"));
     }
 
@@ -976,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn backward_compat_config_defaults_unchanged() {
+    fn transcription_config_defaults_unchanged() {
         let config = TranscriptionConfig::default();
         assert!(!config.enabled);
         assert!(config.api_key.is_none());
@@ -987,5 +990,6 @@ mod tests {
         assert!(config.deepgram.is_none());
         assert!(config.assemblyai.is_none());
         assert!(config.google.is_none());
+        assert!(config.mistral.is_none());
     }
 }
