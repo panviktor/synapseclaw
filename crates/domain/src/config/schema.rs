@@ -1260,6 +1260,41 @@ pub struct AgentConfig {
     /// Requires a plan that supports prompt caching; disable for OAuth/free-tier tokens.
     #[serde(default)]
     pub prompt_caching: bool,
+    /// Live voice-call policy overrides (`[agent.live_calls]` section).
+    #[serde(default)]
+    pub live_calls: AgentLiveCallConfig,
+}
+
+/// Live voice-call policy (`[agent.live_calls]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentLiveCallConfig {
+    /// Optional provider override used only for live voice turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional model override used only for live voice turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Maximum tool-call loop turns per live voice message. Default: `2`.
+    #[serde(default = "default_agent_live_call_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+    /// Maximum spoken response length in characters. Default: `220`.
+    #[serde(default = "default_agent_live_call_max_spoken_chars")]
+    pub max_spoken_chars: usize,
+    /// Maximum spoken response length in sentences. Default: `2`.
+    #[serde(default = "default_agent_live_call_max_spoken_sentences")]
+    pub max_spoken_sentences: usize,
+    /// Extra tools excluded during live voice turns. Default keeps heavy memory/shell tools out.
+    #[serde(default = "default_agent_live_call_excluded_tools")]
+    pub excluded_tools: Vec<String>,
+    /// Dynamic user-profile fact key used for preferred response locale. Default: `response_locale`.
+    #[serde(default = "default_agent_live_call_profile_locale_key")]
+    pub profile_locale_key: String,
+    /// Fallback locale when neither current context nor profile gives one. Default: `en`.
+    #[serde(default = "default_agent_live_call_fallback_locale")]
+    pub fallback_locale: String,
+    /// Locale-specific default greetings keyed by normalized locale tag.
+    #[serde(default = "default_agent_live_call_greetings")]
+    pub greetings: HashMap<String, String>,
 }
 
 /// Provider-history compression policy (`[compression]` section).
@@ -1477,6 +1512,57 @@ fn default_agent_tool_dispatcher() -> String {
     "auto".into()
 }
 
+fn default_agent_live_call_max_tool_iterations() -> usize {
+    2
+}
+
+fn default_agent_live_call_max_spoken_chars() -> usize {
+    220
+}
+
+fn default_agent_live_call_max_spoken_sentences() -> usize {
+    2
+}
+
+fn default_agent_live_call_excluded_tools() -> Vec<String> {
+    vec![
+        "memory_recall".into(),
+        "session_search".into(),
+        "shell".into(),
+    ]
+}
+
+fn default_agent_live_call_profile_locale_key() -> String {
+    "response_locale".into()
+}
+
+fn default_agent_live_call_fallback_locale() -> String {
+    "en".into()
+}
+
+fn default_agent_live_call_greetings() -> HashMap<String, String> {
+    HashMap::from([
+        ("en".into(), "Hello. I'm here.".into()),
+        ("ru".into(), "Привет. Я на связи.".into()),
+    ])
+}
+
+impl Default for AgentLiveCallConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            max_tool_iterations: default_agent_live_call_max_tool_iterations(),
+            max_spoken_chars: default_agent_live_call_max_spoken_chars(),
+            max_spoken_sentences: default_agent_live_call_max_spoken_sentences(),
+            excluded_tools: default_agent_live_call_excluded_tools(),
+            profile_locale_key: default_agent_live_call_profile_locale_key(),
+            fallback_locale: default_agent_live_call_fallback_locale(),
+            greetings: default_agent_live_call_greetings(),
+        }
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -1489,6 +1575,7 @@ impl Default for AgentConfig {
             tool_call_dedup_exempt: Vec::new(),
             tool_filter_groups: Vec::new(),
             prompt_caching: false,
+            live_calls: AgentLiveCallConfig::default(),
         }
     }
 }

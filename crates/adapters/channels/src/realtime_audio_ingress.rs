@@ -131,8 +131,7 @@ impl RealtimePcm16TurnChunker {
             }
         } else if voiced {
             self.pending_voice.extend_from_slice(data);
-            self.pending_voice_samples =
-                self.pending_voice_samples.saturating_add(frame_samples);
+            self.pending_voice_samples = self.pending_voice_samples.saturating_add(frame_samples);
             if self.pending_voice_samples >= self.speech_start_samples {
                 self.active = true;
                 self.buffer.append(&mut self.pending_voice);

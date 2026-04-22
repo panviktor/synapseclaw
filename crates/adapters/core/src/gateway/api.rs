@@ -1404,6 +1404,7 @@ fn realtime_call_runtime(
         config.config_path.parent().map(|path| path.to_path_buf()),
         tts_config,
         transcription_config,
+        Some(config.agent.live_calls.clone()),
     )
     .map_err(|error| realtime_call_config_error(error, channel))
 }

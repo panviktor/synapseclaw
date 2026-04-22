@@ -1932,6 +1932,7 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
                     config.config_path.parent().map(|path| path.to_path_buf()),
                     synapseclaw::channels::lane_selected_tts_config(&config).ok(),
                     synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                    Some(config.agent.live_calls.clone()),
                 )?;
                 let to = non_empty_cli_value("--to", to)?;
                 let result = runtime
@@ -1980,6 +1981,7 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
                     config.config_path.parent().map(|path| path.to_path_buf()),
                     synapseclaw::channels::lane_selected_tts_config(&config).ok(),
                     synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                    Some(config.agent.live_calls.clone()),
                 )?;
                 let result = RealtimeCallRuntimePort::speak(
                     runtime.as_ref(),
@@ -2015,6 +2017,7 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
                     config.config_path.parent().map(|path| path.to_path_buf()),
                     synapseclaw::channels::lane_selected_tts_config(&config).ok(),
                     synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                    Some(config.agent.live_calls.clone()),
                 )?;
                 let result = RealtimeCallRuntimePort::answer(
                     runtime.as_ref(),
@@ -2049,6 +2052,7 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
                     config.config_path.parent().map(|path| path.to_path_buf()),
                     synapseclaw::channels::lane_selected_tts_config(&config).ok(),
                     synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                    Some(config.agent.live_calls.clone()),
                 )?;
                 let result = RealtimeCallRuntimePort::hangup(
                     runtime.as_ref(),

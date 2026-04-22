@@ -15,16 +15,16 @@ use crate::transcription::TranscriptionManager;
 use anyhow::Context;
 use async_trait::async_trait;
 use base64::{
-    Engine as _,
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
 };
 use futures_util::StreamExt;
 use livekit::{
     e2ee::{
-        EncryptionType as LiveKitEncryptionType, E2eeOptions as LiveKitE2eeOptions,
         key_provider::{
             KeyProvider as LiveKitKeyProvider, KeyProviderOptions as LiveKitKeyProviderOptions,
         },
+        E2eeOptions as LiveKitE2eeOptions, EncryptionType as LiveKitEncryptionType,
     },
     options::TrackPublishOptions as LiveKitTrackPublishOptions,
     prelude::{
@@ -43,7 +43,6 @@ use livekit::{
         },
     },
 };
-use matrix_sdk_base::crypto::CollectStrategy;
 use matrix_sdk::{
     attachment::{AttachmentConfig, AttachmentInfo, BaseAudioInfo},
     authentication::matrix::MatrixSession,
@@ -53,7 +52,6 @@ use matrix_sdk::{
     ruma::{
         api::client::{receipt::create_receipt, uiaa},
         events::{
-            AnyToDeviceEvent, AnyToDeviceEventContent,
             call::member::{
                 ActiveFocus, ActiveLivekitFocus, Application, CallApplicationContent,
                 CallMemberEventContent, CallMemberStateKey, CallScope, Focus, LeaveReason,
@@ -76,12 +74,13 @@ use matrix_sdk::{
                     NotificationType, RtcNotificationEventContent, SyncRtcNotificationEvent,
                 },
             },
-            AnySyncStateEvent, Mentions,
+            AnySyncStateEvent, AnyToDeviceEvent, AnyToDeviceEventContent, Mentions,
         },
         MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, UInt,
     },
     Client as MatrixSdkClient, LoopCtrl, Room, RoomState, SessionMeta, SessionTokens,
 };
+use matrix_sdk_base::crypto::CollectStrategy;
 use parking_lot::RwLock as ParkingRwLock;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -104,7 +103,7 @@ use synapse_domain::application::services::realtime_call_session_service::{
     record_realtime_call_state_with_context, record_realtime_outbound_call_started,
     trim_recent_realtime_call_sessions,
 };
-use synapse_domain::config::schema::TtsConfig;
+use synapse_domain::config::schema::{AgentLiveCallConfig, TtsConfig};
 use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use synapse_domain::ports::realtime_call::{
@@ -161,6 +160,7 @@ pub struct MatrixChannel {
     voice_mode: Arc<AtomicBool>,
     transcription: Option<synapse_domain::config::schema::TranscriptionConfig>,
     tts: Option<TtsConfig>,
+    live_calls: AgentLiveCallConfig,
     voice_transcriptions: Arc<Mutex<std::collections::HashMap<String, String>>>,
     password: Option<String>,
     max_media_bytes: usize,
@@ -477,7 +477,9 @@ fn remove_matrix_media_session(call_control_id: &str) -> Option<MatrixMediaSessi
 }
 
 fn matrix_media_session_exists(call_control_id: &str) -> bool {
-    matrix_media_sessions_slot().read().contains_key(call_control_id)
+    matrix_media_sessions_slot()
+        .read()
+        .contains_key(call_control_id)
 }
 
 fn update_matrix_call_control_status(update: impl FnOnce(&mut MatrixCallControlStatus)) {
@@ -1546,6 +1548,7 @@ impl MatrixChannel {
             voice_mode: Arc::new(AtomicBool::new(false)),
             transcription: None,
             tts: None,
+            live_calls: AgentLiveCallConfig::default(),
             voice_transcriptions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             password: None,
             max_media_bytes: DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
@@ -1578,6 +1581,11 @@ impl MatrixChannel {
             self.tts = Some(config);
         }
         record_matrix_call_control_config(&self);
+        self
+    }
+
+    pub fn with_live_calls(mut self, config: AgentLiveCallConfig) -> Self {
+        self.live_calls = config;
         self
     }
 
@@ -1728,7 +1736,8 @@ impl MatrixChannel {
 
     async fn clear_call_membership_for_call(&self, call_control_id: &str) -> anyhow::Result<()> {
         let room = self.room_for_call_control_id(call_control_id).await?;
-        self.clear_call_membership_for_room(&room, call_control_id).await
+        self.clear_call_membership_for_room(&room, call_control_id)
+            .await
     }
 
     async fn request_openid_token(&self) -> anyhow::Result<MatrixOpenIdToken> {
@@ -2711,14 +2720,14 @@ impl MatrixChannel {
     }
 
     pub fn from_call_runtime_config(config: synapse_domain::config::schema::MatrixConfig) -> Self {
-        Self::from_call_runtime_config_with_support(config, None, None, None)
+        Self::from_call_runtime_config_with_support(config, None, None, None, None)
     }
 
     pub fn from_call_runtime_config_with_synapseclaw_dir(
         config: synapse_domain::config::schema::MatrixConfig,
         synapseclaw_dir: Option<PathBuf>,
     ) -> Self {
-        Self::from_call_runtime_config_with_support(config, synapseclaw_dir, None, None)
+        Self::from_call_runtime_config_with_support(config, synapseclaw_dir, None, None, None)
     }
 
     pub fn from_call_runtime_config_with_support(
@@ -2726,6 +2735,7 @@ impl MatrixChannel {
         synapseclaw_dir: Option<PathBuf>,
         tts: Option<TtsConfig>,
         transcription: Option<synapse_domain::config::schema::TranscriptionConfig>,
+        live_calls: Option<AgentLiveCallConfig>,
     ) -> Self {
         let mut channel = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
             config.homeserver,
@@ -2743,6 +2753,9 @@ impl MatrixChannel {
         }
         if let Some(tts) = tts {
             channel = channel.with_tts(tts);
+        }
+        if let Some(live_calls) = live_calls {
+            channel = channel.with_live_calls(live_calls);
         }
         channel
     }
@@ -2830,7 +2843,10 @@ impl MatrixChannel {
         let devices = client.encryption().get_user_devices(target_user_id).await?;
         let recipient_devices_owned: Vec<_> = devices.devices().collect();
         if recipient_devices_owned.is_empty() {
-            anyhow::bail!("no E2EE-capable recipient devices known for {}", target_user_id);
+            anyhow::bail!(
+                "no E2EE-capable recipient devices known for {}",
+                target_user_id
+            );
         }
         let recipient_devices: Vec<_> = recipient_devices_owned.iter().collect();
 
@@ -2854,7 +2870,8 @@ impl MatrixChannel {
                 .unwrap_or_default()
                 .as_millis() as u64,
         });
-        let content = matrix_sdk::ruma::serde::Raw::new(&content)?.cast_unchecked::<AnyToDeviceEventContent>();
+        let content = matrix_sdk::ruma::serde::Raw::new(&content)?
+            .cast_unchecked::<AnyToDeviceEventContent>();
         let failures = client
             .encryption()
             .encrypt_and_send_raw_to_device(
@@ -2921,10 +2938,7 @@ impl MatrixChannel {
         }
     }
 
-    async fn handle_matrix_call_encryption_to_device_event(
-        &self,
-        event: serde_json::Value,
-    ) {
+    async fn handle_matrix_call_encryption_to_device_event(&self, event: serde_json::Value) {
         let Some(event_type) = event.get("type").and_then(|value| value.as_str()) else {
             return;
         };
@@ -2937,9 +2951,9 @@ impl MatrixChannel {
         let Some(content_value) = event.get("content") else {
             return;
         };
-        let Ok(content) = serde_json::from_value::<MatrixCallEncryptionToDeviceContent>(
-            content_value.clone(),
-        ) else {
+        let Ok(content) =
+            serde_json::from_value::<MatrixCallEncryptionToDeviceContent>(content_value.clone())
+        else {
             tracing::warn!(
                 sender = %sender,
                 content = %content_value,
@@ -3537,13 +3551,10 @@ impl MatrixChannel {
             encryption_type: LiveKitEncryptionType::Gcm,
             key_provider: e2ee_key_provider.clone(),
         });
-        let (room, mut rx) = LiveKitRoom::connect(
-            &grant.livekit_service_url,
-            &grant.jwt,
-            room_options,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to join Matrix LiveKit room: {error}"))?;
+        let (room, mut rx) =
+            LiveKitRoom::connect(&grant.livekit_service_url, &grant.jwt, room_options)
+                .await
+                .map_err(|error| anyhow::anyhow!("failed to join Matrix LiveKit room: {error}"))?;
         let room = Arc::new(room);
         let session = MatrixMediaSession {
             room: Arc::clone(&room),
@@ -3628,7 +3639,10 @@ impl MatrixChannel {
                             }
                         }
                     }
-                    LiveKitRoomEvent::TrackPublished { publication, participant } => {
+                    LiveKitRoomEvent::TrackPublished {
+                        publication,
+                        participant,
+                    } => {
                         let should_subscribe = matrix_livekit_remote_publication_should_subscribe(
                             publication.kind(),
                             publication.source(),
@@ -3915,10 +3929,13 @@ fn matrix_call_legacy_rtc_backend_identity(user_id: &str, device_id: &str) -> St
     format!("{user_id}:{device_id}")
 }
 
-fn matrix_call_hashed_rtc_backend_identity(user_id: &str, device_id: &str, member_id: &str) -> String {
-    let canonical = serde_json::to_string(&[user_id, device_id, member_id]).unwrap_or_else(|_| {
-        format!(r#"["{user_id}","{device_id}","{member_id}"]"#)
-    });
+fn matrix_call_hashed_rtc_backend_identity(
+    user_id: &str,
+    device_id: &str,
+    member_id: &str,
+) -> String {
+    let canonical = serde_json::to_string(&[user_id, device_id, member_id])
+        .unwrap_or_else(|_| format!(r#"["{user_id}","{device_id}","{member_id}"]"#));
     let digest = Sha256::digest(canonical.as_bytes());
     STANDARD_NO_PAD.encode(digest)
 }
@@ -3985,13 +4002,7 @@ fn matrix_livekit_remote_audio_track_is_preferred(
 
 fn matrix_call_state_accepts_turn_delivery(call_control_id: &str) -> bool {
     matrix_call_session(call_control_id)
-        .map(|session| {
-            !session.state.is_terminal()
-                && !matches!(
-                    session.state,
-                    RealtimeCallState::Created | RealtimeCallState::Ringing
-                )
-        })
+        .map(|session| matches!(session.state, RealtimeCallState::Listening))
         .unwrap_or(false)
 }
 
@@ -4095,10 +4106,7 @@ async fn persist_matrix_live_call_debug_artifact(
     Ok(Some(path))
 }
 
-async fn prune_old_matrix_live_call_debug_artifacts(
-    dir: &Path,
-    keep: usize,
-) -> anyhow::Result<()> {
+async fn prune_old_matrix_live_call_debug_artifacts(dir: &Path, keep: usize) -> anyhow::Result<()> {
     let mut entries = tokio::fs::read_dir(dir).await?;
     let mut files = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
@@ -4107,7 +4115,9 @@ async fn prune_old_matrix_live_call_debug_artifacts(
             continue;
         }
         let metadata = entry.metadata().await?;
-        let modified = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let modified = metadata
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         files.push((modified, path));
     }
     files.sort_by_key(|(modified, _)| *modified);
@@ -5554,7 +5564,7 @@ impl RealtimeCallRuntimePort for MatrixChannel {
             .speak_into_media_session(
                 &session,
                 &request.call_control_id,
-                default_realtime_call_answer_greeting(),
+                &default_realtime_call_answer_greeting(&self.live_calls, None),
             )
             .await
         {
@@ -6536,7 +6546,10 @@ mod tests {
 
     #[test]
     fn sanitize_live_call_transcript_rejects_replacement_noise() {
-        assert_eq!(sanitize_live_call_transcript(" \u{fffd}\u{fffd}\u{fffd} "), None);
+        assert_eq!(
+            sanitize_live_call_transcript(" \u{fffd}\u{fffd}\u{fffd} "),
+            None
+        );
     }
 
     #[test]

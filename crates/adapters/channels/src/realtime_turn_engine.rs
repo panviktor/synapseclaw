@@ -48,9 +48,9 @@ pub struct DeepgramFluxSessionConfig {
 
 impl DeepgramFluxSessionConfig {
     pub fn from_transcription(transcription: Option<&TranscriptionConfig>) -> Result<Self> {
-        let transcription = transcription
-            .filter(|config| config.enabled)
-            .context("voice transcription is disabled; live calls require [transcription] enabled")?;
+        let transcription = transcription.filter(|config| config.enabled).context(
+            "voice transcription is disabled; live calls require [transcription] enabled",
+        )?;
         let deepgram = transcription
             .deepgram
             .as_ref()
@@ -74,9 +74,7 @@ impl DeepgramFluxSessionConfig {
 
         let language_hints = normalized_language_hints(flux, deepgram.language.as_deref());
         if !language_hints.is_empty() && !model.eq_ignore_ascii_case("flux-general-multi") {
-            bail!(
-                "language_hints are only supported for Deepgram Flux model `flux-general-multi`"
-            );
+            bail!("language_hints are only supported for Deepgram Flux model `flux-general-multi`");
         }
 
         if let Some(value) = flux.eot_threshold {
@@ -189,11 +187,7 @@ fn normalized_language_hints(
 pub trait RealtimeTurnEngine: Send + Sync {
     fn provider_name(&self) -> &'static str;
 
-    async fn connect(
-        &self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> Result<RealtimeTurnEngineSession>;
+    async fn connect(&self, sample_rate: u32, channels: u32) -> Result<RealtimeTurnEngineSession>;
 }
 
 #[derive(Debug)]
@@ -405,11 +399,7 @@ impl RealtimeTurnEngine for DeepgramFluxTurnEngine {
         DEEPGRAM_FLUX_PROVIDER
     }
 
-    async fn connect(
-        &self,
-        sample_rate: u32,
-        channels: u32,
-    ) -> Result<RealtimeTurnEngineSession> {
+    async fn connect(&self, sample_rate: u32, channels: u32) -> Result<RealtimeTurnEngineSession> {
         let request = self.websocket_request(sample_rate, channels)?;
         let (mut socket, _) = tokio_tungstenite::connect_async(request)
             .await
@@ -580,9 +570,8 @@ fn parse_flux_server_message(text: &str) -> Option<RealtimeTurnEvent> {
         DeepgramFluxServerMessage::ConfigureFailure { description } => {
             Some(RealtimeTurnEvent::Error {
                 code: Some("configure_failure".into()),
-                description: description.unwrap_or_else(|| {
-                    "Deepgram Flux rejected a configure message".into()
-                }),
+                description: description
+                    .unwrap_or_else(|| "Deepgram Flux rejected a configure message".into()),
             })
         }
         DeepgramFluxServerMessage::Error { code, description } => {
@@ -616,13 +605,13 @@ fn parse_flux_server_message(text: &str) -> Option<RealtimeTurnEvent> {
                 turn_index,
                 transcript: normalized_transcript(transcript),
             }),
-            "EndOfTurn" => normalized_transcript(transcript).map(|transcript| {
-                RealtimeTurnEvent::EndOfTurn {
+            "EndOfTurn" => {
+                normalized_transcript(transcript).map(|transcript| RealtimeTurnEvent::EndOfTurn {
                     turn_index,
                     transcript,
                     languages,
-                }
-            }),
+                })
+            }
             _ => None,
         },
     }
@@ -631,8 +620,18 @@ fn parse_flux_server_message(text: &str) -> Option<RealtimeTurnEvent> {
 fn flux_server_message_marks_ready(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|value| value.get("type").and_then(|value| value.as_str()).map(str::to_owned))
-        .map(|kind| matches!(kind.as_str(), "Welcome" | "Connected" | "ConfigureSuccess" | "TurnInfo"))
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .map(|kind| {
+            matches!(
+                kind.as_str(),
+                "Welcome" | "Connected" | "ConfigureSuccess" | "TurnInfo"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -716,9 +715,13 @@ mod tests {
     #[test]
     fn flux_config_extracts_from_transcription() {
         let config =
-            DeepgramFluxSessionConfig::from_transcription(Some(&transcription_with_flux())).unwrap();
+            DeepgramFluxSessionConfig::from_transcription(Some(&transcription_with_flux()))
+                .unwrap();
         assert_eq!(config.model, "flux-general-multi");
-        assert_eq!(config.language_hints, vec!["en".to_string(), "ru".to_string()]);
+        assert_eq!(
+            config.language_hints,
+            vec!["en".to_string(), "ru".to_string()]
+        );
         assert_eq!(config.eot_timeout_ms, Some(1200));
         assert_eq!(config.keyterms, vec!["synapseclaw".to_string()]);
     }

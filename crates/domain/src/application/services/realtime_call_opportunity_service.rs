@@ -401,10 +401,7 @@ mod tests {
 
     #[async_trait]
     impl crate::ports::memory::ConsolidationPort for TestSemanticMemory {
-        async fn run_consolidation(
-            &self,
-            _: &AgentId,
-        ) -> Result<ConsolidationReport, MemoryError> {
+        async fn run_consolidation(&self, _: &AgentId) -> Result<ConsolidationReport, MemoryError> {
             Ok(ConsolidationReport::default())
         }
 

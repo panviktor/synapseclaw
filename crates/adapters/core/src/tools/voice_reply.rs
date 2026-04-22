@@ -1417,6 +1417,7 @@ impl Tool for VoiceCallTool {
                     .map(|path| path.to_path_buf()),
                 crate::channels::lane_selected_tts_config(&self.root_config).ok(),
                 crate::channels::lane_selected_transcription_config(&self.root_config).ok(),
+                Some(self.root_config.agent.live_calls.clone()),
             ) {
                 Ok(runtime) => runtime,
                 Err(error) => {

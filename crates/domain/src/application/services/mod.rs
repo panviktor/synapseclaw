@@ -48,6 +48,7 @@ pub mod procedural_cluster_service;
 pub mod procedural_contradiction_service;
 pub mod provider_context_budget;
 pub mod provider_native_context_policy;
+pub mod realtime_call_handoff_service;
 pub mod realtime_call_opportunity_service;
 pub mod realtime_call_prompt_service;
 pub mod realtime_call_session_service;

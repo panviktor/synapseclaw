@@ -52,6 +52,18 @@ use synapse_domain::application::services::auxiliary_model_resolution::{
     resolve_auxiliary_model, AuxiliaryLane,
 };
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelCandidate;
+use synapse_domain::application::services::realtime_call_handoff_service::{
+    build_live_realtime_call_return_handoff, is_live_realtime_call_history_note_content,
+    strip_live_realtime_call_section, LiveRealtimeCallReturnHandoffInput,
+};
+use synapse_domain::application::services::realtime_call_opportunity_service::{
+    build_realtime_call_handoff, RealtimeCallHandoffInput,
+};
+use synapse_domain::application::services::realtime_call_prompt_service::{
+    bounded_live_realtime_call_speech, build_live_realtime_call_system_prompt,
+    merge_live_realtime_call_excluded_tools, resolve_live_realtime_call_policy,
+    resolve_live_realtime_call_route, LiveRealtimeCallPolicyInput,
+};
 use synapse_domain::config::schema::{
     AssemblyAiSttConfig, Config, DeepgramSttConfig, EdgeTtsConfig, ElevenLabsTtsConfig,
     GoogleSttConfig, GoogleTtsConfig, GroqTtsConfig, MiniMaxTtsConfig, MistralSttConfig,
@@ -1420,8 +1432,106 @@ async fn handle_message_via_orchestrator(
         } else {
             Arc::new(synapse_domain::ports::channel_output::NoopChannelOutput)
         };
+
+    let channel_conversation_store =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
+            ctx.session_store.clone(),
+        );
+    let conversation_store = ctx
+        .conversation_store
+        .clone()
+        .or_else(|| channel_conversation_store.clone());
+    let session_summary =
+        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_summary(
+            channel_conversation_store,
+        );
+
     let live_realtime_call_turn =
         active_realtime_call_turn(ctx, &original_msg.channel, &original_msg.reply_target);
+
+    // Bootstrap identity files are compiled into the static prompt at startup.
+    // Per-turn continuity comes from structured memory and turn context.
+    let live_call_handoff = if live_realtime_call_turn {
+        live_realtime_call_chat_handoff(
+            ctx,
+            original_msg,
+            history_port.as_ref(),
+            session_summary.as_deref(),
+        )
+    } else {
+        None
+    };
+    let live_call_user_profile = if live_realtime_call_turn {
+        live_realtime_call_user_profile(ctx, envelope)
+    } else {
+        None
+    };
+    let live_call_policy = if live_realtime_call_turn {
+        Some(resolve_live_realtime_call_policy(
+            LiveRealtimeCallPolicyInput {
+                config: &ctx.root_config.agent.live_calls,
+                current_user_text: Some(&envelope.content),
+                chat_handoff: live_call_handoff.as_deref(),
+                user_profile: live_call_user_profile.as_ref(),
+            },
+        ))
+    } else {
+        None
+    };
+    let max_tool_iterations = live_call_policy
+        .as_ref()
+        .map(|policy| policy.max_tool_iterations)
+        .unwrap_or(ctx.max_tool_iterations);
+    let excluded_tools = if live_realtime_call_turn {
+        Arc::new(merge_live_realtime_call_excluded_tools(
+            ctx.non_cli_excluded_tools.as_ref(),
+            &ctx.root_config.agent.live_calls,
+        ))
+    } else {
+        Arc::clone(&ctx.non_cli_excluded_tools)
+    };
+    let system_prompt = if let Some(policy) = live_call_policy.as_ref() {
+        build_live_realtime_call_system_prompt(
+            &ctx.system_prompt,
+            &policy.locale,
+            live_call_handoff.as_deref(),
+            policy.max_tool_iterations,
+        )
+    } else {
+        ctx.system_prompt.to_string()
+    };
+    let (default_provider, default_model, model_lanes, model_preset) = if live_realtime_call_turn {
+        let (provider, model) = resolve_live_realtime_call_route(
+            &ctx.root_config.agent.live_calls,
+            ctx.default_provider.as_ref(),
+            ctx.model.as_ref(),
+        );
+        seed_live_realtime_call_route_override(ctx, envelope, &provider, &model);
+        (provider, model, Vec::new(), None)
+    } else {
+        (
+            ctx.default_provider.to_string(),
+            ctx.model.to_string(),
+            ctx.model_lanes.as_ref().clone(),
+            ctx.model_preset.clone(),
+        )
+    };
+    if let Some(policy) = live_call_policy.as_ref() {
+        tracing::info!(
+            channel = %original_msg.channel,
+            reply_target = %original_msg.reply_target,
+            provider = %default_provider,
+            model = %default_model,
+            locale = %policy.locale,
+            max_tool_iterations = policy.max_tool_iterations,
+            excluded_tool_count = policy.excluded_tools.len(),
+            handoff_chars = live_call_handoff
+                .as_deref()
+                .map(|value| value.chars().count())
+                .unwrap_or(0),
+            "configured live realtime call routing"
+        );
+    }
 
     let presentation_mode = synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(
         ctx.show_tool_calls,
@@ -1434,44 +1544,44 @@ async fn handle_message_via_orchestrator(
     } else if synapse_domain::application::services::channel_presentation::tool_trace_enabled(
         presentation_mode,
     ) {
-            if let Some(ch) = target_channel.clone() {
-                let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                let reply_target = original_msg.reply_target.clone();
-                let thread_ts = original_msg.thread_ts.clone();
-                let session_store_for_tools = ctx.session_store.clone();
-                let conversation_key = synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+        if let Some(ch) = target_channel.clone() {
+            let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let reply_target = original_msg.reply_target.clone();
+            let thread_ts = original_msg.thread_ts.clone();
+            let session_store_for_tools = ctx.session_store.clone();
+            let conversation_key = synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
                     envelope,
                     &ctx.agent_id,
                 );
-                tokio::spawn(async move {
-                    while let Some(tool_msg) = tool_rx.recv().await {
-                        // Send to channel
-                        let send =
-                            SendMessage::new(&tool_msg, &reply_target).in_thread(thread_ts.clone());
-                        if let Err(e) = ch.send(&send).await {
-                            tracing::debug!("tool notify send failed: {e}");
-                        }
-                        // Persist in session history so web dashboard can see it
-                        if let Some(ref store) = session_store_for_tools {
-                            let msg = ChatMessage {
-                                role: "assistant".to_string(),
-                                content: tool_msg,
-                            };
-                            let _ = store.append(&conversation_key, &msg).await;
-                        }
+            tokio::spawn(async move {
+                while let Some(tool_msg) = tool_rx.recv().await {
+                    // Send to channel
+                    let send =
+                        SendMessage::new(&tool_msg, &reply_target).in_thread(thread_ts.clone());
+                    if let Err(e) = ch.send(&send).await {
+                        tracing::debug!("tool notify send failed: {e}");
                     }
-                });
-                Arc::new(RuntimeToolNotifyObserver::new(
-                    Arc::clone(&ctx.observer),
-                    ChannelToolNotificationHandler {
-                        tx: tool_tx,
-                        tools_used: std::sync::atomic::AtomicBool::new(false),
-                    },
-                    "channel-notify",
-                ))
-            } else {
-                Arc::clone(&ctx.observer)
-            }
+                    // Persist in session history so web dashboard can see it
+                    if let Some(ref store) = session_store_for_tools {
+                        let msg = ChatMessage {
+                            role: "assistant".to_string(),
+                            content: tool_msg,
+                        };
+                        let _ = store.append(&conversation_key, &msg).await;
+                    }
+                }
+            });
+            Arc::new(RuntimeToolNotifyObserver::new(
+                Arc::clone(&ctx.observer),
+                ChannelToolNotificationHandler {
+                    tx: tool_tx,
+                    tools_used: std::sync::atomic::AtomicBool::new(false),
+                },
+                "channel-notify",
+            ))
+        } else {
+            Arc::clone(&ctx.observer)
+        }
     } else {
         Arc::clone(&ctx.observer)
     };
@@ -1492,12 +1602,12 @@ async fn handle_message_via_orchestrator(
                 approval_manager: Arc::clone(&ctx.approval_manager),
                 channel_name: original_msg.channel.clone(),
                 multimodal: ctx.multimodal.clone(),
-                excluded_tools: Arc::clone(&ctx.non_cli_excluded_tools),
+                excluded_tools,
                 dedup_exempt_tools: Arc::clone(&ctx.tool_call_dedup_exempt),
                 hooks: ctx.hooks.clone(),
                 activated_tools: ctx.activated_tools.clone(),
                 message_timeout_secs: ctx.message_timeout_secs,
-                max_tool_iterations: ctx.max_tool_iterations,
+                max_tool_iterations,
             },
         ),
     );
@@ -1507,33 +1617,16 @@ async fn handle_message_via_orchestrator(
         return;
     };
 
-    let channel_conversation_store =
-        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_store(
-            ctx.session_store.clone(),
-        );
-    let conversation_store = ctx
-        .conversation_store
-        .clone()
-        .or_else(|| channel_conversation_store.clone());
-    let session_summary =
-        crate::inbound_runtime_ports::InboundRuntimeStoreFactory::conversation_summary(
-            channel_conversation_store,
-        );
-
-    // Bootstrap identity files are compiled into the static prompt at startup.
-    // Per-turn continuity comes from structured memory and turn context.
-    let system_prompt = ctx.system_prompt.to_string();
-
     let config = crate::inbound_runtime_config::InboundRuntimeConfigFactory::build(
         crate::inbound_runtime_config::InboundRuntimeConfigInput {
             system_prompt,
-            default_provider: ctx.default_provider.to_string(),
-            default_model: ctx.model.to_string(),
+            default_provider,
+            default_model,
             temperature: ctx.temperature,
-            max_tool_iterations: ctx.max_tool_iterations,
+            max_tool_iterations,
             auto_save_memory: ctx.auto_save_memory && !live_realtime_call_turn,
-            model_lanes: ctx.model_lanes.as_ref().clone(),
-            model_preset: ctx.model_preset.clone(),
+            model_lanes,
+            model_preset,
             query_classification: ctx.query_classification.clone(),
             message_timeout_secs: ctx.message_timeout_secs,
             min_relevance_score: ctx.min_relevance_score,
@@ -1697,6 +1790,15 @@ async fn handle_message_via_orchestrator(
                 "response",
             )
             .await;
+            if live_realtime_call_turn {
+                sync_live_realtime_call_back_to_parent_chat(
+                    ctx,
+                    envelope,
+                    original_msg,
+                    ports.history.as_ref(),
+                    ports.session_summary.as_deref(),
+                );
+            }
         }
         Ok(uc::HandleResult::CommandNoChannel) => {
             if realtime_call_turn {
@@ -1761,6 +1863,237 @@ fn active_realtime_call_turn(
         ),
         Ok(Some(session)) if !session.state.is_terminal()
     )
+}
+
+fn live_realtime_call_user_profile(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+) -> Option<synapse_domain::domain::user_profile::UserProfile> {
+    let store = ctx.user_profile_store.as_ref()?;
+    let profile_key =
+        synapse_domain::application::services::inbound_message_service::conversation_identity(
+            envelope,
+            &ctx.agent_id,
+        )
+        .actor_profile_key();
+    store.load(&profile_key)
+}
+
+fn seed_live_realtime_call_route_override(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+    provider: &str,
+    model: &str,
+) {
+    let conversation_key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            envelope,
+            &ctx.agent_id,
+        );
+    let route = synapse_domain::ports::route_selection::RouteSelection {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        lane: None,
+        candidate_index: None,
+        last_admission: None,
+        recent_admissions: Vec::new(),
+        last_tool_repair: None,
+        recent_tool_repairs: Vec::new(),
+        context_cache: None,
+        assumptions: Vec::new(),
+        calibrations: Vec::new(),
+        watchdog_alerts: Vec::new(),
+        handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
+    };
+    ctx.route_overrides
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .insert(conversation_key, route);
+}
+
+fn parse_matrix_call_reply_target_for_handoff(reply_target: &str) -> Option<(&str, &str)> {
+    let reply_target = reply_target.strip_prefix("matrix-call:")?;
+    let (sender, room_id) = reply_target.split_once("||")?;
+    let sender = sender.trim();
+    let room_id = room_id.trim();
+    if sender.is_empty() || room_id.is_empty() {
+        return None;
+    }
+    Some((sender, room_id))
+}
+
+struct MatrixParentConversationContext {
+    sender: String,
+    room_id: String,
+    conversation_key: String,
+    existing_summary: Option<String>,
+    recent_turns: Vec<ChatMessage>,
+}
+
+fn resolve_matrix_parent_conversation_context(
+    ctx: &Arc<ChannelRuntimeContext>,
+    original_msg: &synapse_channels::ChannelMessage,
+    history_port: &dyn synapse_domain::ports::conversation_history::ConversationHistoryPort,
+    session_summary: Option<&dyn synapse_domain::ports::session_summary::SessionSummaryPort>,
+) -> Option<MatrixParentConversationContext> {
+    let (sender, room_id) = parse_matrix_call_reply_target_for_handoff(&original_msg.reply_target)?;
+    let canonical_envelope = synapse_domain::domain::channel::InboundEnvelope {
+        source_kind: synapse_domain::domain::channel::SourceKind::Channel,
+        source_adapter: original_msg.channel.clone(),
+        actor_id: sender.to_string(),
+        conversation_id: room_id.to_string(),
+        event_ref: None,
+        reply_ref: room_id.to_string(),
+        thread_ref: None,
+        media_attachments: Vec::new(),
+        content: String::new(),
+        received_at: 0,
+    };
+    let canonical_key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            &canonical_envelope,
+            &ctx.agent_id,
+        );
+    let legacy_reply_target = format!("{sender}||{room_id}");
+    let legacy_envelope = synapse_domain::domain::channel::InboundEnvelope {
+        reply_ref: legacy_reply_target.clone(),
+        conversation_id: legacy_reply_target,
+        ..canonical_envelope
+    };
+    let legacy_key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            &legacy_envelope,
+            &ctx.agent_id,
+        );
+    let canonical_summary = session_summary
+        .and_then(|summary| summary.load_summary(&canonical_key))
+        .map(|summary| strip_live_realtime_call_section(&summary).to_string())
+        .filter(|summary| !summary.trim().is_empty());
+    let canonical_turns = history_port.get_history(&canonical_key);
+    let legacy_summary = session_summary
+        .and_then(|summary| summary.load_summary(&legacy_key))
+        .map(|summary| strip_live_realtime_call_section(&summary).to_string())
+        .filter(|summary| !summary.trim().is_empty());
+    let legacy_turns = history_port.get_history(&legacy_key);
+    let use_legacy = legacy_turns.len() > canonical_turns.len()
+        || (canonical_turns.is_empty() && canonical_summary.is_none() && legacy_summary.is_some());
+    let (conversation_key, existing_summary, recent_turns) = if use_legacy {
+        (legacy_key, legacy_summary, legacy_turns)
+    } else {
+        (canonical_key, canonical_summary, canonical_turns)
+    };
+    Some(MatrixParentConversationContext {
+        sender: sender.to_string(),
+        room_id: room_id.to_string(),
+        conversation_key,
+        existing_summary,
+        recent_turns,
+    })
+}
+
+fn live_realtime_call_chat_handoff(
+    ctx: &Arc<ChannelRuntimeContext>,
+    original_msg: &synapse_channels::ChannelMessage,
+    history_port: &dyn synapse_domain::ports::conversation_history::ConversationHistoryPort,
+    session_summary: Option<&dyn synapse_domain::ports::session_summary::SessionSummaryPort>,
+) -> Option<String> {
+    if original_msg.channel != "matrix" {
+        return None;
+    }
+    let parent = resolve_matrix_parent_conversation_context(
+        ctx,
+        original_msg,
+        history_port,
+        session_summary,
+    )?;
+    let handoff = build_realtime_call_handoff(RealtimeCallHandoffInput {
+        existing_summary: parent.existing_summary.as_deref(),
+        recent_turns: &parent.recent_turns,
+    });
+    tracing::info!(
+        channel = %original_msg.channel,
+        conversation_key = %parent.conversation_key,
+        room_id = %parent.room_id,
+        sender = %parent.sender,
+        summary_present = parent.existing_summary
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        recent_turn_count = parent.recent_turns.len(),
+        handoff_chars = handoff
+            .as_deref()
+            .map(|value| value.chars().count())
+            .unwrap_or(0),
+        "prepared live realtime call chat handoff"
+    );
+    handoff
+}
+
+fn sync_live_realtime_call_back_to_parent_chat(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+    original_msg: &synapse_channels::ChannelMessage,
+    history_port: &dyn synapse_domain::ports::conversation_history::ConversationHistoryPort,
+    session_summary: Option<&dyn synapse_domain::ports::session_summary::SessionSummaryPort>,
+) {
+    if original_msg.channel != "matrix" {
+        return;
+    }
+    let Some(parent) = resolve_matrix_parent_conversation_context(
+        ctx,
+        original_msg,
+        history_port,
+        session_summary,
+    ) else {
+        return;
+    };
+    let call_conversation_key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            envelope,
+            &ctx.agent_id,
+        );
+    let call_turns = history_port.get_history(&call_conversation_key);
+    let handoff = build_live_realtime_call_return_handoff(LiveRealtimeCallReturnHandoffInput {
+        existing_summary: parent.existing_summary.as_deref(),
+        recent_call_turns: &call_turns,
+    });
+    let history_note = handoff.history_note;
+    let merged_summary = handoff.merged_summary;
+    if history_note.is_none() && merged_summary.is_none() {
+        return;
+    }
+
+    if let Some(summary) = merged_summary.as_deref() {
+        if let Some(summary_port) = session_summary {
+            summary_port.save_summary(&parent.conversation_key, summary);
+        }
+    }
+
+    if let Some(note) = history_note {
+        if let Some(last_turn) = history_port.get_history(&parent.conversation_key).last() {
+            if last_turn.role == "system"
+                && is_live_realtime_call_history_note_content(&last_turn.content)
+            {
+                let _ =
+                    history_port.rollback_last_turn(&parent.conversation_key, &last_turn.content);
+            }
+        }
+        history_port.append_turn(&parent.conversation_key, ChatMessage::system(note));
+    }
+
+    tracing::info!(
+        channel = %original_msg.channel,
+        parent_conversation_key = %parent.conversation_key,
+        call_conversation_key = %call_conversation_key,
+        room_id = %parent.room_id,
+        sender = %parent.sender,
+        call_turn_count = call_turns.len(),
+        summary_chars = merged_summary
+            .as_deref()
+            .map(|value| value.chars().count())
+            .unwrap_or(0),
+        "synced live realtime call recap back into parent chat context"
+    );
 }
 
 enum ExplicitRealtimeCallFastPathOutcome {
@@ -1868,6 +2201,7 @@ async fn maybe_handle_semantic_current_conversation_call_fast_path(
             ctx.provider_runtime_options.synapseclaw_dir.clone(),
             lane_selected_tts_config(&ctx.root_config).ok(),
             lane_selected_transcription_config(&ctx.root_config).ok(),
+            Some(ctx.root_config.agent.live_calls.clone()),
         ) {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -1982,6 +2316,7 @@ async fn maybe_deliver_realtime_call_response(
             ctx.provider_runtime_options.synapseclaw_dir.clone(),
             lane_selected_tts_config(&ctx.root_config).ok(),
             lane_selected_transcription_config(&ctx.root_config).ok(),
+            Some(ctx.root_config.agent.live_calls.clone()),
         ) {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -2008,7 +2343,10 @@ async fn maybe_deliver_realtime_call_response(
         .speak(
             synapse_domain::ports::realtime_call::RealtimeCallSpeakRequest {
                 call_control_id: session.call_control_id.clone(),
-                text: output.text.clone(),
+                text: bounded_live_realtime_call_speech(
+                    &ctx.root_config.agent.live_calls,
+                    &output.text,
+                ),
             },
         )
         .await
@@ -6407,5 +6745,33 @@ mod tests {
 
         assert_eq!(delivered.text, "hello from call");
         assert!(!delivered.delivery_hints.already_delivered);
+    }
+
+    #[test]
+    fn live_realtime_call_speech_budget_keeps_first_two_sentences() {
+        let bounded = bounded_live_realtime_call_speech(
+            &synapse_domain::config::schema::AgentLiveCallConfig::default(),
+            "Первое короткое предложение. Второе короткое предложение. Третье уже лишнее.",
+        );
+        assert_eq!(
+            bounded,
+            "Первое короткое предложение. Второе короткое предложение."
+        );
+    }
+
+    #[test]
+    fn live_realtime_call_excluded_tools_adds_heavy_defaults() {
+        let ctx = minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            vec!["file_read".to_string()],
+        );
+        let excluded = merge_live_realtime_call_excluded_tools(
+            ctx.non_cli_excluded_tools.as_ref(),
+            &ctx.root_config.agent.live_calls,
+        );
+        assert!(excluded.iter().any(|tool| tool == "file_read"));
+        assert!(excluded.iter().any(|tool| tool == "memory_recall"));
+        assert!(excluded.iter().any(|tool| tool == "session_search"));
+        assert!(excluded.iter().any(|tool| tool == "shell"));
     }
 }

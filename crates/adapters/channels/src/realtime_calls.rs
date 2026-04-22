@@ -9,7 +9,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use synapse_domain::config::schema::{ChannelsConfig, TtsConfig};
+use synapse_domain::config::schema::{AgentLiveCallConfig, ChannelsConfig, TtsConfig};
 use synapse_domain::domain::channel::ChannelCapability;
 use synapse_domain::ports::realtime_call::{
     RealtimeCallRuntimePort, RealtimeCallSessionSnapshot, RealtimeCallState,
@@ -586,6 +586,7 @@ pub async fn realtime_call_status_report_live_with_synapseclaw_dir(
                     synapseclaw_dir.clone(),
                     tts_config.clone(),
                     transcription_config.clone(),
+                    None,
                 );
                 let health_ok = tokio::time::timeout(
                     std::time::Duration::from_secs(STATUS_PROBE_TIMEOUT_SECS),
@@ -724,6 +725,7 @@ pub fn configured_realtime_audio_call_runtime(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -738,6 +740,7 @@ pub fn configured_realtime_audio_call_runtime_with_synapseclaw_dir(
         synapseclaw_dir,
         None,
         None,
+        None,
     )
 }
 
@@ -747,6 +750,7 @@ pub fn configured_realtime_audio_call_runtime_with_support_configs(
     synapseclaw_dir: Option<PathBuf>,
     tts_config: Option<TtsConfig>,
     transcription_config: Option<synapse_domain::config::schema::TranscriptionConfig>,
+    live_call_config: Option<AgentLiveCallConfig>,
 ) -> Result<Box<dyn RealtimeCallRuntimePort>, RealtimeCallRuntimeConfigError> {
     let channel = normalize_realtime_call_channel(channel);
     ensure_realtime_audio_call_available(&channel, channels_config)?;
@@ -777,6 +781,7 @@ pub fn configured_realtime_audio_call_runtime_with_support_configs(
                     synapseclaw_dir,
                     tts_config,
                     transcription_config,
+                    live_call_config,
                 ),
             ))
         }
