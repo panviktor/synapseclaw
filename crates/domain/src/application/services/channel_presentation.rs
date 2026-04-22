@@ -54,8 +54,13 @@ pub fn compact_progress_surface(
     mode: ChannelPresentationMode,
     caps: &[ChannelCapability],
     supports_streaming: bool,
+    enabled: bool,
 ) -> CompactProgressSurface {
-    if tool_trace_enabled(mode) || supports_streaming || caps.contains(&ChannelCapability::Typing) {
+    if !enabled
+        || tool_trace_enabled(mode)
+        || supports_streaming
+        || caps.contains(&ChannelCapability::Typing)
+    {
         CompactProgressSurface::None
     } else {
         CompactProgressSurface::StatusMessage
@@ -91,14 +96,15 @@ mod tests {
     #[test]
     fn compact_progress_disabled_for_streaming_and_typing() {
         assert_eq!(
-            compact_progress_surface(ChannelPresentationMode::Compact, &[], true),
+            compact_progress_surface(ChannelPresentationMode::Compact, &[], true, true),
             CompactProgressSurface::None
         );
         assert_eq!(
             compact_progress_surface(
                 ChannelPresentationMode::Compact,
                 &[ChannelCapability::Typing],
-                false
+                false,
+                true
             ),
             CompactProgressSurface::None
         );
@@ -107,7 +113,7 @@ mod tests {
     #[test]
     fn compact_progress_enabled_for_plain_text_channels() {
         assert_eq!(
-            compact_progress_surface(ChannelPresentationMode::Compact, &[], false),
+            compact_progress_surface(ChannelPresentationMode::Compact, &[], false, true),
             CompactProgressSurface::StatusMessage
         );
     }
@@ -115,9 +121,17 @@ mod tests {
     #[test]
     fn verbose_mode_disables_compact_progress() {
         assert_eq!(
-            compact_progress_surface(ChannelPresentationMode::Verbose, &[], false),
+            compact_progress_surface(ChannelPresentationMode::Verbose, &[], false, true),
             CompactProgressSurface::None
         );
         assert!(tool_trace_enabled(ChannelPresentationMode::Verbose));
+    }
+
+    #[test]
+    fn explicit_disable_suppresses_compact_progress() {
+        assert_eq!(
+            compact_progress_surface(ChannelPresentationMode::Compact, &[], false, false),
+            CompactProgressSurface::None
+        );
     }
 }

@@ -40,7 +40,7 @@ pub use delegate::DelegateTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
 pub use skill_runtime::SkillReadTool;
-pub use voice_reply::{VoiceListTool, VoicePreferenceTool, VoiceReplyTool};
+pub use voice_reply::{VoiceCallTool, VoiceListTool, VoicePreferenceTool, VoiceReplyTool};
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
@@ -1010,6 +1010,16 @@ fn build_runtime_tool_registry(
         user_profile_context,
     )));
     tool_arcs.push(Arc::new(VoiceListTool::new(Arc::clone(&config))));
+    if !synapse_channels::configured_realtime_audio_call_channels(&config.channels_config)
+        .is_empty()
+    {
+        if let Some(ctx) = conversation_context.as_ref() {
+            tool_arcs.push(Arc::new(VoiceCallTool::new(
+                Arc::clone(&config),
+                Arc::clone(ctx),
+            )));
+        }
+    }
     if let (Some(ctx), Some(defaults), Some(reg)) = (
         conversation_context.as_ref(),
         turn_defaults_context.as_ref(),
@@ -1065,6 +1075,7 @@ fn build_runtime_tool_registry(
 mod tests {
     use super::*;
     use synapse_domain::config::schema::{BrowserConfig, Config};
+    use synapse_domain::ports::conversation_context::InMemoryConversationContext;
     use synapse_domain::ports::tool::ToolNonReplayableReason;
     use tempfile::TempDir;
 
@@ -1200,6 +1211,86 @@ mod tests {
         assert!(names.contains(&"model_routing_config"));
         assert!(names.contains(&"pushover"));
         assert!(names.contains(&"proxy_config"));
+    }
+
+    #[test]
+    fn all_tools_registers_voice_call_for_matrix_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let browser = BrowserConfig::default();
+        let http = synapse_domain::config::schema::HttpRequestConfig::default();
+        let mut cfg = test_config(&tmp);
+        cfg.channels_config.matrix = Some(synapse_domain::config::schema::MatrixConfig {
+            homeserver: "https://matrix.example.com".into(),
+            access_token: Some("tok".into()),
+            user_id: None,
+            device_id: None,
+            room_id: "!room:matrix.example.com".into(),
+            allowed_users: vec!["@user:matrix.example.com".into()],
+            password: None,
+            max_media_download_mb: None,
+        });
+
+        let (tools, _, _) = RuntimeToolRegistryFactory::build(
+            RuntimeToolRegistryInputs {
+                config: Arc::new(cfg.clone()),
+                security: &security,
+                runtime: Arc::new(NativeRuntime::new()),
+                memory: mem,
+                composio_key: None,
+                composio_entity_id: None,
+                browser_config: &browser,
+                http_config: &http,
+                web_fetch_config: &synapse_domain::config::schema::WebFetchConfig::default(),
+                workspace_dir: tmp.path(),
+                agents: &HashMap::new(),
+                default_api_key: None,
+                root_config: &cfg,
+            },
+            RuntimeToolPorts {
+                conversation_context: Some(Arc::new(InMemoryConversationContext::new())),
+                ..RuntimeToolPorts::default()
+            },
+        );
+
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+        assert!(names.contains(&"voice_call"));
+    }
+
+    #[test]
+    fn all_tools_does_not_register_voice_call_without_realtime_runtime() {
+        let tmp = TempDir::new().unwrap();
+        let security = Arc::new(SecurityPolicy::default());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let browser = BrowserConfig::default();
+        let http = synapse_domain::config::schema::HttpRequestConfig::default();
+        let cfg = test_config(&tmp);
+
+        let (tools, _, _) = RuntimeToolRegistryFactory::build(
+            RuntimeToolRegistryInputs {
+                config: Arc::new(cfg.clone()),
+                security: &security,
+                runtime: Arc::new(NativeRuntime::new()),
+                memory: mem,
+                composio_key: None,
+                composio_entity_id: None,
+                browser_config: &browser,
+                http_config: &http,
+                web_fetch_config: &synapse_domain::config::schema::WebFetchConfig::default(),
+                workspace_dir: tmp.path(),
+                agents: &HashMap::new(),
+                default_api_key: None,
+                root_config: &cfg,
+            },
+            RuntimeToolPorts {
+                conversation_context: Some(Arc::new(InMemoryConversationContext::new())),
+                ..RuntimeToolPorts::default()
+            },
+        );
+
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+        assert!(!names.contains(&"voice_call"));
     }
 
     #[test]

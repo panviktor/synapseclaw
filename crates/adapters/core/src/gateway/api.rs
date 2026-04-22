@@ -12,8 +12,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use synapse_domain::application::services::media_artifact_delivery::{
-    tts_output_extension, tts_output_mime, tts_provider_output_format,
-    voice_delivery_channel_profiles,
+    realtime_call_channel_profiles, tts_output_extension, tts_output_mime,
+    tts_provider_output_format, voice_delivery_channel_profiles,
+};
+use synapse_domain::application::services::voice_mode_service::{
+    read_voice_mode_settings, write_voice_mode_settings, VOICE_MODE_PROFILE_KEY,
 };
 use synapse_domain::application::services::voice_preference_service::{
     candidate_matches_preference, read_voice_settings, write_voice_settings, AutoTtsPolicy,
@@ -28,6 +31,11 @@ use synapse_domain::application::services::{
     },
 };
 use synapse_domain::domain::memory::{Skill, SkillOrigin, SkillStatus};
+use synapse_domain::ports::realtime_call::{
+    RealtimeCallAnswerRequest as RealtimeCallAnswerCommand, RealtimeCallHangupRequest,
+    RealtimeCallOrigin, RealtimeCallRuntimePort, RealtimeCallSpeakRequest,
+    RealtimeCallStartRequest,
+};
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -141,6 +149,15 @@ pub struct VoicePreferenceBody {
     pub voice: Option<String>,
     pub format: Option<String>,
     pub auto_tts_policy: Option<AutoTtsPolicy>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoiceModeUpdateBody {
+    pub enabled: Option<bool>,
+    pub auto_playback: Option<bool>,
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub clear_session: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -432,10 +449,147 @@ pub async fn handle_api_voice_status(
         "max_text_length": config.tts.max_text_length,
         "resolution": candidates,
         "transcription": transcription,
-        "delivery_profiles": voice_delivery_channel_profiles(),
+        "delivery_profiles": voice_delivery_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+        "call_profiles": realtime_call_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
         "preferences": preferences,
     }))
     .into_response()
+}
+
+/// GET /api/voice/doctor — environment and lane preflight for voice workflows.
+pub async fn handle_api_voice_doctor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    Json(crate::channels::voice_doctor_report(&config)).into_response()
+}
+
+/// GET /api/voice/mode — read CLI voice mode settings plus current voice preflight.
+pub async fn handle_api_voice_mode_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let settings = read_voice_mode_settings(state.user_profile_store.load(VOICE_MODE_PROFILE_KEY));
+    Json(serde_json::json!({
+        "status": "ok",
+        "settings": settings,
+        "doctor": crate::channels::voice_doctor_report(&config),
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/mode — update persisted CLI voice mode settings.
+pub async fn handle_api_voice_mode_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceModeUpdateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    if body.enabled.is_none()
+        && body.auto_playback.is_none()
+        && body.session_id.is_none()
+        && !body.clear_session
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "request must set enabled, auto_playback, session_id, or clear_session"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut settings =
+        read_voice_mode_settings(state.user_profile_store.load(VOICE_MODE_PROFILE_KEY));
+    if let Some(enabled) = body.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(auto_playback) = body.auto_playback {
+        settings.auto_playback = auto_playback;
+    }
+    if body.clear_session {
+        settings.session_id = None;
+    } else if let Some(session_id) = body.session_id {
+        let trimmed = session_id.trim();
+        settings.session_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let settings = settings.normalized();
+
+    let persist = if let Some(profile) = write_voice_mode_settings(settings.clone()) {
+        state
+            .user_profile_store
+            .upsert(VOICE_MODE_PROFILE_KEY, profile)
+    } else {
+        state
+            .user_profile_store
+            .remove(VOICE_MODE_PROFILE_KEY)
+            .map(|_| ())
+    };
+
+    match persist {
+        Ok(()) => Json(serde_json::json!({
+            "status": "ok",
+            "settings": settings,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("voice mode update failed: {error}")
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/voice/mode — clear persisted CLI voice mode settings.
+pub async fn handle_api_voice_mode_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.user_profile_store.remove(VOICE_MODE_PROFILE_KEY) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "removed": removed,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("voice mode clear failed: {error}")
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// GET /api/voice/profiles — channel-specific native voice/audio delivery profiles.
@@ -448,9 +602,119 @@ pub async fn handle_api_voice_profiles(
     }
 
     Json(serde_json::json!({
-        "profiles": voice_delivery_channel_profiles(),
+        "profiles": voice_delivery_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+        "call_profiles": realtime_call_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
     }))
     .into_response()
+}
+
+/// GET /api/voice/calls/status — process-local realtime call bridge status.
+pub async fn handle_api_voice_call_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let report = synapse_channels::realtime_call_status_report_live_with_synapseclaw_dir(
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+        crate::channels::lane_selected_tts_config(&config).ok(),
+        crate::channels::lane_selected_transcription_config(&config).ok(),
+    )
+    .await;
+    Json(serde_json::json!({
+        "status": "ok",
+        "report": report,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallSessionQuery {
+    #[serde(default)]
+    pub channel: Option<String>,
+}
+
+/// GET /api/voice/calls/sessions — list recent realtime call sessions.
+pub async fn handle_api_voice_call_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoiceCallSessionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let channel = match resolve_realtime_call_inspection_channel(&state, query.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let config = state.config.lock().clone();
+    match synapse_channels::list_realtime_audio_call_sessions_with_synapseclaw_dir(
+        &channel,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+    ) {
+        Ok(sessions) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "sessions": sessions }))
+                .into_response()
+        }
+        Err(error) => realtime_call_config_error(error, &channel).into_response(),
+    }
+}
+
+/// GET /api/voice/calls/sessions/{call_control_id} — inspect one realtime call session.
+pub async fn handle_api_voice_call_session_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(call_control_id): Path<String>,
+    Query(query): Query<VoiceCallSessionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let channel = match resolve_realtime_call_inspection_channel(&state, query.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let config = state.config.lock().clone();
+    match synapse_channels::get_realtime_audio_call_session_with_synapseclaw_dir(
+        &channel,
+        &call_control_id,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+    ) {
+        Ok(Some(session)) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "session": session }))
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "realtime call session not found",
+                "channel": channel,
+                "call_control_id": call_control_id,
+            })),
+        )
+            .into_response(),
+        Err(error) => realtime_call_config_error(error, &channel).into_response(),
+    }
 }
 
 /// GET /api/voice/voices — supported voice IDs for resolved speech_synthesis candidates.
@@ -886,6 +1150,333 @@ pub async fn handle_api_voice_preferences_delete(
         )
             .into_response(),
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallStartRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub to: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub objective: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub agenda: Vec<String>,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallSpeakRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallAnswerRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallHangupRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// POST /api/voice/calls/start — start a confirmed realtime audio call.
+pub async fn handle_api_voice_call_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallStartRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let to = body.to.trim();
+    if to.is_empty() {
+        return bad_voice_call_request("missing non-empty `to`").into_response();
+    }
+
+    match runtime
+        .start_audio_call(RealtimeCallStartRequest {
+            to: to.into(),
+            prompt: body.prompt,
+            origin: RealtimeCallOrigin::api_request(),
+            objective: body.objective.map(|value| value.trim().to_string()),
+            context: body.context.map(|value| value.trim().to_string()),
+            agenda: body
+                .agenda
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
+        })
+        .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "call": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/speak — speak text into an active realtime call.
+pub async fn handle_api_voice_call_speak(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallSpeakRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    let text = body.text.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+    if text.is_empty() {
+        return bad_voice_call_request("missing non-empty `text`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::speak(
+        runtime.as_ref(),
+        RealtimeCallSpeakRequest {
+            call_control_id: call_control_id.into(),
+            text: text.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/answer — answer or attach to an inbound realtime call.
+pub async fn handle_api_voice_call_answer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallAnswerRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::answer(
+        runtime.as_ref(),
+        RealtimeCallAnswerCommand {
+            call_control_id: call_control_id.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/hangup — hang up an active realtime call.
+pub async fn handle_api_voice_call_hangup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallHangupRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::hangup(
+        runtime.as_ref(),
+        RealtimeCallHangupRequest {
+            call_control_id: call_control_id.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+fn require_call_confirmation(confirm: bool) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    synapse_channels::require_realtime_call_confirmation(confirm).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+    })
+}
+
+fn realtime_call_runtime(
+    state: &AppState,
+    channel: &str,
+) -> Result<Box<dyn RealtimeCallRuntimePort>, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    let tts_config = crate::channels::lane_selected_tts_config(&config).ok();
+    let transcription_config = crate::channels::lane_selected_transcription_config(&config).ok();
+    synapse_channels::configured_realtime_audio_call_runtime_with_support_configs(
+        channel,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+        tts_config,
+        transcription_config,
+    )
+    .map_err(|error| realtime_call_config_error(error, channel))
+}
+
+fn resolve_realtime_call_channel(
+    state: &AppState,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    synapse_channels::resolve_realtime_audio_call_channel(requested, &config.channels_config)
+        .map_err(|error| realtime_call_config_error(error, requested.unwrap_or("auto")))
+}
+
+fn resolve_realtime_call_inspection_channel(
+    state: &AppState,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    synapse_channels::resolve_realtime_audio_call_inspection_channel(
+        requested,
+        &config.channels_config,
+    )
+    .map_err(|error| realtime_call_config_error(error, requested.unwrap_or("auto")))
+}
+
+fn realtime_call_config_error(
+    error: synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError,
+    channel: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match error {
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::NoConfiguredRuntime => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::AmbiguousDefault {
+            ..
+        } => StatusCode::BAD_REQUEST,
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::MissingConfig { .. } => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::EmptyArgument { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::ConfirmationRequired => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::Unavailable { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::MissingRuntimeFactory {
+            ..
+        } => StatusCode::NOT_IMPLEMENTED,
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error.to_string(),
+            "channel": channel,
+        })),
+    )
+}
+
+fn bad_voice_call_request(message: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+}
+
+fn voice_call_error(error: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({ "error": error.to_string() })),
+    )
 }
 
 fn voice_preference_target(
@@ -4330,54 +4921,53 @@ pub async fn handle_api_channel_capabilities(
         }
     };
 
-    let channels = [
-        "telegram",
-        "discord",
-        "slack",
-        "matrix",
-        "signal",
-        "email",
-        "mattermost",
-        "webhook",
-    ];
     let mut result = serde_json::Map::new();
-    for name in &channels {
-        let caps = registry.capabilities(name);
-        if !caps.is_empty() {
-            let cap_names: Vec<&str> = caps
-                .iter()
-                .map(|c| match c {
-                    synapse_domain::domain::channel::ChannelCapability::SendText => "SendText",
-                    synapse_domain::domain::channel::ChannelCapability::ReceiveText => {
-                        "ReceiveText"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::Threads => "Threads",
-                    synapse_domain::domain::channel::ChannelCapability::Reactions => "Reactions",
-                    synapse_domain::domain::channel::ChannelCapability::Typing => "Typing",
-                    synapse_domain::domain::channel::ChannelCapability::Attachments => {
-                        "Attachments"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::RichFormatting => {
-                        "RichFormatting"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::EditMessage => {
-                        "EditMessage"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::RuntimeCommands => {
-                        "RuntimeCommands"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::InterruptOnNewMessage => {
-                        "InterruptOnNewMessage"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::ToolContextDisplay => {
-                        "ToolContextDisplay"
-                    }
-                })
-                .collect();
-            result.insert((*name).to_string(), serde_json::json!(cap_names));
-        }
+    for profile in registry.capability_profiles() {
+        result.insert(
+            profile.channel,
+            serde_json::json!({
+                "available": profile.capabilities.iter().map(channel_capability_name).collect::<Vec<_>>(),
+                "planned": profile.planned_capabilities.iter().map(channel_capability_name).collect::<Vec<_>>(),
+            }),
+        );
     }
     Json(serde_json::Value::Object(result)).into_response()
+}
+
+fn channel_capability_name(
+    capability: &synapse_domain::domain::channel::ChannelCapability,
+) -> &'static str {
+    match capability {
+        synapse_domain::domain::channel::ChannelCapability::SendText => "SendText",
+        synapse_domain::domain::channel::ChannelCapability::ReceiveText => "ReceiveText",
+        synapse_domain::domain::channel::ChannelCapability::Threads => "Threads",
+        synapse_domain::domain::channel::ChannelCapability::Reactions => "Reactions",
+        synapse_domain::domain::channel::ChannelCapability::Typing => "Typing",
+        synapse_domain::domain::channel::ChannelCapability::Attachments => "Attachments",
+        synapse_domain::domain::channel::ChannelCapability::RichFormatting => "RichFormatting",
+        synapse_domain::domain::channel::ChannelCapability::EditMessage => "EditMessage",
+        synapse_domain::domain::channel::ChannelCapability::RuntimeCommands => "RuntimeCommands",
+        synapse_domain::domain::channel::ChannelCapability::InterruptOnNewMessage => {
+            "InterruptOnNewMessage"
+        }
+        synapse_domain::domain::channel::ChannelCapability::ToolContextDisplay => {
+            "ToolContextDisplay"
+        }
+        synapse_domain::domain::channel::ChannelCapability::AudioAttachments => "AudioAttachments",
+        synapse_domain::domain::channel::ChannelCapability::NativeVoiceNotes => "NativeVoiceNotes",
+        synapse_domain::domain::channel::ChannelCapability::OggOpusVoiceNotes => {
+            "OggOpusVoiceNotes"
+        }
+        synapse_domain::domain::channel::ChannelCapability::NativeVoiceMetadata => {
+            "NativeVoiceMetadata"
+        }
+        synapse_domain::domain::channel::ChannelCapability::RealtimeAudioCall => {
+            "RealtimeAudioCall"
+        }
+        synapse_domain::domain::channel::ChannelCapability::RealtimeVideoCall => {
+            "RealtimeVideoCall"
+        }
+    }
 }
 
 /// POST /api/channels/deliver — deliver a message to a channel via OutboundIntent.

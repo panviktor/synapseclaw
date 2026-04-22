@@ -682,6 +682,11 @@
       "features": ["speech_transcription"]
     },
     {
+      "provider": "deepgram",
+      "model": "nova-3",
+      "features": ["speech_transcription"]
+    },
+    {
       "provider": "assemblyai",
       "model": "default",
       "features": ["speech_transcription"]

@@ -151,9 +151,20 @@ impl ChannelConfig for EmailConfig {
 pub struct ClawdTalkConfig {
     /// Telnyx API key
     pub api_key: String,
+    /// ClawdTalk outbound WebSocket endpoint for transcript/response bridging.
+    #[serde(default)]
+    pub websocket_url: Option<String>,
+    /// ClawdTalk REST API base URL for outbound calls and call lifecycle actions.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    /// Optional ClawdTalk/OpenClaw assistant identifier advertised on the WebSocket.
+    #[serde(default)]
+    pub assistant_id: Option<String>,
     /// Telnyx connection ID for SIP
+    #[serde(default)]
     pub connection_id: String,
     /// Phone number to call from (E.164 format)
+    #[serde(default)]
     pub from_number: String,
     /// Allowed destination numbers or patterns
     #[serde(default)]
@@ -185,6 +196,9 @@ impl Default for ClawdTalkConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
+            websocket_url: None,
+            api_base_url: None,
+            assistant_id: None,
             connection_id: String::new(),
             from_number: String::new(),
             allowed_destinations: Vec::new(),

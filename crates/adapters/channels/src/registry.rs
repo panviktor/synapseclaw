@@ -4,6 +4,10 @@
 //! `build_channel_by_id`.  Stateful channels (Matrix) keep their authenticated
 //! SDK client alive across deliveries instead of re-initialising per message.
 
+use crate::capabilities::{
+    declared_channel_capabilities, declared_channel_capability_profile,
+    declared_channel_capability_profiles,
+};
 use crate::{Channel, SendMessage};
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -12,7 +16,7 @@ use std::sync::Arc;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
-use synapse_domain::ports::channel_registry::ChannelRegistryPort;
+use synapse_domain::ports::channel_registry::{ChannelCapabilityProfile, ChannelRegistryPort};
 
 /// Builder function type for creating channels from config.
 pub type ChannelBuilderFn = dyn Fn(&Config, &str) -> anyhow::Result<Arc<dyn Channel>> + Send + Sync;
@@ -231,65 +235,15 @@ impl ChannelRegistryPort for CachedChannelRegistry {
     }
 
     fn capabilities(&self, channel_name: &str) -> Vec<ChannelCapability> {
-        // Hardcoded per channel for now.  Phase 4.1 moves this to adapters.
-        match channel_name {
-            "telegram" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Attachments,
-                ChannelCapability::RichFormatting,
-                ChannelCapability::EditMessage,
-                ChannelCapability::RuntimeCommands,
-                ChannelCapability::InterruptOnNewMessage,
-            ],
-            "discord" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Threads,
-                ChannelCapability::Attachments,
-                ChannelCapability::Reactions,
-                ChannelCapability::RichFormatting,
-                ChannelCapability::EditMessage,
-                ChannelCapability::RuntimeCommands,
-                ChannelCapability::ToolContextDisplay,
-            ],
-            "slack" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Threads,
-                ChannelCapability::Attachments,
-                ChannelCapability::Reactions,
-                ChannelCapability::RichFormatting,
-                ChannelCapability::InterruptOnNewMessage,
-                ChannelCapability::ToolContextDisplay,
-            ],
-            #[cfg(feature = "channel-matrix")]
-            "matrix" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Threads,
-                ChannelCapability::Attachments,
-                ChannelCapability::Reactions,
-                ChannelCapability::RichFormatting,
-                ChannelCapability::RuntimeCommands,
-                ChannelCapability::ToolContextDisplay,
-            ],
-            "mattermost" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Threads,
-                ChannelCapability::Reactions,
-                ChannelCapability::RichFormatting,
-                ChannelCapability::ToolContextDisplay,
-            ],
-            "signal" => vec![
-                ChannelCapability::SendText,
-                ChannelCapability::ReceiveText,
-                ChannelCapability::Reactions,
-            ],
-            "web" => synapse_domain::domain::channel::web_channel_capabilities(),
-            _ => vec![],
-        }
+        declared_channel_capabilities(channel_name)
+    }
+
+    fn capability_profile(&self, channel_name: &str) -> ChannelCapabilityProfile {
+        declared_channel_capability_profile(channel_name)
+    }
+
+    fn capability_profiles(&self) -> Vec<ChannelCapabilityProfile> {
+        declared_channel_capability_profiles()
     }
 
     fn delivery_hints(&self, channel_name: &str) -> Option<String> {

@@ -599,6 +599,10 @@ fn default_deepgram_stt_model() -> String {
     "nova-2".into()
 }
 
+fn default_deepgram_flux_model() -> String {
+    "flux-general-multi".into()
+}
+
 fn default_mistral_stt_model() -> String {
     "voxtral-mini-latest".into()
 }
@@ -1156,6 +1160,35 @@ pub struct DeepgramSttConfig {
     /// Deepgram model name (default: "nova-2").
     #[serde(default = "default_deepgram_stt_model")]
     pub model: String,
+    /// Optional language hint passed to Deepgram (`multi`, `en`, `ru`, ...).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Optional Flux realtime turn-detection configuration for live voice calls.
+    #[serde(default)]
+    pub flux: Option<DeepgramFluxConfig>,
+}
+
+/// Deepgram Flux realtime voice-agent configuration (`[transcription.deepgram.flux]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeepgramFluxConfig {
+    /// Flux model name (default: "flux-general-multi").
+    #[serde(default = "default_deepgram_flux_model")]
+    pub model: String,
+    /// Optional repeated language hints for multilingual Flux.
+    #[serde(default)]
+    pub language_hints: Vec<String>,
+    /// Optional end-of-turn confidence threshold.
+    #[serde(default)]
+    pub eot_threshold: Option<f32>,
+    /// Optional eager end-of-turn confidence threshold.
+    #[serde(default)]
+    pub eager_eot_threshold: Option<f32>,
+    /// Optional silence timeout in milliseconds.
+    #[serde(default)]
+    pub eot_timeout_ms: Option<u32>,
+    /// Optional keyterm prompting.
+    #[serde(default)]
+    pub keyterms: Vec<String>,
 }
 
 /// AssemblyAI STT provider configuration (`[transcription.assemblyai]`).

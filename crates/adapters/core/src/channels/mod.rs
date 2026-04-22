@@ -40,7 +40,9 @@ use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNo
 use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
+use serde::Serialize;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -132,6 +134,200 @@ fn required_lane_api_key(candidate: &ResolvedModelCandidate, purpose: &str) -> R
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceDoctorCandidate {
+    pub lane_candidate_index: usize,
+    pub provider: String,
+    pub model: String,
+    pub voice: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceDoctorTranscription {
+    pub provider: String,
+    pub model: String,
+    pub language: Option<String>,
+    pub max_duration_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceDoctorReport {
+    pub stdin_tty: bool,
+    pub stdout_tty: bool,
+    pub stderr_tty: bool,
+    pub ssh_session: bool,
+    pub display: bool,
+    pub wayland: bool,
+    pub pulse_socket: bool,
+    pub pipewire_socket: bool,
+    pub audio_runtime_dir: Option<String>,
+    pub playback_binaries: Vec<String>,
+    pub recording_binaries: Vec<String>,
+    pub speech_synthesis_ready: bool,
+    pub speech_synthesis_candidates: Vec<VoiceDoctorCandidate>,
+    pub speech_synthesis_error: Option<String>,
+    pub speech_transcription_ready: bool,
+    pub speech_transcription: Option<VoiceDoctorTranscription>,
+    pub speech_transcription_error: Option<String>,
+    pub notes: Vec<String>,
+}
+
+fn selected_tts_model(config: &TtsConfig) -> String {
+    match config.default_provider.as_str() {
+        "openai" => config
+            .openai
+            .as_ref()
+            .map(|provider| provider.model.clone())
+            .unwrap_or_else(|| "tts-1".into()),
+        "groq" => config
+            .groq
+            .as_ref()
+            .map(|provider| provider.model.clone())
+            .unwrap_or_else(|| "canopylabs/orpheus-v1-english".into()),
+        "elevenlabs" => "elevenlabs".into(),
+        "google" => "google-cloud-tts".into(),
+        "edge" => "edge-tts".into(),
+        "minimax" => config
+            .minimax
+            .as_ref()
+            .map(|provider| provider.model.clone())
+            .unwrap_or_else(|| "speech-02-hd".into()),
+        "mistral" => config
+            .mistral
+            .as_ref()
+            .map(|provider| provider.model.clone())
+            .unwrap_or_else(|| "voxtral-mini-tts-2603".into()),
+        "xai" => "tts".into(),
+        other => other.to_string(),
+    }
+}
+
+fn detect_voice_binaries(candidates: &[&str]) -> Vec<String> {
+    candidates
+        .iter()
+        .filter_map(|name| {
+            which::which(name)
+                .ok()
+                .map(|path| format!("{name} ({})", path.display()))
+        })
+        .collect()
+}
+
+pub fn voice_doctor_report(config: &Config) -> VoiceDoctorReport {
+    let stdin_tty = std::io::stdin().is_terminal();
+    let stdout_tty = std::io::stdout().is_terminal();
+    let stderr_tty = std::io::stderr().is_terminal();
+    let ssh_session = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .into_iter()
+        .any(|key| std::env::var_os(key).is_some());
+    let display = std::env::var_os("DISPLAY").is_some();
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let audio_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty());
+    let pulse_socket = audio_runtime_dir
+        .as_ref()
+        .map(|path| path.join("pulse/native").exists())
+        .unwrap_or(false)
+        || std::env::var_os("PULSE_SERVER").is_some();
+    let pipewire_socket = audio_runtime_dir
+        .as_ref()
+        .map(|path| path.join("pipewire-0").exists())
+        .unwrap_or(false);
+    let playback_binaries = detect_voice_binaries(&[
+        "ffplay",
+        "paplay",
+        "pw-play",
+        "play",
+        "aplay",
+        "edge-playback",
+    ]);
+    let recording_binaries = detect_voice_binaries(&["arecord", "ffmpeg", "sox", "rec"]);
+
+    let (speech_synthesis_ready, speech_synthesis_candidates, speech_synthesis_error) =
+        match lane_selected_tts_candidate_configs(config) {
+            Ok(candidates) => (
+                true,
+                candidates
+                    .into_iter()
+                    .map(|(lane_candidate_index, tts)| VoiceDoctorCandidate {
+                        lane_candidate_index,
+                        provider: tts.default_provider.clone(),
+                        model: selected_tts_model(&tts),
+                        voice: tts.default_voice.clone(),
+                        format: synapse_domain::application::services::media_artifact_delivery::tts_provider_output_format(&tts)
+                            .to_string(),
+                    })
+                    .collect(),
+                None,
+            ),
+            Err(error) => (false, Vec::new(), Some(error.to_string())),
+        };
+
+    let (speech_transcription_ready, speech_transcription, speech_transcription_error) =
+        match lane_selected_transcription_config(config) {
+            Ok(transcription) => (
+                true,
+                Some(VoiceDoctorTranscription {
+                    provider: transcription.default_provider.clone(),
+                    model: transcription.model.clone(),
+                    language: transcription.language.clone(),
+                    max_duration_secs: transcription.max_duration_secs,
+                }),
+                None,
+            ),
+            Err(error) => (false, None, Some(error.to_string())),
+        };
+
+    let mut notes = Vec::new();
+    if ssh_session && !display && !wayland {
+        notes.push("SSH session without graphical display detected.".into());
+    }
+    if !stdin_tty || !stdout_tty {
+        notes.push("Interactive terminal I/O is not fully available.".into());
+    }
+    if !pulse_socket && !pipewire_socket {
+        notes.push("No PulseAudio or PipeWire runtime socket detected.".into());
+    }
+    if playback_binaries.is_empty() {
+        notes.push("No known local playback binary detected.".into());
+    }
+    if recording_binaries.is_empty() {
+        notes.push("No known local recording binary detected.".into());
+    }
+    if !speech_synthesis_ready {
+        notes.push("speech_synthesis lane is not ready.".into());
+    }
+    if !speech_transcription_ready {
+        notes.push("speech_transcription lane is not ready.".into());
+    }
+    if notes.is_empty() {
+        notes.push("Voice prerequisites look healthy for current resolved lanes.".into());
+    }
+
+    VoiceDoctorReport {
+        stdin_tty,
+        stdout_tty,
+        stderr_tty,
+        ssh_session,
+        display,
+        wayland,
+        pulse_socket,
+        pipewire_socket,
+        audio_runtime_dir: audio_runtime_dir.map(|path| path.display().to_string()),
+        playback_binaries,
+        recording_binaries,
+        speech_synthesis_ready,
+        speech_synthesis_candidates,
+        speech_synthesis_error,
+        speech_transcription_ready,
+        speech_transcription,
+        speech_transcription_error,
+        notes,
+    }
+}
+
 pub fn lane_selected_transcription_config(config: &Config) -> Result<TranscriptionConfig> {
     let mut transcription = config.transcription.clone();
     if !transcription.enabled {
@@ -163,6 +359,14 @@ pub fn lane_selected_transcription_config(config: &Config) -> Result<Transcripti
             transcription.deepgram = Some(DeepgramSttConfig {
                 api_key: Some(required_lane_api_key(selected, "speech_transcription")?),
                 model: selected.model.clone(),
+                language: transcription
+                    .deepgram
+                    .as_ref()
+                    .and_then(|config| config.language.clone()),
+                flux: transcription
+                    .deepgram
+                    .as_ref()
+                    .and_then(|config| config.flux.clone()),
             });
         }
         "assemblyai" => {
@@ -1216,6 +1420,8 @@ async fn handle_message_via_orchestrator(
         } else {
             Arc::new(synapse_domain::ports::channel_output::NoopChannelOutput)
         };
+    let live_realtime_call_turn =
+        active_realtime_call_turn(ctx, &original_msg.channel, &original_msg.reply_target);
 
     let presentation_mode = synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(
         ctx.show_tool_calls,
@@ -1223,10 +1429,11 @@ async fn handle_message_via_orchestrator(
 
     // Raw tool trace is an explicit opt-in. Default channel UX stays compact and
     // human-readable; full telemetry belongs in the web/operator UI.
-    let observer_for_runtime: Arc<dyn Observer> =
-        if synapse_domain::application::services::channel_presentation::tool_trace_enabled(
-            presentation_mode,
-        ) {
+    let observer_for_runtime: Arc<dyn Observer> = if live_realtime_call_turn {
+        Arc::clone(&ctx.observer)
+    } else if synapse_domain::application::services::channel_presentation::tool_trace_enabled(
+        presentation_mode,
+    ) {
             if let Some(ch) = target_channel.clone() {
                 let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
                 let reply_target = original_msg.reply_target.clone();
@@ -1265,9 +1472,9 @@ async fn handle_message_via_orchestrator(
             } else {
                 Arc::clone(&ctx.observer)
             }
-        } else {
-            Arc::clone(&ctx.observer)
-        };
+    } else {
+        Arc::clone(&ctx.observer)
+    };
 
     let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> = Arc::new(
         crate::agent_runtime_factory::ChannelAgentRuntimeFactory::build(
@@ -1324,7 +1531,7 @@ async fn handle_message_via_orchestrator(
             default_model: ctx.model.to_string(),
             temperature: ctx.temperature,
             max_tool_iterations: ctx.max_tool_iterations,
-            auto_save_memory: ctx.auto_save_memory,
+            auto_save_memory: ctx.auto_save_memory && !live_realtime_call_turn,
             model_lanes: ctx.model_lanes.as_ref().clone(),
             model_preset: ctx.model_preset.clone(),
             query_classification: ctx.query_classification.clone(),
@@ -1334,11 +1541,16 @@ async fn handle_message_via_orchestrator(
             agent_id: ctx.agent_id.to_string(),
             prompt_budget_config: ctx.prompt_budget_config.clone(),
             presentation_mode,
+            emit_compact_progress: !live_realtime_call_turn,
         },
     );
 
     let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
-        Some(Arc::clone(&ctx.memory));
+        if live_realtime_call_turn {
+            Some(Arc::new(synapse_memory::NoopUnifiedMemory))
+        } else {
+            Some(Arc::clone(&ctx.memory))
+        };
 
     let ports = crate::inbound_runtime_ports::InboundRuntimePortsFactory::build(
         crate::inbound_runtime_ports::InboundRuntimePortsInput {
@@ -1368,38 +1580,72 @@ async fn handle_message_via_orchestrator(
         },
     );
 
-    // ── Shared explicit routing: pipeline route or local handling ──
-    if let Some(output) = crate::message_routing_service::route_explicit_message(
-        envelope,
-        crate::message_routing_service::MessageRoutingPorts {
-            router: ctx.message_router.clone(),
-            pipeline_store: ctx.pipeline_store.clone(),
-            pipeline_executor: ctx.pipeline_executor.clone(),
-            run_store: None,
-            dead_letter: None,
-        },
-        synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
-            reply_ref: Some(original_msg.reply_target.clone()),
-            thread_ref: original_msg.thread_ts.clone(),
-            already_delivered: false,
-        },
-    )
-    .await
-    {
-        send_presented_output_to_channel(
-            &output,
-            target_channel.as_ref(),
-            &original_msg.reply_target,
-            original_msg.thread_ts.clone(),
-            "pipeline result",
-        )
-        .await;
-        return;
-    }
-    tracing::info!(
-        agent_id = %ctx.agent_id,
-        "explicit routing no match; handling locally"
+    let realtime_call_turn = crate::channels::set_realtime_call_state_for_reply_target(
+        &original_msg.channel,
+        &original_msg.reply_target,
+        synapse_domain::ports::realtime_call::RealtimeCallState::Thinking,
     );
+
+    // ── Shared explicit routing: pipeline route or local handling ──
+    if !live_realtime_call_turn {
+        if let Some(output) = crate::message_routing_service::route_explicit_message(
+            envelope,
+            crate::message_routing_service::MessageRoutingPorts {
+                router: ctx.message_router.clone(),
+                pipeline_store: ctx.pipeline_store.clone(),
+                pipeline_executor: ctx.pipeline_executor.clone(),
+                run_store: None,
+                dead_letter: None,
+            },
+            synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+                reply_ref: Some(original_msg.reply_target.clone()),
+                thread_ref: original_msg.thread_ts.clone(),
+                already_delivered: false,
+            },
+        )
+        .await
+        {
+            send_presented_output_to_channel(
+                &output,
+                target_channel.as_ref(),
+                &original_msg.reply_target,
+                original_msg.thread_ts.clone(),
+                "pipeline result",
+            )
+            .await;
+            schedule_channel_session_summary_if_needed(ctx, envelope, live_realtime_call_turn);
+            return;
+        }
+        tracing::info!(
+            agent_id = %ctx.agent_id,
+            "explicit routing no match; handling locally"
+        );
+
+        match maybe_handle_semantic_current_conversation_call_fast_path(
+            ctx,
+            envelope,
+            original_msg,
+            &ports,
+        )
+        .await
+        {
+            ExplicitRealtimeCallFastPathOutcome::NotHandled => {}
+            ExplicitRealtimeCallFastPathOutcome::Handled(output) => {
+                if let Some(output) = output.as_ref() {
+                    send_presented_output_to_channel(
+                        output,
+                        target_channel.as_ref(),
+                        &original_msg.reply_target,
+                        original_msg.thread_ts.clone(),
+                        "realtime call fast-path response",
+                    )
+                    .await;
+                }
+                schedule_channel_session_summary_if_needed(ctx, envelope, live_realtime_call_turn);
+                return;
+            }
+        }
+    }
 
     // ── Call orchestrator ─────────────────────────────────────────
     // The orchestrator sends responses/errors directly via ChannelOutputPort.
@@ -1420,10 +1666,29 @@ async fn handle_message_via_orchestrator(
             .await;
         }
         Ok(uc::HandleResult::Cancelled { reason }) => {
+            if realtime_call_turn {
+                crate::channels::set_realtime_call_state_for_reply_target(
+                    &original_msg.channel,
+                    &original_msg.reply_target,
+                    synapse_domain::ports::realtime_call::RealtimeCallState::Listening,
+                );
+            }
             tracing::info!(%reason, "Message cancelled by hook");
         }
         Ok(uc::HandleResult::Response { output, .. }) => {
-            let output = maybe_apply_auto_tts_response(ctx, envelope, output).await;
+            let output = maybe_deliver_realtime_call_response(
+                ctx,
+                &original_msg.channel,
+                &original_msg.reply_target,
+                output,
+                live_realtime_call_turn,
+            )
+            .await;
+            let output = if live_realtime_call_turn {
+                output
+            } else {
+                maybe_apply_auto_tts_response(ctx, envelope, output).await
+            };
             send_presented_output_to_channel(
                 &output,
                 target_channel.as_ref(),
@@ -1433,8 +1698,23 @@ async fn handle_message_via_orchestrator(
             )
             .await;
         }
-        Ok(uc::HandleResult::CommandNoChannel) => {}
+        Ok(uc::HandleResult::CommandNoChannel) => {
+            if realtime_call_turn {
+                crate::channels::set_realtime_call_state_for_reply_target(
+                    &original_msg.channel,
+                    &original_msg.reply_target,
+                    synapse_domain::ports::realtime_call::RealtimeCallState::Listening,
+                );
+            }
+        }
         Err(e) => {
+            if realtime_call_turn {
+                crate::channels::set_realtime_call_state_for_reply_target(
+                    &original_msg.channel,
+                    &original_msg.reply_target,
+                    synapse_domain::ports::realtime_call::RealtimeCallState::Failed,
+                );
+            }
             // Unexpected orchestrator error (should be rare — most errors handled internally)
             tracing::warn!("Message handling failed unexpectedly: {e}");
         }
@@ -1446,22 +1726,342 @@ async fn handle_message_via_orchestrator(
         "channel.message.handled"
     );
 
-    // Persist session store turn if available
-    if let Some(ref _store) = ctx.session_store {
-        let key =
-            synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
-                envelope,
-                &ctx.agent_id,
-            );
-        let _history = ports.history.get_history(&key);
-        // Session store is already updated through the history port's append_turn
-        // Just trigger summary generation if needed
-        let ctx_summary = ctx.clone();
-        let key_summary = key;
-        tokio::spawn(async move {
-            summarize_channel_session_if_needed(&ctx_summary, &key_summary).await;
-        });
+    schedule_channel_session_summary_if_needed(ctx, envelope, live_realtime_call_turn);
+}
+
+fn schedule_channel_session_summary_if_needed(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+    skip_for_live_realtime_call_turn: bool,
+) {
+    if ctx.session_store.is_none() || skip_for_live_realtime_call_turn {
+        return;
     }
+    let key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            envelope,
+            &ctx.agent_id,
+        );
+    let ctx_summary = ctx.clone();
+    tokio::spawn(async move {
+        summarize_channel_session_if_needed(&ctx_summary, &key).await;
+    });
+}
+
+fn active_realtime_call_turn(
+    ctx: &Arc<ChannelRuntimeContext>,
+    channel_name: &str,
+    reply_target: &str,
+) -> bool {
+    matches!(
+        synapse_channels::get_realtime_audio_call_session_for_reply_target(
+            channel_name,
+            reply_target,
+            &ctx.root_config.channels_config,
+        ),
+        Ok(Some(session)) if !session.state.is_terminal()
+    )
+}
+
+enum ExplicitRealtimeCallFastPathOutcome {
+    NotHandled,
+    Handled(
+        Option<
+            synapse_domain::application::services::assistant_output_presentation::PresentedOutput,
+        >,
+    ),
+}
+
+async fn maybe_handle_semantic_current_conversation_call_fast_path(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &synapse_domain::domain::channel::InboundEnvelope,
+    original_msg: &traits::ChannelMessage,
+    ports: &synapse_domain::application::use_cases::handle_inbound_message::InboundMessagePorts,
+) -> ExplicitRealtimeCallFastPathOutcome {
+    if synapse_channels::ensure_realtime_audio_call_available(
+        &original_msg.channel,
+        &ctx.root_config.channels_config,
+    )
+    .is_err()
+    {
+        return ExplicitRealtimeCallFastPathOutcome::NotHandled;
+    }
+
+    if let Ok(Some(session)) = synapse_channels::get_realtime_audio_call_session_for_reply_target(
+        &original_msg.channel,
+        &original_msg.reply_target,
+        &ctx.root_config.channels_config,
+    ) {
+        if !session.state.is_terminal() {
+            return ExplicitRealtimeCallFastPathOutcome::NotHandled;
+        }
+    }
+
+    let semantic_cache_key =
+        resolve_auxiliary_model(&ctx.root_config, AuxiliaryLane::Embedding, None)
+            .ok()
+            .map(|resolution| {
+                format!(
+                    "{}:{}:{:?}",
+                    resolution.selected.provider,
+                    resolution.selected.model,
+                    resolution.selected.dimensions
+                )
+            });
+    let assessment =
+        synapse_domain::application::services::realtime_call_opportunity_service::assess_realtime_call_opportunity(
+            ctx.memory.as_ref(),
+            semantic_cache_key.as_deref(),
+            &envelope.content,
+        )
+        .await;
+    tracing::debug!(
+        channel = %original_msg.channel,
+        actor = %envelope.actor_id,
+        current_similarity = ?assessment.current_conversation_similarity,
+        third_party_similarity = ?assessment.third_party_similarity,
+        discussion_similarity = ?assessment.discussion_only_similarity,
+        decision = ?assessment.decision,
+        "realtime call opportunity assessment"
+    );
+    if !matches!(
+        assessment.decision,
+        synapse_domain::application::services::realtime_call_opportunity_service::RealtimeCallOpportunityDecision::StartCurrentConversation
+    ) {
+        return ExplicitRealtimeCallFastPathOutcome::NotHandled;
+    }
+
+    let Some(target) = synapse_channels::resolve_current_conversation_realtime_call_target(
+        &original_msg.channel,
+        &envelope.actor_id,
+        &envelope.reply_ref,
+    ) else {
+        return ExplicitRealtimeCallFastPathOutcome::NotHandled;
+    };
+
+    let conversation_key =
+        synapse_domain::application::services::inbound_message_service::conversation_key_for_agent(
+            envelope,
+            &ctx.agent_id,
+        );
+    let existing_summary = ports
+        .session_summary
+        .as_ref()
+        .and_then(|summary| summary.load_summary(&conversation_key));
+    let recent_turns = ports.history.get_history(&conversation_key);
+    let handoff = synapse_domain::application::services::realtime_call_opportunity_service::build_realtime_call_handoff(
+        synapse_domain::application::services::realtime_call_opportunity_service::RealtimeCallHandoffInput {
+            existing_summary: existing_summary.as_deref(),
+            recent_turns: &recent_turns,
+        },
+    );
+
+    ports.history.append_turn(
+        &conversation_key,
+        ChatMessage::user(envelope.content.clone()),
+    );
+
+    let runtime =
+        match synapse_channels::configured_realtime_audio_call_runtime_with_support_configs(
+            &original_msg.channel,
+            &ctx.root_config.channels_config,
+            ctx.provider_runtime_options.synapseclaw_dir.clone(),
+            lane_selected_tts_config(&ctx.root_config).ok(),
+            lane_selected_transcription_config(&ctx.root_config).ok(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                return ExplicitRealtimeCallFastPathOutcome::Handled(Some(
+                synapse_domain::application::services::assistant_output_presentation::AssistantOutputPresenter::failure(
+                    format!("Failed to start a realtime call here: {error}"),
+                    synapse_domain::ports::agent_runtime::AgentRuntimeErrorKind::RuntimeFailure,
+                    synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints::default(),
+                ),
+            ));
+            }
+        };
+
+    match runtime
+        .start_audio_call(synapse_domain::ports::realtime_call::RealtimeCallStartRequest {
+            to: target,
+            prompt: None,
+            origin: synapse_domain::ports::realtime_call::RealtimeCallOrigin::chat_request(
+                Some(envelope.conversation_id.clone()),
+                Some(envelope.source_adapter.clone()),
+                Some(envelope.reply_ref.clone()),
+                envelope.thread_ref.clone(),
+            ),
+            objective: Some("Continue the current conversation by live voice call.".into()),
+            context: handoff,
+            agenda: Vec::new(),
+        })
+        .await
+    {
+        Ok(result) => {
+            tracing::info!(
+                channel = %result.channel,
+                call_control_id = %result.call_control_id,
+                actor = %envelope.actor_id,
+                "started realtime call via semantic current-conversation fast-path"
+            );
+            ExplicitRealtimeCallFastPathOutcome::Handled(None)
+        }
+        Err(error) => ExplicitRealtimeCallFastPathOutcome::Handled(Some(
+            synapse_domain::application::services::assistant_output_presentation::AssistantOutputPresenter::failure(
+                format!("Failed to start a realtime call here: {error}"),
+                synapse_domain::ports::agent_runtime::AgentRuntimeErrorKind::RuntimeFailure,
+                synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints::default(),
+            ),
+        )),
+    }
+}
+
+async fn maybe_deliver_realtime_call_response(
+    ctx: &Arc<ChannelRuntimeContext>,
+    channel_name: &str,
+    default_reply_ref: &str,
+    output: synapse_domain::application::services::assistant_output_presentation::PresentedOutput,
+    suppress_channel_fallback: bool,
+) -> synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
+    if output.delivery_hints.already_delivered
+        || output.text.trim().is_empty()
+        || !output.media_artifacts.is_empty()
+    {
+        return output;
+    }
+
+    let reply_ref = output
+        .delivery_hints
+        .reply_ref
+        .as_deref()
+        .unwrap_or(default_reply_ref)
+        .to_string();
+    let channels_config = &ctx.root_config.channels_config;
+    let session = match synapse_channels::get_realtime_audio_call_session_for_reply_target(
+        channel_name,
+        &reply_ref,
+        channels_config,
+    ) {
+        Ok(Some(session)) if !session.state.is_terminal() => session,
+        Ok(_) => {
+            if suppress_channel_fallback {
+                return suppress_realtime_call_channel_fallback(
+                    output,
+                    channel_name,
+                    &reply_ref,
+                    None,
+                    "active call session was gone before reply delivery",
+                );
+            }
+            return output;
+        }
+        Err(error) => {
+            tracing::debug!(
+                channel = %channel_name,
+                reply_ref = %reply_ref,
+                error = %error,
+                "failed to resolve realtime call reply target"
+            );
+            if suppress_channel_fallback {
+                return suppress_realtime_call_channel_fallback(
+                    output,
+                    channel_name,
+                    &reply_ref,
+                    None,
+                    "failed to resolve realtime call reply target",
+                );
+            }
+            return output;
+        }
+    };
+
+    let runtime =
+        match synapse_channels::configured_realtime_audio_call_runtime_with_support_configs(
+            channel_name,
+            channels_config,
+            ctx.provider_runtime_options.synapseclaw_dir.clone(),
+            lane_selected_tts_config(&ctx.root_config).ok(),
+            lane_selected_transcription_config(&ctx.root_config).ok(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(
+                    channel = %channel_name,
+                    call_control_id = %session.call_control_id,
+                    error = %error,
+                    "failed to build realtime call runtime for reply delivery"
+                );
+                if suppress_channel_fallback {
+                    return suppress_realtime_call_channel_fallback(
+                        output,
+                        channel_name,
+                        &reply_ref,
+                        Some(session.call_control_id.as_str()),
+                        "failed to build realtime call runtime for reply delivery",
+                    );
+                }
+                return output;
+            }
+        };
+
+    match runtime
+        .speak(
+            synapse_domain::ports::realtime_call::RealtimeCallSpeakRequest {
+                call_control_id: session.call_control_id.clone(),
+                text: output.text.clone(),
+            },
+        )
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                channel = %channel_name,
+                call_control_id = %session.call_control_id,
+                "delivered assistant response into active realtime call"
+            );
+            let mut delivered = output;
+            delivered.text.clear();
+            delivered.delivery_hints.already_delivered = true;
+            delivered
+        }
+        Err(error) => {
+            tracing::warn!(
+                channel = %channel_name,
+                call_control_id = %session.call_control_id,
+                error = %error,
+                "realtime call speech delivery failed; falling back to normal channel send"
+            );
+            if suppress_channel_fallback {
+                suppress_realtime_call_channel_fallback(
+                    output,
+                    channel_name,
+                    &reply_ref,
+                    Some(session.call_control_id.as_str()),
+                    "suppressed normal channel fallback for live realtime call turn",
+                )
+            } else {
+                output
+            }
+        }
+    }
+}
+
+fn suppress_realtime_call_channel_fallback(
+    mut output: synapse_domain::application::services::assistant_output_presentation::PresentedOutput,
+    channel_name: &str,
+    reply_ref: &str,
+    call_control_id: Option<&str>,
+    reason: &'static str,
+) -> synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
+    tracing::warn!(
+        channel = %channel_name,
+        reply_ref = %reply_ref,
+        call_control_id = call_control_id.unwrap_or("unknown"),
+        reason,
+    );
+    output.text.clear();
+    output.delivery_hints.already_delivered = true;
+    output
 }
 
 async fn maybe_apply_auto_tts_response(
@@ -2413,20 +3013,22 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
                 .matrix
                 .as_ref()
                 .context("Matrix channel is not configured")?;
-            Ok(Arc::new(
-                MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
-                    mx.homeserver.clone(),
-                    mx.access_token.clone(),
-                    mx.room_id.clone(),
-                    mx.allowed_users.clone(),
-                    mx.user_id.clone(),
-                    mx.device_id.clone(),
-                    config.config_path.parent().map(|path| path.to_path_buf()),
-                )
-                .with_password(mx.password.clone())
-                .with_max_media_download_mb(mx.max_media_download_mb)
-                .with_transcription(lane_selected_transcription_config(config)?),
-            ))
+            let mut channel = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
+                mx.homeserver.clone(),
+                mx.access_token.clone(),
+                mx.room_id.clone(),
+                mx.allowed_users.clone(),
+                mx.user_id.clone(),
+                mx.device_id.clone(),
+                config.config_path.parent().map(|path| path.to_path_buf()),
+            )
+            .with_password(mx.password.clone())
+            .with_max_media_download_mb(mx.max_media_download_mb)
+            .with_transcription(lane_selected_transcription_config(config)?);
+            if let Ok(tts_config) = lane_selected_tts_config(config) {
+                channel = channel.with_tts(tts_config);
+            }
+            Ok(Arc::new(channel))
         }
         "mattermost" => {
             let mm = config
@@ -2555,22 +3157,22 @@ fn collect_configured_channels(
 
     #[cfg(feature = "channel-matrix")]
     if let Some(ref mx) = config.channels_config.matrix {
+        let mut channel = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
+            mx.homeserver.clone(),
+            mx.access_token.clone(),
+            mx.room_id.clone(),
+            mx.allowed_users.clone(),
+            mx.user_id.clone(),
+            mx.device_id.clone(),
+            config.config_path.parent().map(|path| path.to_path_buf()),
+        )
+        .with_password(mx.password.clone())
+        .with_max_media_download_mb(mx.max_media_download_mb)
+        .with_transcription(transcription_config.clone());
+        channel = channel.with_tts(tts_config.clone());
         channels.push(ConfiguredChannel {
             display_name: "Matrix",
-            channel: Arc::new(
-                MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
-                    mx.homeserver.clone(),
-                    mx.access_token.clone(),
-                    mx.room_id.clone(),
-                    mx.allowed_users.clone(),
-                    mx.user_id.clone(),
-                    mx.device_id.clone(),
-                    config.config_path.parent().map(|path| path.to_path_buf()),
-                )
-                .with_password(mx.password.clone())
-                .with_max_media_download_mb(mx.max_media_download_mb)
-                .with_transcription(transcription_config.clone()),
-            ),
+            channel: Arc::new(channel),
         });
     }
 
@@ -2808,7 +3410,10 @@ fn collect_configured_channels(
     if let Some(ref ct) = config.channels_config.clawdtalk {
         channels.push(ConfiguredChannel {
             display_name: "ClawdTalk",
-            channel: Arc::new(ClawdTalkChannel::new(ct.clone())),
+            channel: Arc::new(ClawdTalkChannel::new_with_synapseclaw_dir(
+                ct.clone(),
+                config.config_path.parent().map(|path| path.to_path_buf()),
+            )),
         });
     }
 
@@ -5730,5 +6335,77 @@ mod tests {
             Ok(channel) => assert_eq!(channel.name(), "telegram"),
             Err(e) => panic!("should succeed when telegram is configured: {e}"),
         }
+    }
+
+    #[tokio::test]
+    async fn live_realtime_call_delivery_suppresses_room_fallback_without_session() {
+        let ctx = Arc::new(minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            Vec::new(),
+        ));
+        let output =
+            synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
+                text: "hello from call".to_string(),
+                media_artifacts: Vec::new(),
+                tool_summary: String::new(),
+                tools_used: false,
+                failure_kind: None,
+                delivery_hints:
+                    synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+                        reply_ref: Some(
+                            "matrix-call:@victor:matrix.org||!room:matrix.org".to_string(),
+                        ),
+                        thread_ref: None,
+                        already_delivered: false,
+                    },
+            };
+
+        let delivered = maybe_deliver_realtime_call_response(
+            &ctx,
+            "matrix",
+            "matrix-call:@victor:matrix.org||!room:matrix.org",
+            output,
+            true,
+        )
+        .await;
+
+        assert!(delivered.text.is_empty());
+        assert!(delivered.delivery_hints.already_delivered);
+    }
+
+    #[tokio::test]
+    async fn non_live_realtime_call_delivery_keeps_text_without_session() {
+        let ctx = Arc::new(minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            Vec::new(),
+        ));
+        let output =
+            synapse_domain::application::services::assistant_output_presentation::PresentedOutput {
+                text: "hello from call".to_string(),
+                media_artifacts: Vec::new(),
+                tool_summary: String::new(),
+                tools_used: false,
+                failure_kind: None,
+                delivery_hints:
+                    synapse_domain::application::services::assistant_output_presentation::OutputDeliveryHints {
+                        reply_ref: Some(
+                            "matrix-call:@victor:matrix.org||!room:matrix.org".to_string(),
+                        ),
+                        thread_ref: None,
+                        already_delivered: false,
+                    },
+            };
+
+        let delivered = maybe_deliver_realtime_call_response(
+            &ctx,
+            "matrix",
+            "matrix-call:@victor:matrix.org||!room:matrix.org",
+            output,
+            false,
+        )
+        .await;
+
+        assert_eq!(delivered.text, "hello from call");
+        assert!(!delivered.delivery_hints.already_delivered);
     }
 }

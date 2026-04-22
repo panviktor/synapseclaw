@@ -118,6 +118,8 @@ pub struct InboundMessageConfig {
     pub continuation_policy: crate::application::services::turn_context::ContinuationPolicy,
     /// Human-facing rendering policy for messaging channels.
     pub presentation_mode: ChannelPresentationMode,
+    /// Whether compact progress text may be emitted for long-running turns.
+    pub emit_compact_progress: bool,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -1052,6 +1054,7 @@ async fn execute_agent_turn(
         config.presentation_mode,
         caps,
         use_streaming,
+        config.emit_compact_progress,
     ) {
         CompactProgressSurface::None => None,
         CompactProgressSurface::StatusMessage => {
@@ -2014,6 +2017,11 @@ mod tests {
                 ChannelCapability::RuntimeCommands,
             ]
         }
+        fn capability_profiles(
+            &self,
+        ) -> Vec<crate::ports::channel_registry::ChannelCapabilityProfile> {
+            vec![self.capability_profile("test")]
+        }
         async fn deliver(&self, _i: &crate::domain::channel::OutboundIntent) -> Result<()> {
             Ok(())
         }
@@ -2041,6 +2049,7 @@ mod tests {
             continuation_policy:
                 crate::application::services::turn_context::ContinuationPolicy::default(),
             presentation_mode: ChannelPresentationMode::Compact,
+            emit_compact_progress: true,
         }
     }
 

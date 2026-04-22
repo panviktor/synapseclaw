@@ -218,6 +218,7 @@ impl TranscriptionProvider for OpenAiWhisperProvider {
 pub struct DeepgramProvider {
     api_key: String,
     model: String,
+    language: Option<String>,
 }
 
 impl DeepgramProvider {
@@ -233,8 +234,28 @@ impl DeepgramProvider {
         Ok(Self {
             api_key,
             model: config.model.clone(),
+            language: config
+                .language
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
         })
     }
+}
+
+fn deepgram_listen_url(model: &str, language: Option<&str>) -> String {
+    let mut url =
+        reqwest::Url::parse("https://api.deepgram.com/v1/listen").expect("valid Deepgram URL");
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("model", model);
+        query.append_pair("punctuate", "true");
+        if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
+            query.append_pair("language", language);
+        }
+    }
+    url.into()
 }
 
 #[async_trait]
@@ -248,10 +269,7 @@ impl TranscriptionProvider for DeepgramProvider {
 
         let client = synapse_providers::proxy::build_runtime_proxy_client("transcription.deepgram");
 
-        let url = format!(
-            "https://api.deepgram.com/v1/listen?model={}&punctuate=true",
-            self.model
-        );
+        let url = deepgram_listen_url(&self.model, self.language.as_deref());
 
         let resp = client
             .post(&url)
@@ -901,6 +919,8 @@ mod tests {
         config.deepgram = Some(synapse_domain::config::schema::DeepgramSttConfig {
             api_key: Some("test-deepgram-key".to_string()),
             model: "nova-2".to_string(),
+            language: Some("multi".to_string()),
+            flux: None,
         });
         config.mistral = Some(synapse_domain::config::schema::MistralSttConfig {
             api_key: Some("test-mistral-key".to_string()),
@@ -976,6 +996,21 @@ mod tests {
         let (name, mime) = validate_audio(&data, "voice.oga").unwrap();
         assert_eq!(name, "voice.ogg");
         assert_eq!(mime, "audio/ogg");
+    }
+
+    #[test]
+    fn deepgram_listen_url_includes_optional_language_hint() {
+        let url = deepgram_listen_url("nova-3", Some("multi"));
+        assert_eq!(
+            url,
+            "https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true&language=multi"
+        );
+
+        let url = deepgram_listen_url("nova-3", None);
+        assert_eq!(
+            url,
+            "https://api.deepgram.com/v1/listen?model=nova-3&punctuate=true"
+        );
     }
 
     #[test]

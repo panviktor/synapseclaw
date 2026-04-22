@@ -12,6 +12,18 @@ loop, and simple platform-specific media delivery. OpenClaw remains the policy
 reference: explicit TTS modes, provider/status commands, failover visibility,
 and call lifecycle discipline.
 
+Implementation order update:
+
+- `clawdtalk` remains the first concrete realtime adapter and validation path.
+- Before adding messenger-call runtimes, we must extract a shared realtime-call
+  supervisor/session core so later adapters do not copy `clawdtalk` state and
+  lifecycle logic.
+- Matrix is the first intended messenger-call adapter on top of that shared
+  core.
+- Telegram and Signal stay deferred until after the shared core exists and the
+  Matrix path proves the adapter shape. They require feasibility validation and
+  must not start as parallel one-off runtimes.
+
 ## Goals
 
 - Make voice choice durable without hardcoded prompt text.
@@ -22,6 +34,28 @@ and call lifecycle discipline.
   LiveKit/WebRTC, Telegram calls, Signal calls, Matrix calls, and video calls.
 - Keep offline `audio_generation` and `video_generation` separate from realtime
   audio/video sessions.
+
+## Primary Product Use Case
+
+The primary 6.1 product target is not generic conferencing. It is a two-way
+assistant call workflow where the bot can call the user, or the user can call
+the bot, for short operational conversations.
+
+The baseline scenario is a scheduled morning briefing call: the bot calls,
+summarizes upcoming work, reads calendar/tasks/alerts, then waits for spoken
+instructions such as "move that meeting", "do not remind me again", "send a
+message to X", or "skip that task". The same runtime must also support
+chat-triggered outbound calls, where the user asks in chat to place a call
+immediately. The runtime must support turn-taking, speech-to-action execution,
+and compact post-call summaries instead of treating the call as a media demo.
+
+Implementation priority for this use case:
+
+- outbound and inbound one-to-one assistant calls before group calling
+- short turn-based conversations before continuous open-mic conferencing
+- actionable voice commands and confirmations before richer call UX
+- scheduled and chat-triggered outbound calls over one shared call contract
+- call summary, decisions, and scheduled follow-up before full transcript replay
 
 ## 6.1A: Preferences And Policy
 
@@ -83,6 +117,16 @@ TTS playback, hangup, timeout, stale session cleanup, and diagnostics. Video
 calls must attach to this session runtime later; they are not the same thing as
 the offline `video_generation` lane.
 
+Implementation note: after the first `clawdtalk` runtime proved the lifecycle,
+the next engineering step is not another protocol-specific runtime. It is a
+shared realtime-call supervisor/session layer used by every future adapter for
+session state, event ledger, timeout/stale cleanup, and typed diagnostics.
+
+Product note: the first fully useful runtime should optimize for assistant
+briefing calls and command-following calls, not for general-purpose group media
+rooms. A successful first release is "the bot can call me in the morning, brief
+me, understand my spoken response, and update my work accordingly."
+
 ## 6.1E: Chat-App Audio And Video Calls
 
 Telegram, Signal, and Matrix are first-class realtime call targets, not just
@@ -104,6 +148,23 @@ Matrix calls should target MatrixRTC/WebRTC-style signaling where available,
 while preserving MSC3245 voice-note delivery as a separate message feature.
 Matrix call support must be tested against Element Web/Desktop/iOS separately,
 because client behavior differs.
+
+MatrixRTC bootstrap must support both deployment families through one shared
+path: newer homeservers that expose `/_matrix/client/v1/rtc/transports` or the
+unstable `org.matrix.msc4143` variant and newer `/get_token` authorizers, plus
+older/self-hosted stacks that still rely on `.well-known` focus discovery and
+legacy `/sfu/get`. Status and health probes should treat route discovery and
+successful JWT exchange as separate facts so operator output stays honest.
+
+Implementation order note: Matrix is the first messenger-call adapter after the
+shared supervisor exists. Telegram and Signal remain feasibility-gated and must
+not bypass that shared runtime layer.
+
+Transport priority note: for the morning-briefing use case, the first
+production-quality path may still be a phone-call transport such as ClawdTalk,
+because it gives the user a normal ringing/call surface immediately. Matrix
+call support is still important, but it should be evaluated as an additional
+transport over the same assistant-call runtime rather than the only target.
 
 ## 6.1F: Discord Voice And Video-Ready Shape
 
@@ -188,9 +249,17 @@ Storage:
 - Call state machine rejects impossible transitions.
 - Realtime adapter handles connect, speech segment, agent reply, hangup, and
   timeout in tests.
+- Call ledger preserves trigger provenance such as `chat_request` versus
+  `scheduled_job`, so the same runtime can drive both operator-requested and
+  scheduled calls without separate scenario logic.
 - Telegram, Signal, and Matrix call support each has a feasibility report before
   implementation.
 - Matrix call tests distinguish voice note delivery, audio call, and video call.
+- Scheduled morning briefing can place an outbound call, deliver a spoken agenda,
+  accept at least one spoken user instruction, and return a typed execution
+  result or confirmation.
+- Inbound assistant call can answer, transcribe the user, run one actionable
+  command, and summarize the decision without storing raw transcript by default.
 
 ## Assumptions
 

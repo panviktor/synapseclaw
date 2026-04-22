@@ -13,7 +13,9 @@ use synapse_domain::application::services::media_artifact_delivery::{
     artifact_delivery_uri, media_delivery_decision, MediaDeliveryPolicyInput,
 };
 use synapse_domain::config::schema::{Config, StreamMode};
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
+use synapse_domain::domain::channel::{
+    ChannelCapability, InboundMediaAttachment, InboundMediaKind,
+};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use synapse_infra::config_io::ConfigIO;
 use synapse_security::pairing::PairingGuard;
@@ -183,6 +185,11 @@ fn telegram_delivery_kind(
 
     let decision = media_delivery_decision(MediaDeliveryPolicyInput {
         channel: "telegram",
+        capabilities: &[
+            ChannelCapability::Attachments,
+            ChannelCapability::AudioAttachments,
+            ChannelCapability::NativeVoiceNotes,
+        ],
         artifact_kind: MediaArtifactKind::Voice,
         mime_type: mime_type.or(attachment.mime_type.as_deref()),
         file_name: file_name.or(attachment.label.as_deref()),

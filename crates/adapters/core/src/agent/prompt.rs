@@ -341,6 +341,12 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
                 .to_string(),
         );
     }
+    if has_tool("voice_call") {
+        lines.push(
+            "- `voice_call` controls a real external audio call. If the user explicitly asks you to call them, place a call, answer a ringing call, or hang up, use `voice_call` with `confirm: true` instead of only replying with text. For `start`, prefer `to: \"current_conversation\"` when calling back into the current call-capable chat, or omit `to` if the current conversation already resolves the target. For inbound or active call turns, answer the caller naturally and keep going; the runtime may deliver a normal assistant reply as spoken audio in the call. Do not claim that you cannot make or answer calls when `voice_call` is available; use `start`, `answer`, or `hangup` as appropriate."
+                .to_string(),
+        );
+    }
     if has_tool("voice_reply") {
         lines.push(
             "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use optional `voice` only with IDs returned by `voice_list`. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."

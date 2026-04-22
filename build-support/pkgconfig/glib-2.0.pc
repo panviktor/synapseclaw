@@ -1,0 +1,10 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=/usr/lib/x86_64-linux-gnu
+includedir=/usr/include
+
+Name: glib-2.0
+Description: Minimal glib runtime metadata for LiveKit/WebRTC linking
+Version: 2.80.0
+Libs: ${libdir}/libglib-2.0.so.0
+Cflags:

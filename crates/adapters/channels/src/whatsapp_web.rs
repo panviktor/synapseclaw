@@ -33,9 +33,10 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use synapse_domain::application::services::media_artifact_delivery::{
-    media_delivery_decision, tts_output_mime, tts_provider_output_format, whatsapp_ptt_mime,
+    media_delivery_decision, ogg_opus_voice_mime, tts_output_mime, tts_provider_output_format,
     MediaDeliveryMode, MediaDeliveryPolicyInput,
 };
+use synapse_domain::domain::channel::ChannelCapability;
 use synapse_domain::ports::provider::MediaArtifactKind;
 use tokio::select;
 
@@ -398,6 +399,12 @@ impl WhatsAppWebChannel {
         let output_mime = tts_output_mime(&output_format);
         let decision = media_delivery_decision(MediaDeliveryPolicyInput {
             channel: "whatsapp",
+            capabilities: &[
+                ChannelCapability::Attachments,
+                ChannelCapability::AudioAttachments,
+                ChannelCapability::NativeVoiceNotes,
+                ChannelCapability::OggOpusVoiceNotes,
+            ],
             artifact_kind: MediaArtifactKind::Voice,
             mime_type: Some(output_mime),
             file_name: None,
@@ -405,7 +412,7 @@ impl WhatsAppWebChannel {
             normalizer_available: false,
         });
         let send_as_ptt = decision.mode == MediaDeliveryMode::NativeVoice;
-        let whatsapp_mime = whatsapp_ptt_mime(&output_format).unwrap_or(output_mime);
+        let whatsapp_mime = ogg_opus_voice_mime(&output_format).unwrap_or(output_mime);
 
         let audio_bytes = tts_manager.synthesize(text).await?;
         let audio_len = audio_bytes.len();

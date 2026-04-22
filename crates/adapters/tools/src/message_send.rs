@@ -306,6 +306,12 @@ mod tests {
             vec![ChannelCapability::SendText, ChannelCapability::Threads]
         }
 
+        fn capability_profiles(
+            &self,
+        ) -> Vec<synapse_domain::ports::channel_registry::ChannelCapabilityProfile> {
+            vec![self.capability_profile("matrix")]
+        }
+
         async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {
             self.delivered.lock().unwrap().push(intent.clone());
             Ok(())

@@ -193,6 +193,18 @@ This mirrors the useful parts of Hermes and OpenClaw: prefer provider-native Opu
 
 The `voice_list` tool returns configured voice catalogs for every active speech synthesis candidate plus the delivery profiles, so the agent can choose a compatible speech synthesis lane without guessing from prose. Operators can inspect the same runtime view with `synapseclaw voice status`, `synapseclaw voice voices --json`, and `synapseclaw voice profiles --json`; dashboard clients can use `GET /api/voice/status`, `GET /api/voice/voices`, and `GET /api/voice/profiles`. Status includes both speech synthesis and speech transcription readiness.
 
+For CLI and headless troubleshooting, use the shared preflight report:
+
+```bash
+synapseclaw voice doctor
+synapseclaw voice doctor --json
+synapseclaw voice mode status --json
+```
+
+The same report is available to the web UI and operator dashboards through `GET /api/voice/doctor`. It checks tty/headless conditions, runtime audio sockets, known local playback/recording binaries, and current `speech_synthesis` / `speech_transcription` lane readiness.
+
+`voice mode` is the first local operator workflow on top of those lanes. `voice mode on|off|status` stores durable CLI state in the shared user-profile store, and `voice mode turn --file ...` runs a one-shot local audio turn through `speech_transcription`, the normal agent runtime, and optional `speech_synthesis` reply playback.
+
 To persist a default assistant voice without editing TOML by hand:
 
 ```bash
@@ -312,9 +324,9 @@ The `speech_transcription` lane selects the STT provider/model for channel voice
 
 The `speech_synthesis` lane selects the TTS provider/model for spoken replies. Supported direct adapters include OpenAI TTS, ElevenLabs, Google Cloud TTS, Edge TTS, MiniMax Speech, Mistral Voxtral TTS, and xAI TTS.
 
-The `audio_generation` lane is different: it is for model-generated audio as an agent output, not for channel voice-note transcription or reply playback. Live voice calls, Discord voice channels, LiveKit/WebRTC, and video calls require a streaming channel/runtime layer on top of these lanes; they are not enabled just by selecting a TTS model.
+The `audio_generation` lane is different: it is for model-generated audio as an agent output, not for channel voice-note transcription or reply playback. Live voice calls, Discord voice channels, LiveKit/WebRTC, and video calls require a streaming channel/runtime layer on top of these lanes; they are not enabled just by selecting a TTS model. See [Realtime calls](realtime-calls.md) for the current call runtime contract.
 
-For Telnyx-backed ClawdTalk calls, call-control voice choices are explicit channel config rather than prompt text. Set `answering_machine_detection_mode`, `speak_voice`, `speak_language`, `speak_service_level`, `ai_voice`, and `ai_speed` under `[channels_config.clawdtalk]` when that channel is enabled.
+For Telnyx-backed ClawdTalk call-control actions, voice choices are explicit channel config rather than prompt text. Set `answering_machine_detection_mode`, `speak_voice`, `speak_language`, `speak_service_level`, `ai_voice`, and `ai_speed` under `[channels_config.clawdtalk]` when that path is enabled. For the current ClawdTalk text-in/text-out call loop, set `websocket_url` and optionally `api_base_url` under the same channel config; the WebSocket bridge receives transcripts and sends text responses while ClawdTalk handles telephony, STT, and TTS.
 
 ## Operator Checks
 

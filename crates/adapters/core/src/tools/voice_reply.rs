@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 use synapse_domain::application::services::media_artifact_delivery::{
-    media_delivery_decision, tts_output_extension, tts_output_mime, tts_provider_output_format,
-    voice_delivery_channel_profiles, MediaDeliveryPolicyInput, VoiceReplyDiagnostics,
-    VoiceSynthesisAttemptOutcome, VoiceSynthesisAttemptTrace,
+    media_delivery_decision, realtime_call_channel_profiles, tts_output_extension, tts_output_mime,
+    tts_provider_output_format, voice_delivery_channel_profiles, MediaDeliveryPolicyInput,
+    VoiceReplyDiagnostics, VoiceSynthesisAttemptOutcome, VoiceSynthesisAttemptTrace,
 };
 use synapse_domain::application::services::voice_preference_service::{
     candidate_matches_preference, read_voice_settings, resolve_voice_preference,
@@ -27,6 +27,10 @@ use synapse_domain::domain::turn_defaults::TurnDefaultSource;
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
+use synapse_domain::ports::realtime_call::{
+    RealtimeCallAnswerRequest, RealtimeCallHangupRequest, RealtimeCallOrigin,
+    RealtimeCallRuntimePort, RealtimeCallSpeakRequest, RealtimeCallStartRequest,
+};
 use synapse_domain::ports::tool::{
     Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolResult,
     ToolRuntimeRole,
@@ -590,8 +594,10 @@ impl Tool for VoiceReplyTool {
             .unwrap_or("voice_reply")
             .to_string();
         let output_mime = tts_output_mime(&format).to_string();
+        let target_capabilities = self.channel_registry.capabilities(&channel);
         let delivery = media_delivery_decision(MediaDeliveryPolicyInput {
             channel: &channel,
+            capabilities: target_capabilities.as_slice(),
             artifact_kind: MediaArtifactKind::Voice,
             mime_type: Some(output_mime.as_str()),
             file_name: Some(label.as_str()),
@@ -832,6 +838,91 @@ impl VoicePreferenceTool {
     }
 }
 
+pub struct VoiceCallTool {
+    root_config: Arc<Config>,
+    context: Arc<dyn ConversationContextPort>,
+}
+
+impl VoiceCallTool {
+    pub fn new(root_config: Arc<Config>, context: Arc<dyn ConversationContextPort>) -> Self {
+        Self {
+            root_config,
+            context,
+        }
+    }
+
+    fn current_conversation_call_target(&self) -> Option<(String, String)> {
+        let ctx = self.context.get_current()?;
+        if synapse_channels::ensure_realtime_audio_call_available(
+            &ctx.source_adapter,
+            &self.root_config.channels_config,
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let recipient = synapse_channels::resolve_current_conversation_realtime_call_target(
+            &ctx.source_adapter,
+            &ctx.actor_id,
+            &ctx.reply_ref,
+        )?;
+        Some((ctx.source_adapter, recipient))
+    }
+
+    fn implied_start_channel(
+        requested_channel: Option<&str>,
+        current_target: Option<&(String, String)>,
+        action: &VoiceCallAction,
+        raw_to: Option<&str>,
+    ) -> Option<String> {
+        if requested_channel.is_some() || !matches!(action, VoiceCallAction::Start) {
+            return None;
+        }
+        if raw_to
+            .map(str::trim)
+            .is_some_and(|value| !value.eq_ignore_ascii_case("current_conversation"))
+        {
+            return None;
+        }
+        current_target.map(|(channel, _)| channel.clone())
+    }
+
+    fn resolve_start_target(
+        resolved_channel: &str,
+        raw_to: Option<String>,
+        current_target: Option<&(String, String)>,
+    ) -> std::result::Result<String, String> {
+        match raw_to {
+            Some(to) if to.trim().eq_ignore_ascii_case("current_conversation") => {
+                match current_target {
+                    Some((target_channel, recipient))
+                        if target_channel.eq_ignore_ascii_case(resolved_channel) =>
+                    {
+                        Ok(recipient.clone())
+                    }
+                    Some((target_channel, _)) => Err(format!(
+                        "`to=current_conversation` targets channel `{target_channel}`, but resolved realtime call channel is `{resolved_channel}`"
+                    )),
+                    None => Err(
+                        "action=start requires `to` unless the current conversation itself supports realtime calling"
+                            .into(),
+                    ),
+                }
+            }
+            Some(to) => synapse_channels::non_empty_realtime_call_arg("to", to)
+                .map_err(|error| error.to_string()),
+            None => match current_target {
+                Some((target_channel, recipient))
+                    if target_channel.eq_ignore_ascii_case(resolved_channel) =>
+                {
+                    Ok(recipient.clone())
+                }
+                _ => Err("action=start requires `to` or a current call-capable conversation".into()),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum VoicePreferenceAction {
@@ -860,6 +951,41 @@ struct VoicePreferenceRequest {
     format: Option<String>,
     #[serde(default)]
     auto_tts_policy: Option<AutoTtsPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum VoiceCallAction {
+    Status,
+    ListSessions,
+    GetSession,
+    Start,
+    Speak,
+    Answer,
+    Hangup,
+}
+
+#[derive(Debug, Deserialize)]
+struct VoiceCallRequest {
+    action: VoiceCallAction,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    objective: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    agenda: Vec<String>,
+    #[serde(default)]
+    call_control_id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    confirm: bool,
 }
 
 #[async_trait]
@@ -1041,6 +1167,501 @@ impl Tool for VoicePreferenceTool {
 }
 
 #[async_trait]
+impl Tool for VoiceCallTool {
+    fn name(&self) -> &str {
+        "voice_call"
+    }
+
+    fn description(&self) -> &str {
+        "Inspect realtime call status, or start, answer, speak into, and hang up an explicitly confirmed realtime audio call. When the user directly asks to call, answer, or hang up, use this tool instead of replying that calling is unavailable. For action=start, use `to: \"current_conversation\"` or omit `to` when calling back into the current call-capable chat."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["status", "list_sessions", "get_session", "start", "speak", "answer", "hangup"] },
+                "channel": { "type": "string", "description": "Optional realtime call runtime channel. Required when multiple call transports are configured." },
+                "to": { "type": "string", "description": "Destination for action=start, for example a phone number, SIP URI, Matrix user id, or `current_conversation` to call back into the current call-capable chat." },
+                "prompt": { "type": "string", "description": "Optional initial call prompt for action=start." },
+                "objective": { "type": "string", "description": "Optional primary goal of the call, for example reserving a table or asking whether an item is in stock." },
+                "context": { "type": "string", "description": "Optional supporting context, constraints, or facts used to build the initial assistant call prompt for action=start." },
+                "agenda": { "type": "array", "items": { "type": "string" }, "description": "Optional ordered agenda items for action=start." },
+                "call_control_id": { "type": "string", "description": "Active or stored call id for action=get_session, action=speak, action=answer, or action=hangup." },
+                "text": { "type": "string", "description": "Text to speak into the active call for action=speak." },
+                "confirm": { "type": "boolean", "description": "Must be true for start, answer, speak, or hangup when the user explicitly requested the external call side effect. Not required for status." }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values([
+                "status",
+                "list_sessions",
+                "get_session",
+                "start",
+                "speak",
+                "answer",
+                "hangup",
+            ]),
+            ToolArgumentPolicy::sensitive("channel").user_private(),
+            ToolArgumentPolicy::sensitive("to").user_private(),
+            ToolArgumentPolicy::sensitive("prompt").user_private(),
+            ToolArgumentPolicy::sensitive("objective").user_private(),
+            ToolArgumentPolicy::sensitive("context").user_private(),
+            ToolArgumentPolicy::sensitive("agenda").user_private(),
+            ToolArgumentPolicy::sensitive("call_control_id").session_private(),
+            ToolArgumentPolicy::sensitive("text").user_private(),
+            ToolArgumentPolicy::replayable("confirm").with_values(["true", "false"]),
+        ])
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
+        let request: VoiceCallRequest = match serde_json::from_value(args) {
+            Ok(request) => request,
+            Err(error) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: format!("Invalid voice call request: {error}"),
+                    error: None,
+                })
+            }
+        };
+        if matches!(request.action, VoiceCallAction::Status) {
+            let report = synapse_channels::realtime_call_status_report_live_with_synapseclaw_dir(
+                &self.root_config.channels_config,
+                self.root_config
+                    .config_path
+                    .parent()
+                    .map(|path| path.to_path_buf()),
+                crate::channels::lane_selected_tts_config(&self.root_config).ok(),
+                crate::channels::lane_selected_transcription_config(&self.root_config).ok(),
+            )
+            .await;
+            let default_channel = report.default_channel.clone();
+            let requested_channel = request
+                .channel
+                .as_deref()
+                .map(synapse_channels::normalize_realtime_call_channel);
+            let output = if let Some(channel) = requested_channel.as_deref() {
+                if let Some(status) = report
+                    .channels
+                    .iter()
+                    .find(|status| status.channel == channel)
+                {
+                    json!({
+                        "status": "ok",
+                        "default_channel": default_channel,
+                        "channel_status": status,
+                    })
+                } else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: format!("no realtime call status profile for channel `{channel}`"),
+                        error: None,
+                    });
+                }
+            } else {
+                json!({
+                    "status": "ok",
+                    "report": report,
+                })
+            };
+            return Ok(ToolResult {
+                success: true,
+                output: output.to_string(),
+                error: None,
+            });
+        }
+        if matches!(request.action, VoiceCallAction::ListSessions) {
+            let channel = match synapse_channels::resolve_realtime_audio_call_inspection_channel(
+                request.channel.as_deref(),
+                &self.root_config.channels_config,
+            ) {
+                Ok(channel) => channel,
+                Err(error) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: error.to_string(),
+                        error: None,
+                    })
+                }
+            };
+            let sessions =
+                match synapse_channels::list_realtime_audio_call_sessions_with_synapseclaw_dir(
+                    &channel,
+                    &self.root_config.channels_config,
+                    self.root_config
+                        .config_path
+                        .parent()
+                        .map(|path| path.to_path_buf()),
+                ) {
+                    Ok(sessions) => sessions,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+            return Ok(ToolResult {
+                success: true,
+                output: json!({
+                    "status": "ok",
+                    "channel": channel,
+                    "sessions": sessions,
+                })
+                .to_string(),
+                error: None,
+            });
+        }
+        if matches!(request.action, VoiceCallAction::GetSession) {
+            let Some(call_control_id) = request.call_control_id.as_deref() else {
+                return Ok(ToolResult {
+                    success: false,
+                    output: "action=get_session requires `call_control_id`".into(),
+                    error: None,
+                });
+            };
+            let channel = match synapse_channels::resolve_realtime_audio_call_inspection_channel(
+                request.channel.as_deref(),
+                &self.root_config.channels_config,
+            ) {
+                Ok(channel) => channel,
+                Err(error) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: error.to_string(),
+                        error: None,
+                    })
+                }
+            };
+            let session =
+                match synapse_channels::get_realtime_audio_call_session_with_synapseclaw_dir(
+                    &channel,
+                    call_control_id,
+                    &self.root_config.channels_config,
+                    self.root_config
+                        .config_path
+                        .parent()
+                        .map(|path| path.to_path_buf()),
+                ) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+            return Ok(ToolResult {
+                success: true,
+                output: json!({
+                    "status": "ok",
+                    "channel": channel,
+                    "session": session,
+                })
+                .to_string(),
+                error: None,
+            });
+        }
+        if let Err(error) = synapse_channels::require_realtime_call_confirmation(request.confirm) {
+            return Ok(ToolResult {
+                success: false,
+                output: error.to_string(),
+                error: None,
+            });
+        }
+        let current_conversation_target = self.current_conversation_call_target();
+        let resolved_request_channel = request.channel.clone().or_else(|| {
+            Self::implied_start_channel(
+                request.channel.as_deref(),
+                current_conversation_target.as_ref(),
+                &request.action,
+                request.to.as_deref(),
+            )
+        });
+        let channel = match synapse_channels::resolve_realtime_audio_call_channel(
+            resolved_request_channel.as_deref(),
+            &self.root_config.channels_config,
+        ) {
+            Ok(channel) => channel,
+            Err(error) => {
+                return Ok(ToolResult {
+                    success: false,
+                    output: error.to_string(),
+                    error: None,
+                })
+            }
+        };
+        let runtime =
+            match synapse_channels::configured_realtime_audio_call_runtime_with_support_configs(
+                &channel,
+                &self.root_config.channels_config,
+                self.root_config
+                    .config_path
+                    .parent()
+                    .map(|path| path.to_path_buf()),
+                crate::channels::lane_selected_tts_config(&self.root_config).ok(),
+                crate::channels::lane_selected_transcription_config(&self.root_config).ok(),
+            ) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: error.to_string(),
+                        error: None,
+                    })
+                }
+            };
+
+        match request.action {
+            VoiceCallAction::Status => unreachable!("status returns before runtime lookup"),
+            VoiceCallAction::ListSessions => {
+                unreachable!("list_sessions returns before runtime lookup")
+            }
+            VoiceCallAction::GetSession => {
+                unreachable!("get_session returns before runtime lookup")
+            }
+            VoiceCallAction::Start => {
+                let to = match Self::resolve_start_target(
+                    &channel,
+                    request.to,
+                    current_conversation_target.as_ref(),
+                ) {
+                    Ok(to) => to,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error,
+                            error: None,
+                        })
+                    }
+                };
+                let prompt = match request
+                    .prompt
+                    .map(|prompt| synapse_channels::non_empty_realtime_call_arg("prompt", prompt))
+                    .transpose()
+                {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+                let objective = match request
+                    .objective
+                    .map(|objective| {
+                        synapse_channels::non_empty_realtime_call_arg("objective", objective)
+                    })
+                    .transpose()
+                {
+                    Ok(objective) => objective,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+                let context = match request
+                    .context
+                    .map(|context| {
+                        synapse_channels::non_empty_realtime_call_arg("context", context)
+                    })
+                    .transpose()
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+                let agenda = match request
+                    .agenda
+                    .into_iter()
+                    .map(|item| synapse_channels::non_empty_realtime_call_arg("agenda", item))
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                {
+                    Ok(agenda) => agenda,
+                    Err(error) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: error.to_string(),
+                            error: None,
+                        })
+                    }
+                };
+                let result = runtime
+                    .start_audio_call(RealtimeCallStartRequest {
+                        to,
+                        prompt,
+                        origin: self
+                            .context
+                            .get_current()
+                            .map(|ctx| {
+                                RealtimeCallOrigin::chat_request(
+                                    Some(ctx.conversation_id),
+                                    Some(ctx.source_adapter),
+                                    Some(ctx.reply_ref),
+                                    ctx.thread_ref,
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                RealtimeCallOrigin::chat_request(None, None, None, None)
+                            }),
+                        objective,
+                        context,
+                        agenda,
+                    })
+                    .await?;
+                Ok(ToolResult {
+                    success: true,
+                    output: json!({ "status": "ok", "call": result }).to_string(),
+                    error: None,
+                })
+            }
+            VoiceCallAction::Speak => {
+                let Some(call_control_id) = request.call_control_id else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: "action=speak requires `call_control_id`".into(),
+                        error: None,
+                    });
+                };
+                let Some(text) = request.text else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: "action=speak requires `text`".into(),
+                        error: None,
+                    });
+                };
+                let result = RealtimeCallRuntimePort::speak(
+                    runtime.as_ref(),
+                    RealtimeCallSpeakRequest {
+                        call_control_id: match synapse_channels::non_empty_realtime_call_arg(
+                            "call_control_id",
+                            call_control_id,
+                        ) {
+                            Ok(call_control_id) => call_control_id,
+                            Err(error) => {
+                                return Ok(ToolResult {
+                                    success: false,
+                                    output: error.to_string(),
+                                    error: None,
+                                })
+                            }
+                        },
+                        text: match synapse_channels::non_empty_realtime_call_arg("text", text) {
+                            Ok(text) => text,
+                            Err(error) => {
+                                return Ok(ToolResult {
+                                    success: false,
+                                    output: error.to_string(),
+                                    error: None,
+                                })
+                            }
+                        },
+                    },
+                )
+                .await?;
+                Ok(ToolResult {
+                    success: true,
+                    output: json!({ "status": "ok", "result": result }).to_string(),
+                    error: None,
+                })
+            }
+            VoiceCallAction::Answer => {
+                let Some(call_control_id) = request.call_control_id else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: "action=answer requires `call_control_id`".into(),
+                        error: None,
+                    });
+                };
+                let result = RealtimeCallRuntimePort::answer(
+                    runtime.as_ref(),
+                    RealtimeCallAnswerRequest {
+                        call_control_id: match synapse_channels::non_empty_realtime_call_arg(
+                            "call_control_id",
+                            call_control_id,
+                        ) {
+                            Ok(call_control_id) => call_control_id,
+                            Err(error) => {
+                                return Ok(ToolResult {
+                                    success: false,
+                                    output: error.to_string(),
+                                    error: None,
+                                })
+                            }
+                        },
+                    },
+                )
+                .await?;
+                Ok(ToolResult {
+                    success: true,
+                    output: json!({ "status": "ok", "result": result }).to_string(),
+                    error: None,
+                })
+            }
+            VoiceCallAction::Hangup => {
+                let Some(call_control_id) = request.call_control_id else {
+                    return Ok(ToolResult {
+                        success: false,
+                        output: "action=hangup requires `call_control_id`".into(),
+                        error: None,
+                    });
+                };
+                let result = RealtimeCallRuntimePort::hangup(
+                    runtime.as_ref(),
+                    RealtimeCallHangupRequest {
+                        call_control_id: match synapse_channels::non_empty_realtime_call_arg(
+                            "call_control_id",
+                            call_control_id,
+                        ) {
+                            Ok(call_control_id) => call_control_id,
+                            Err(error) => {
+                                return Ok(ToolResult {
+                                    success: false,
+                                    output: error.to_string(),
+                                    error: None,
+                                })
+                            }
+                        },
+                    },
+                )
+                .await?;
+                Ok(ToolResult {
+                    success: true,
+                    output: json!({ "status": "ok", "result": result }).to_string(),
+                    error: None,
+                })
+            }
+        }
+    }
+}
+
+#[async_trait]
 impl Tool for VoiceListTool {
     fn name(&self) -> &str {
         "voice_list"
@@ -1120,7 +1741,12 @@ impl Tool for VoiceListTool {
             success: true,
             output: json!({
                 "candidates": candidates,
-                "delivery_profiles": voice_delivery_channel_profiles()
+                "delivery_profiles": voice_delivery_channel_profiles(
+                    synapse_channels::declared_channel_capability_profiles()
+                ),
+                "call_profiles": realtime_call_channel_profiles(
+                    synapse_channels::declared_channel_capability_profiles()
+                )
             })
             .to_string(),
             error: None,
@@ -1224,6 +1850,15 @@ mod tests {
             }
         }
 
+        fn capability_profiles(
+            &self,
+        ) -> Vec<synapse_domain::ports::channel_registry::ChannelCapabilityProfile> {
+            vec![
+                self.capability_profile("matrix"),
+                self.capability_profile("telegram"),
+            ]
+        }
+
         async fn deliver(&self, intent: &OutboundIntent) -> Result<()> {
             self.delivered.lock().push(intent.clone());
             Ok(())
@@ -1314,6 +1949,235 @@ mod tests {
                 ],
             });
         config
+    }
+
+    #[tokio::test]
+    async fn voice_call_requires_confirmation_before_runtime_lookup() {
+        let tool = VoiceCallTool::new(
+            Arc::new(Config::default()),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "start",
+                "to": "+15551234567",
+                "confirm": false
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.output.contains("confirm=true is required"));
+    }
+
+    #[tokio::test]
+    async fn voice_call_status_does_not_require_confirmation() {
+        let tool = VoiceCallTool::new(
+            Arc::new(Config::default()),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "status"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output["status"], "ok");
+        assert!(output["report"]["channels"].is_array());
+        assert_eq!(output["report"]["default_channel"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn voice_call_list_sessions_is_read_only() {
+        let mut config = Config::default();
+        config.channels_config.matrix = Some(synapse_domain::config::schema::MatrixConfig {
+            homeserver: "https://matrix.example.com".into(),
+            access_token: Some("tok".into()),
+            user_id: None,
+            device_id: None,
+            room_id: "!room:matrix.example.com".into(),
+            allowed_users: vec!["@user:matrix.example.com".into()],
+            password: None,
+            max_media_download_mb: None,
+        });
+        let tool = VoiceCallTool::new(
+            Arc::new(config),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "list_sessions"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output["status"], "ok");
+        assert!(output["sessions"].is_array());
+    }
+
+    #[tokio::test]
+    async fn voice_call_get_session_requires_call_id() {
+        let tool = VoiceCallTool::new(
+            Arc::new(Config::default()),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "get_session"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.output.contains("call_control_id"));
+    }
+
+    #[tokio::test]
+    async fn voice_call_answer_requires_call_id() {
+        let mut config = Config::default();
+        config.channels_config.matrix = Some(synapse_domain::config::schema::MatrixConfig {
+            homeserver: "https://matrix.example.com".into(),
+            access_token: Some("tok".into()),
+            user_id: None,
+            device_id: None,
+            room_id: "!room:matrix.example.com".into(),
+            allowed_users: vec!["@user:matrix.example.com".into()],
+            password: None,
+            max_media_download_mb: None,
+        });
+        let tool = VoiceCallTool::new(
+            Arc::new(config),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "answer",
+                "confirm": true
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result.output.contains("call_control_id"));
+    }
+
+    #[tokio::test]
+    async fn voice_call_reports_missing_runtime_config() {
+        let tool = VoiceCallTool::new(
+            Arc::new(Config::default()),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "start",
+                "to": "+15551234567",
+                "confirm": true
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result
+            .output
+            .contains("no configured realtime audio call runtime"));
+    }
+
+    #[tokio::test]
+    async fn voice_call_accepts_structured_call_plan_fields() {
+        let tool = VoiceCallTool::new(
+            Arc::new(Config::default()),
+            Arc::new(TestConversationContext::default()),
+        );
+
+        let result = tool
+            .execute(json!({
+                "action": "start",
+                "to": "+15551234567",
+                "objective": "Reserve a table for two at 19:00.",
+                "context": "Quiet place near Alexanderplatz.",
+                "agenda": ["Ask whether they have availability at 19:00", "Confirm the reservation details"],
+                "confirm": true
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert!(result
+            .output
+            .contains("no configured realtime audio call runtime"));
+    }
+
+    #[test]
+    fn voice_call_start_uses_current_conversation_when_to_is_omitted() {
+        let current = Some(("matrix".to_string(), "!room:example".to_string()));
+        let to = VoiceCallTool::resolve_start_target("matrix", None, current.as_ref()).unwrap();
+        assert_eq!(to, "!room:example");
+    }
+
+    #[test]
+    fn voice_call_start_accepts_current_conversation_target() {
+        let current = Some(("matrix".to_string(), "!room:example".to_string()));
+        let to = VoiceCallTool::resolve_start_target(
+            "matrix",
+            Some("current_conversation".into()),
+            current.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(to, "!room:example");
+    }
+
+    #[test]
+    fn voice_call_start_rejects_current_conversation_when_channel_mismatches() {
+        let current = Some(("matrix".to_string(), "!room:example".to_string()));
+        let error = VoiceCallTool::resolve_start_target(
+            "clawdtalk",
+            Some("current_conversation".into()),
+            current.as_ref(),
+        )
+        .unwrap_err();
+        assert!(error.contains("targets channel `matrix`"));
+    }
+
+    #[test]
+    fn voice_call_implies_current_conversation_channel_for_start() {
+        let current = Some(("matrix".to_string(), "!room:example".to_string()));
+        let channel = VoiceCallTool::implied_start_channel(
+            None,
+            current.as_ref(),
+            &VoiceCallAction::Start,
+            Some("current_conversation"),
+        )
+        .unwrap();
+        assert_eq!(channel, "matrix");
+    }
+
+    #[test]
+    fn voice_call_does_not_imply_channel_for_explicit_destination() {
+        let current = Some(("matrix".to_string(), "!room:example".to_string()));
+        assert!(VoiceCallTool::implied_start_channel(
+            None,
+            current.as_ref(),
+            &VoiceCallAction::Start,
+            Some("+15551234567"),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn voice_call_start_without_target_and_without_current_conversation_fails() {
+        let error = VoiceCallTool::resolve_start_target("matrix", None, None).unwrap_err();
+        assert!(error.contains("action=start requires `to`"));
     }
 
     #[tokio::test]
@@ -1681,5 +2545,12 @@ mod tests {
                     .unwrap()
                     .iter()
                     .any(|format| format == "ogg_opus")));
+        assert!(payload["call_profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|profile| profile["channel"] == "clawdtalk"
+                && profile["audio_call"] == "available"
+                && profile["video_call"] == "planned"));
     }
 }

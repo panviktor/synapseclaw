@@ -74,6 +74,18 @@ pub enum ChannelCapability {
     InterruptOnNewMessage,
     /// Channel supports displaying tool call context in history.
     ToolContextDisplay,
+    /// Channel can deliver audio or voice media as a normal attachment.
+    AudioAttachments,
+    /// Channel has native voice-note semantics distinct from generic audio files.
+    NativeVoiceNotes,
+    /// Native voice-note delivery requires Ogg/Opus payloads.
+    OggOpusVoiceNotes,
+    /// Channel supports native voice-note metadata such as duration/waveform.
+    NativeVoiceMetadata,
+    /// Channel has a real-time audio call runtime.
+    RealtimeAudioCall,
+    /// Channel has a real-time video call runtime.
+    RealtimeVideoCall,
 }
 
 pub fn web_channel_capabilities() -> Vec<ChannelCapability> {
@@ -82,6 +94,7 @@ pub fn web_channel_capabilities() -> Vec<ChannelCapability> {
         ChannelCapability::ReceiveText,
         ChannelCapability::Threads,
         ChannelCapability::Attachments,
+        ChannelCapability::AudioAttachments,
         ChannelCapability::Typing,
         ChannelCapability::RuntimeCommands,
         ChannelCapability::ToolContextDisplay,

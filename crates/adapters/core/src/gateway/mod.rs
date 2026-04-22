@@ -1578,8 +1578,27 @@ pub async fn run_gateway(
         )
         .route("/api/status", get(api::handle_api_status))
         .route("/api/voice/status", get(api::handle_api_voice_status))
+        .route("/api/voice/doctor", get(api::handle_api_voice_doctor))
+        .route(
+            "/api/voice/mode",
+            get(api::handle_api_voice_mode_get)
+                .post(api::handle_api_voice_mode_post)
+                .delete(api::handle_api_voice_mode_delete),
+        )
         .route("/api/voice/profiles", get(api::handle_api_voice_profiles))
         .route("/api/voice/voices", get(api::handle_api_voice_voices))
+        .route(
+            "/api/voice/calls/status",
+            get(api::handle_api_voice_call_status),
+        )
+        .route(
+            "/api/voice/calls/sessions",
+            get(api::handle_api_voice_call_sessions),
+        )
+        .route(
+            "/api/voice/calls/sessions/{call_control_id}",
+            get(api::handle_api_voice_call_session_get),
+        )
         .route(
             "/api/voice/synthesize",
             post(api::handle_api_voice_synthesize),
@@ -1593,6 +1612,22 @@ pub async fn run_gateway(
             get(api::handle_api_voice_preferences_get)
                 .post(api::handle_api_voice_preferences_post)
                 .delete(api::handle_api_voice_preferences_delete),
+        )
+        .route(
+            "/api/voice/calls/start",
+            post(api::handle_api_voice_call_start),
+        )
+        .route(
+            "/api/voice/calls/speak",
+            post(api::handle_api_voice_call_speak),
+        )
+        .route(
+            "/api/voice/calls/answer",
+            post(api::handle_api_voice_call_answer),
+        )
+        .route(
+            "/api/voice/calls/hangup",
+            post(api::handle_api_voice_call_hangup),
         )
         .route("/api/heartbeat", get(api::handle_api_heartbeat))
         .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))

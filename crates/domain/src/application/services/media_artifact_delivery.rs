@@ -2,6 +2,8 @@ use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::TtsConfig;
+use crate::domain::channel::ChannelCapability;
+use crate::ports::channel_registry::ChannelCapabilityProfile;
 use crate::ports::provider::{MediaArtifact, MediaArtifactKind, MediaArtifactLocator};
 
 pub fn artifact_delivery_uri<'a>(transport: &str, artifact: &'a MediaArtifact) -> Result<&'a str> {
@@ -92,7 +94,7 @@ impl AudioContainer {
         matches!(self, Self::OggOpus)
     }
 
-    pub fn is_telegram_voice_compatible(self) -> bool {
+    pub fn is_common_native_voice_compatible(self) -> bool {
         matches!(self, Self::OggOpus | Self::Ogg | Self::Mp3 | Self::Mp4Audio)
     }
 
@@ -187,6 +189,7 @@ pub struct MediaDeliveryDecision {
 #[derive(Debug, Clone, Copy)]
 pub struct MediaDeliveryPolicyInput<'a> {
     pub channel: &'a str,
+    pub capabilities: &'a [ChannelCapability],
     pub artifact_kind: MediaArtifactKind,
     pub mime_type: Option<&'a str>,
     pub file_name: Option<&'a str>,
@@ -195,7 +198,14 @@ pub struct MediaDeliveryPolicyInput<'a> {
 }
 
 pub fn media_delivery_decision(input: MediaDeliveryPolicyInput<'_>) -> MediaDeliveryDecision {
-    let profile = ChannelMediaProfile::from_channel(input.channel);
+    let profile = ChannelCapabilityProfile::new(input.channel, input.capabilities.to_vec());
+    media_delivery_decision_for_profile(&profile, input)
+}
+
+pub fn media_delivery_decision_for_profile(
+    profile: &ChannelCapabilityProfile,
+    input: MediaDeliveryPolicyInput<'_>,
+) -> MediaDeliveryDecision {
     let audio_container =
         AudioContainer::from_media(input.mime_type, input.file_name, input.provider_format);
 
@@ -203,56 +213,46 @@ pub fn media_delivery_decision(input: MediaDeliveryPolicyInput<'_>) -> MediaDeli
         return non_voice_decision(input, profile, audio_container);
     }
 
-    match profile {
-        ChannelMediaProfile::Matrix => matrix_voice_decision(input, audio_container),
-        ChannelMediaProfile::Telegram => telegram_voice_decision(input, audio_container),
-        ChannelMediaProfile::Whatsapp => {
-            ogg_opus_voice_decision(input, audio_container, "whatsapp_ptt_requires_ogg_opus")
-        }
-        ChannelMediaProfile::Signal => MediaDeliveryDecision {
-            channel: profile.label().into(),
+    if profile.has(ChannelCapability::NativeVoiceMetadata) {
+        return metadata_voice_decision(input, profile, audio_container);
+    }
+    if profile.has(ChannelCapability::OggOpusVoiceNotes) {
+        return ogg_opus_voice_decision(
+            input,
+            profile,
+            audio_container,
+            "native_voice_requires_ogg_opus",
+        );
+    }
+    if profile.has(ChannelCapability::NativeVoiceNotes) {
+        return common_container_voice_decision(input, profile, audio_container);
+    }
+    if profile.has(ChannelCapability::AudioAttachments)
+        || profile.has(ChannelCapability::Attachments)
+    {
+        return MediaDeliveryDecision {
+            channel: profile.channel.clone(),
             artifact_kind: input.artifact_kind,
             mode: MediaDeliveryMode::AudioAttachment,
             audio_container: Some(audio_container),
             native_voice: false,
             recommended_kind: MediaArtifactKind::Audio,
             required_provider_format: None,
-            compatibility_notes: vec!["signal_cli_sends_voice_as_attachment".into()],
-            reason: "signal_delivers_voice_as_audio_attachment".into(),
-        },
-        ChannelMediaProfile::Discord => MediaDeliveryDecision {
-            channel: profile.label().into(),
-            artifact_kind: input.artifact_kind,
-            mode: MediaDeliveryMode::AudioAttachment,
-            audio_container: Some(audio_container),
-            native_voice: false,
-            recommended_kind: MediaArtifactKind::Audio,
-            required_provider_format: None,
-            compatibility_notes: vec!["discord_message_files_do_not_have_voice_bubble".into()],
-            reason: "discord_delivers_voice_as_audio_file".into(),
-        },
-        ChannelMediaProfile::Slack => MediaDeliveryDecision {
-            channel: profile.label().into(),
-            artifact_kind: input.artifact_kind,
-            mode: MediaDeliveryMode::FileAttachment,
-            audio_container: Some(audio_container),
-            native_voice: false,
-            recommended_kind: MediaArtifactKind::Audio,
-            required_provider_format: None,
-            compatibility_notes: vec!["slack_files_do_not_have_native_voice_note_semantics".into()],
-            reason: "slack_delivers_voice_as_file_upload".into(),
-        },
-        ChannelMediaProfile::Generic => MediaDeliveryDecision {
-            channel: input.channel.trim().to_ascii_lowercase(),
-            artifact_kind: input.artifact_kind,
-            mode: MediaDeliveryMode::AudioAttachment,
-            audio_container: Some(audio_container),
-            native_voice: false,
-            recommended_kind: MediaArtifactKind::Audio,
-            required_provider_format: None,
-            compatibility_notes: Vec::new(),
-            reason: "generic_channel_delivers_voice_as_audio_attachment".into(),
-        },
+            compatibility_notes: vec!["channel_delivers_voice_as_audio_attachment".into()],
+            reason: "voice_note_not_declared_by_channel_capabilities".into(),
+        };
+    }
+
+    MediaDeliveryDecision {
+        channel: profile.channel.clone(),
+        artifact_kind: input.artifact_kind,
+        mode: MediaDeliveryMode::FileAttachment,
+        audio_container: Some(audio_container),
+        native_voice: false,
+        recommended_kind: MediaArtifactKind::Audio,
+        required_provider_format: None,
+        compatibility_notes: vec!["channel_has_no_audio_attachment_capability".into()],
+        reason: "voice_delivery_degraded_to_file_attachment".into(),
     }
 }
 
@@ -307,7 +307,7 @@ pub fn tts_output_mime(format: &str) -> &'static str {
     }
 }
 
-pub fn whatsapp_ptt_mime(format: &str) -> Option<&'static str> {
+pub fn ogg_opus_voice_mime(format: &str) -> Option<&'static str> {
     let container = AudioContainer::from_media(None, None, Some(format));
     container
         .is_ogg_opus_compatible()
@@ -363,59 +363,154 @@ pub struct VoiceDeliveryChannelProfile {
     pub notes: Vec<String>,
 }
 
-pub fn voice_delivery_channel_profiles() -> Vec<VoiceDeliveryChannelProfile> {
-    vec![
-        VoiceDeliveryChannelProfile {
-            channel: "matrix".into(),
-            native_voice_formats: vec!["provider_native".into()],
-            fallback_mode: MediaDeliveryMode::NativeVoice,
-            notes: vec![
-                "uses_matrix_msc3245_voice_event".into(),
-                "mobile_clients_may_prefer_ogg_opus".into(),
-            ],
-        },
-        VoiceDeliveryChannelProfile {
-            channel: "telegram".into(),
-            native_voice_formats: vec!["ogg_opus".into(), "ogg".into(), "mp3".into(), "m4a".into()],
-            fallback_mode: MediaDeliveryMode::AudioAttachment,
-            notes: vec![
-                "send_voice_accepts_multiple_audio_containers".into(),
-                "ogg_opus_is_safest_for_consistent_voice_bubble".into(),
-            ],
-        },
-        VoiceDeliveryChannelProfile {
-            channel: "whatsapp".into(),
-            native_voice_formats: vec!["ogg_opus".into()],
-            fallback_mode: MediaDeliveryMode::AudioAttachment,
-            notes: vec![
-                "ptt_true_requires_ogg_opus".into(),
-                "mp3_wav_m4a_are_sent_as_normal_audio".into(),
-            ],
-        },
-        VoiceDeliveryChannelProfile {
-            channel: "signal".into(),
-            native_voice_formats: Vec::new(),
-            fallback_mode: MediaDeliveryMode::AudioAttachment,
-            notes: vec!["signal_cli_sends_voice_as_attachment".into()],
-        },
-        VoiceDeliveryChannelProfile {
-            channel: "discord".into(),
-            native_voice_formats: Vec::new(),
-            fallback_mode: MediaDeliveryMode::AudioAttachment,
-            notes: vec!["message_file_upload_without_voice_bubble".into()],
-        },
-        VoiceDeliveryChannelProfile {
-            channel: "slack".into(),
-            native_voice_formats: Vec::new(),
-            fallback_mode: MediaDeliveryMode::FileAttachment,
-            notes: vec!["file_upload_without_native_voice_note_semantics".into()],
-        },
-    ]
+pub fn voice_delivery_channel_profiles(
+    profiles: impl IntoIterator<Item = ChannelCapabilityProfile>,
+) -> Vec<VoiceDeliveryChannelProfile> {
+    profiles
+        .into_iter()
+        .map(|profile| {
+            let native_voice_formats = if profile.has(ChannelCapability::NativeVoiceMetadata) {
+                vec!["provider_native".into()]
+            } else if profile.has(ChannelCapability::OggOpusVoiceNotes) {
+                vec!["ogg_opus".into()]
+            } else if profile.has(ChannelCapability::NativeVoiceNotes) {
+                vec!["ogg_opus".into(), "ogg".into(), "mp3".into(), "m4a".into()]
+            } else {
+                Vec::new()
+            };
+
+            let fallback_mode = if profile.has(ChannelCapability::AudioAttachments)
+                || profile.has(ChannelCapability::Attachments)
+            {
+                MediaDeliveryMode::AudioAttachment
+            } else {
+                MediaDeliveryMode::FileAttachment
+            };
+
+            let mut notes = Vec::new();
+            if profile.has(ChannelCapability::NativeVoiceMetadata) {
+                notes.push("uses_native_voice_metadata".into());
+            }
+            if profile.has(ChannelCapability::OggOpusVoiceNotes) {
+                notes.push("native_voice_requires_ogg_opus".into());
+            } else if profile.has(ChannelCapability::NativeVoiceNotes)
+                && !profile.has(ChannelCapability::NativeVoiceMetadata)
+            {
+                notes.push("native_voice_accepts_common_audio_containers".into());
+            }
+            if profile.has(ChannelCapability::AudioAttachments)
+                || profile.has(ChannelCapability::Attachments)
+            {
+                notes.push("can_degrade_voice_to_audio_attachment".into());
+            } else {
+                notes.push("can_degrade_voice_to_file_attachment".into());
+            }
+
+            VoiceDeliveryChannelProfile {
+                channel: profile.channel,
+                native_voice_formats,
+                fallback_mode,
+                notes,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RealtimeCallSupport {
+    Available,
+    Planned,
+    Unsupported,
+}
+
+impl RealtimeCallSupport {
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Planned => "planned",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+impl std::fmt::Display for RealtimeCallSupport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealtimeCallChannelProfile {
+    pub channel: String,
+    pub audio_call: RealtimeCallSupport,
+    pub video_call: RealtimeCallSupport,
+    pub notes: Vec<String>,
+}
+
+pub fn realtime_call_channel_profiles(
+    profiles: impl IntoIterator<Item = ChannelCapabilityProfile>,
+) -> Vec<RealtimeCallChannelProfile> {
+    profiles
+        .into_iter()
+        .map(|profile| {
+            let audio_call = realtime_call_support(&profile, ChannelCapability::RealtimeAudioCall);
+            let video_call = realtime_call_support(&profile, ChannelCapability::RealtimeVideoCall);
+            RealtimeCallChannelProfile {
+                channel: profile.channel.clone(),
+                audio_call,
+                video_call,
+                notes: call_profile_notes(audio_call, video_call),
+            }
+        })
+        .collect()
+}
+
+fn realtime_call_support(
+    profile: &ChannelCapabilityProfile,
+    capability: ChannelCapability,
+) -> RealtimeCallSupport {
+    if profile.has(capability) {
+        RealtimeCallSupport::Available
+    } else if profile.plans(capability) {
+        RealtimeCallSupport::Planned
+    } else {
+        RealtimeCallSupport::Unsupported
+    }
+}
+
+fn call_profile_notes(
+    audio_call: RealtimeCallSupport,
+    video_call: RealtimeCallSupport,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if audio_call.is_available() {
+        notes.push("realtime_audio_call_runtime_declared".into());
+    }
+    if video_call.is_available() {
+        notes.push("realtime_video_call_runtime_declared".into());
+    }
+    if audio_call == RealtimeCallSupport::Planned {
+        notes.push("realtime_audio_call_runtime_planned_not_available".into());
+    }
+    if video_call == RealtimeCallSupport::Planned {
+        notes.push("realtime_video_call_runtime_planned_not_available".into());
+    }
+    if audio_call == RealtimeCallSupport::Unsupported
+        && video_call == RealtimeCallSupport::Unsupported
+    {
+        notes.push("voice_notes_or_audio_attachments_are_not_realtime_calls".into());
+    }
+    notes
 }
 
 fn non_voice_decision(
     input: MediaDeliveryPolicyInput<'_>,
-    profile: ChannelMediaProfile,
+    profile: &ChannelCapabilityProfile,
     audio_container: AudioContainer,
 ) -> MediaDeliveryDecision {
     let is_audio = matches!(
@@ -423,7 +518,7 @@ fn non_voice_decision(
         MediaArtifactKind::Audio | MediaArtifactKind::Music
     );
     MediaDeliveryDecision {
-        channel: profile.output_channel(input.channel),
+        channel: profile.channel.clone(),
         artifact_kind: input.artifact_kind,
         mode: if is_audio {
             MediaDeliveryMode::NativeAudio
@@ -443,17 +538,18 @@ fn non_voice_decision(
     }
 }
 
-fn matrix_voice_decision(
+fn metadata_voice_decision(
     input: MediaDeliveryPolicyInput<'_>,
+    profile: &ChannelCapabilityProfile,
     audio_container: AudioContainer,
 ) -> MediaDeliveryDecision {
-    let mut compatibility_notes = vec!["matrix_msc3245_native_voice_event".into()];
+    let mut compatibility_notes = vec!["native_voice_metadata_event".into()];
     if !audio_container.is_ogg_opus_compatible() {
         compatibility_notes.push("strict_mobile_clients_may_require_ogg_opus_payload".into());
     }
 
     MediaDeliveryDecision {
-        channel: ChannelMediaProfile::Matrix.label().into(),
+        channel: profile.channel.clone(),
         artifact_kind: input.artifact_kind,
         mode: MediaDeliveryMode::NativeVoice,
         audio_container: Some(audio_container),
@@ -461,23 +557,23 @@ fn matrix_voice_decision(
         recommended_kind: MediaArtifactKind::Voice,
         required_provider_format: None,
         compatibility_notes,
-        reason: "matrix_supports_native_voice_event_with_provider_native_payload".into(),
+        reason: "channel_supports_native_voice_metadata_with_provider_native_payload".into(),
     }
 }
 
-fn telegram_voice_decision(
+fn common_container_voice_decision(
     input: MediaDeliveryPolicyInput<'_>,
+    profile: &ChannelCapabilityProfile,
     audio_container: AudioContainer,
 ) -> MediaDeliveryDecision {
-    if audio_container.is_telegram_voice_compatible() {
+    if audio_container.is_common_native_voice_compatible() {
         let mut compatibility_notes = Vec::new();
         if !audio_container.is_ogg_opus_compatible() {
-            compatibility_notes
-                .push("telegram_non_opus_voice_is_not_guaranteed_voice_bubble".into());
+            compatibility_notes.push("native_voice_non_opus_may_not_render_as_voice_bubble".into());
         }
 
         return MediaDeliveryDecision {
-            channel: ChannelMediaProfile::Telegram.output_channel(input.channel),
+            channel: profile.channel.clone(),
             artifact_kind: input.artifact_kind,
             mode: MediaDeliveryMode::NativeVoice,
             audio_container: Some(audio_container),
@@ -486,31 +582,32 @@ fn telegram_voice_decision(
             required_provider_format: (!audio_container.is_ogg_opus_compatible())
                 .then(|| "opus".into()),
             compatibility_notes,
-            reason: "telegram_send_voice_accepts_ogg_mp3_m4a_opus".into(),
+            reason: "channel_native_voice_accepts_declared_audio_containers".into(),
         };
     }
 
     MediaDeliveryDecision {
-        channel: ChannelMediaProfile::Telegram.output_channel(input.channel),
+        channel: profile.channel.clone(),
         artifact_kind: input.artifact_kind,
         mode: MediaDeliveryMode::AudioAttachment,
         audio_container: Some(audio_container),
         native_voice: false,
         recommended_kind: MediaArtifactKind::Audio,
         required_provider_format: Some("opus".into()),
-        compatibility_notes: vec!["telegram_native_voice_degraded_to_audio_attachment".into()],
-        reason: "telegram_voice_payload_format_not_supported_by_send_voice_profile".into(),
+        compatibility_notes: vec!["native_voice_degraded_to_audio_attachment".into()],
+        reason: "native_voice_payload_format_not_supported_by_declared_profile".into(),
     }
 }
 
 fn ogg_opus_voice_decision(
     input: MediaDeliveryPolicyInput<'_>,
+    profile: &ChannelCapabilityProfile,
     audio_container: AudioContainer,
     incompatible_reason: &str,
 ) -> MediaDeliveryDecision {
     if audio_container.is_ogg_opus_compatible() {
         return MediaDeliveryDecision {
-            channel: ChannelMediaProfile::from_channel(input.channel).output_channel(input.channel),
+            channel: profile.channel.clone(),
             artifact_kind: input.artifact_kind,
             mode: MediaDeliveryMode::NativeVoice,
             audio_container: Some(audio_container),
@@ -524,7 +621,7 @@ fn ogg_opus_voice_decision(
 
     if input.normalizer_available {
         return MediaDeliveryDecision {
-            channel: ChannelMediaProfile::from_channel(input.channel).output_channel(input.channel),
+            channel: profile.channel.clone(),
             artifact_kind: input.artifact_kind,
             mode: MediaDeliveryMode::RequiresNormalizer,
             audio_container: Some(audio_container),
@@ -537,7 +634,7 @@ fn ogg_opus_voice_decision(
     }
 
     MediaDeliveryDecision {
-        channel: ChannelMediaProfile::from_channel(input.channel).output_channel(input.channel),
+        channel: profile.channel.clone(),
         artifact_kind: input.artifact_kind,
         mode: MediaDeliveryMode::AudioAttachment,
         audio_container: Some(audio_container),
@@ -561,54 +658,36 @@ fn mime_has_opus_codec(raw: &str) -> bool {
         .is_some_and(|value| value.split(',').any(|codec| codec.trim() == "opus"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelMediaProfile {
-    Matrix,
-    Telegram,
-    Whatsapp,
-    Signal,
-    Discord,
-    Slack,
-    Generic,
-}
-
-impl ChannelMediaProfile {
-    fn from_channel(channel: &str) -> Self {
-        match channel.trim().to_ascii_lowercase().as_str() {
-            "matrix" => Self::Matrix,
-            "telegram" => Self::Telegram,
-            "whatsapp" | "whatsapp-web" | "wati" => Self::Whatsapp,
-            "signal" => Self::Signal,
-            "discord" => Self::Discord,
-            "slack" => Self::Slack,
-            _ => Self::Generic,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Matrix => "matrix",
-            Self::Telegram => "telegram",
-            Self::Whatsapp => "whatsapp",
-            Self::Signal => "signal",
-            Self::Discord => "discord",
-            Self::Slack => "slack",
-            Self::Generic => "generic",
-        }
-    }
-
-    fn output_channel(self, requested: &str) -> String {
-        if self == Self::Generic {
-            requested.trim().to_ascii_lowercase()
-        } else {
-            self.label().into()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_capabilities(channel: &str) -> Vec<ChannelCapability> {
+        match channel {
+            "matrix" => vec![
+                ChannelCapability::Attachments,
+                ChannelCapability::AudioAttachments,
+                ChannelCapability::NativeVoiceNotes,
+                ChannelCapability::NativeVoiceMetadata,
+            ],
+            "telegram" => vec![
+                ChannelCapability::Attachments,
+                ChannelCapability::AudioAttachments,
+                ChannelCapability::NativeVoiceNotes,
+            ],
+            "whatsapp" => vec![
+                ChannelCapability::Attachments,
+                ChannelCapability::AudioAttachments,
+                ChannelCapability::NativeVoiceNotes,
+                ChannelCapability::OggOpusVoiceNotes,
+            ],
+            "signal" => vec![
+                ChannelCapability::Attachments,
+                ChannelCapability::AudioAttachments,
+            ],
+            _ => vec![ChannelCapability::Attachments],
+        }
+    }
 
     fn voice_decision(
         channel: &str,
@@ -616,8 +695,10 @@ mod tests {
         file_name: Option<&str>,
         provider_format: Option<&str>,
     ) -> MediaDeliveryDecision {
+        let capabilities = test_capabilities(channel);
         media_delivery_decision(MediaDeliveryPolicyInput {
             channel,
+            capabilities: capabilities.as_slice(),
             artifact_kind: MediaArtifactKind::Voice,
             mime_type,
             file_name,
@@ -660,7 +741,7 @@ mod tests {
         assert!(decision
             .compatibility_notes
             .iter()
-            .any(|note| note == "telegram_non_opus_voice_is_not_guaranteed_voice_bubble"));
+            .any(|note| note == "native_voice_non_opus_may_not_render_as_voice_bubble"));
     }
 
     #[test]
@@ -674,7 +755,7 @@ mod tests {
 
         assert_eq!(decision.mode, MediaDeliveryMode::NativeVoice);
         assert!(decision.native_voice);
-        assert_eq!(whatsapp_ptt_mime("opus"), Some("audio/ogg; codecs=opus"));
+        assert_eq!(ogg_opus_voice_mime("opus"), Some("audio/ogg; codecs=opus"));
     }
 
     #[test]
@@ -684,16 +765,22 @@ mod tests {
         assert_eq!(decision.mode, MediaDeliveryMode::AudioAttachment);
         assert!(!decision.native_voice);
         assert_eq!(decision.recommended_kind, MediaArtifactKind::Audio);
+        assert_eq!(
+            decision.reason,
+            "voice_note_not_declared_by_channel_capabilities"
+        );
         assert!(decision
             .compatibility_notes
             .iter()
-            .any(|note| note == "signal_cli_sends_voice_as_attachment"));
+            .any(|note| note == "channel_delivers_voice_as_audio_attachment"));
     }
 
     #[test]
     fn normalizer_available_preserves_native_voice_requirement() {
+        let capabilities = test_capabilities("whatsapp");
         let decision = media_delivery_decision(MediaDeliveryPolicyInput {
             channel: "whatsapp",
+            capabilities: capabilities.as_slice(),
             artifact_kind: MediaArtifactKind::Voice,
             mime_type: Some("audio/mpeg"),
             file_name: Some("voice.mp3"),
@@ -707,7 +794,12 @@ mod tests {
 
     #[test]
     fn voice_delivery_profiles_expose_channel_specific_requirements() {
-        let profiles = voice_delivery_channel_profiles();
+        let profiles = voice_delivery_channel_profiles([
+            ChannelCapabilityProfile::new("matrix", test_capabilities("matrix")),
+            ChannelCapabilityProfile::new("telegram", test_capabilities("telegram")),
+            ChannelCapabilityProfile::new("whatsapp", test_capabilities("whatsapp")),
+            ChannelCapabilityProfile::new("signal", test_capabilities("signal")),
+        ]);
 
         let whatsapp = profiles
             .iter()
@@ -721,11 +813,60 @@ mod tests {
             .find(|profile| profile.channel == "matrix")
             .expect("matrix profile");
         assert_eq!(matrix.native_voice_formats, vec!["provider_native"]);
+        assert!(matrix
+            .notes
+            .iter()
+            .any(|note| note == "uses_native_voice_metadata"));
 
         let signal = profiles
             .iter()
             .find(|profile| profile.channel == "signal")
             .expect("signal profile");
         assert_eq!(signal.fallback_mode, MediaDeliveryMode::AudioAttachment);
+    }
+
+    #[test]
+    fn realtime_call_profiles_do_not_confuse_voice_notes_with_calls() {
+        let profiles = realtime_call_channel_profiles([
+            ChannelCapabilityProfile::new("matrix", test_capabilities("matrix")),
+            ChannelCapabilityProfile::new("clawdtalk", vec![ChannelCapability::RealtimeAudioCall]),
+        ]);
+
+        let matrix = profiles
+            .iter()
+            .find(|profile| profile.channel == "matrix")
+            .expect("matrix profile");
+        assert_eq!(matrix.audio_call, RealtimeCallSupport::Unsupported);
+        assert_eq!(matrix.video_call, RealtimeCallSupport::Unsupported);
+
+        let clawdtalk = profiles
+            .iter()
+            .find(|profile| profile.channel == "clawdtalk")
+            .expect("clawdtalk profile");
+        assert_eq!(clawdtalk.audio_call, RealtimeCallSupport::Available);
+        assert_eq!(clawdtalk.video_call, RealtimeCallSupport::Unsupported);
+    }
+
+    #[test]
+    fn realtime_call_profiles_report_planned_without_runtime_capability() {
+        let profiles = realtime_call_channel_profiles([ChannelCapabilityProfile::new(
+            "matrix",
+            test_capabilities("matrix"),
+        )
+        .with_planned_capabilities(vec![
+            ChannelCapability::RealtimeAudioCall,
+            ChannelCapability::RealtimeVideoCall,
+        ])]);
+
+        let matrix = profiles
+            .iter()
+            .find(|profile| profile.channel == "matrix")
+            .expect("matrix profile");
+        assert_eq!(matrix.audio_call, RealtimeCallSupport::Planned);
+        assert_eq!(matrix.video_call, RealtimeCallSupport::Planned);
+        assert!(matrix
+            .notes
+            .iter()
+            .any(|note| note == "realtime_audio_call_runtime_planned_not_available"));
     }
 }

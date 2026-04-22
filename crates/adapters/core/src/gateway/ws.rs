@@ -1265,6 +1265,7 @@ fn build_web_inbound_config(
             agent_id: state.agent_id.clone(),
             prompt_budget_config: config.memory.prompt_budget.clone(),
             presentation_mode: synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(true),
+            emit_compact_progress: true,
         },
     ))
 }

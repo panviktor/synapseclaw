@@ -71,6 +71,7 @@ This is the main table of contents for the current English documentation.
 - [API](reference/api.md)
 - [Config](reference/config.md)
 - [Model lanes](reference/model-lanes.md)
+- [Realtime calls](reference/realtime-calls.md)
 - [Skills API](reference/skills-api.md)
 - [Skill lifecycle](reference/skill-lifecycle.md)
 - [Tool contracts](reference/tool-contracts.md)

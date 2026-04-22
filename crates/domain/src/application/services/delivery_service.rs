@@ -219,6 +219,20 @@ mod tests {
                 .unwrap_or_default()
         }
 
+        fn capability_profiles(
+            &self,
+        ) -> Vec<crate::ports::channel_registry::ChannelCapabilityProfile> {
+            self.capabilities
+                .iter()
+                .map(|(name, caps)| {
+                    crate::ports::channel_registry::ChannelCapabilityProfile::new(
+                        name.clone(),
+                        caps.clone(),
+                    )
+                })
+                .collect()
+        }
+
         async fn deliver(&self, intent: &OutboundIntent) -> Result<()> {
             self.deliveries.lock().unwrap().push(intent.clone());
             Ok(())

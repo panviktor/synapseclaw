@@ -601,6 +601,12 @@ enum ModelCatalogCommands {
 enum VoiceCommands {
     /// Show resolved speech synthesis configuration and candidate failover order
     Status,
+    /// Inspect voice runtime prerequisites for CLI and local operator workflows
+    Doctor {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print channel delivery profiles used for voice/audio artifacts
     Profiles {
         /// Emit machine-readable JSON
@@ -690,6 +696,177 @@ enum VoiceCommands {
         #[arg(long)]
         auto_tts_policy: Option<String>,
     },
+    /// Manage local CLI voice mode and run one-shot voice turns from local audio
+    Mode {
+        #[command(subcommand)]
+        mode_command: VoiceModeCommands,
+    },
+    /// Start, speak into, or hang up realtime voice calls
+    Call {
+        #[command(subcommand)]
+        call_command: VoiceCallCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum VoiceModeCommands {
+    /// Show persisted CLI voice-mode settings and current environment readiness
+    Status {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable local CLI voice mode
+    On {
+        /// Remember this session id for future one-shot turns
+        #[arg(long)]
+        session: Option<String>,
+        /// Force local audio playback after synthesized replies
+        #[arg(long)]
+        playback: bool,
+        /// Disable local audio playback after synthesized replies
+        #[arg(long)]
+        no_playback: bool,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disable local CLI voice mode
+    Off {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one local voice turn from an audio file through STT -> agent -> TTS
+    Turn {
+        /// Input audio file path
+        #[arg(long)]
+        file: PathBuf,
+        /// Override remembered session id
+        #[arg(long)]
+        session: Option<String>,
+        /// Force local audio playback after synthesized replies
+        #[arg(long)]
+        playback: bool,
+        /// Disable local audio playback after synthesized replies
+        #[arg(long)]
+        no_playback: bool,
+        /// Skip synthesis and return text only
+        #[arg(long)]
+        text_only: bool,
+        /// Output path for synthesized reply audio
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Optional TTS provider override among configured speech_synthesis candidates
+        #[arg(long)]
+        provider: Option<String>,
+        /// Optional TTS model override among configured speech_synthesis candidates
+        #[arg(long)]
+        model: Option<String>,
+        /// Optional TTS voice override
+        #[arg(long)]
+        voice: Option<String>,
+        /// Optional TTS format override
+        #[arg(long)]
+        format: Option<String>,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum VoiceCallCommands {
+    /// Show configured and process-local realtime call runtime status
+    Status {
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List recent realtime call sessions from the shared runtime ledger
+    Sessions {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one realtime call session from the shared runtime ledger
+    Get {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Call id returned by call start
+        #[arg(long)]
+        call_control_id: String,
+        /// Emit machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start a confirmed realtime audio call
+    Start {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Destination for the selected transport, for example a phone number, SIP URI, or Matrix user id
+        #[arg(long)]
+        to: String,
+        /// Optional prompt metadata for the call runtime
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Primary goal of the call
+        #[arg(long)]
+        objective: Option<String>,
+        /// Supporting context, constraints, or facts for the call
+        #[arg(long)]
+        context: Option<String>,
+        /// Ordered agenda item; repeat the flag for multiple items
+        #[arg(long)]
+        agenda: Vec<String>,
+        /// Confirm external telephony side effects
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Speak text into an active realtime call
+    Speak {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Call control id returned by call start
+        #[arg(long)]
+        call_control_id: String,
+        /// Text to speak into the call
+        #[arg(long)]
+        text: String,
+        /// Confirm external telephony side effects
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Answer or attach to an inbound realtime call
+    Answer {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Call control id for the inbound call session
+        #[arg(long)]
+        call_control_id: String,
+        /// Confirm external call side effects or transport attachment
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Hang up an active realtime call
+    Hangup {
+        /// Realtime call runtime channel; required when multiple call transports are configured
+        #[arg(long)]
+        channel: Option<String>,
+        /// Call control id returned by call start
+        #[arg(long)]
+        call_control_id: String,
+        /// Confirm external telephony side effects
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -723,14 +900,18 @@ enum DoctorCommands {
 
 async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Result<()> {
     use synapse_domain::application::services::media_artifact_delivery::{
-        tts_output_extension, tts_output_mime, tts_provider_output_format,
-        voice_delivery_channel_profiles,
+        realtime_call_channel_profiles, tts_output_extension, tts_output_mime,
+        tts_provider_output_format, voice_delivery_channel_profiles,
     };
     use synapse_domain::application::services::voice_preference_service::{
         read_voice_settings, write_voice_settings, VoicePreference, VoiceSettings,
     };
     use synapse_domain::config::schema::{
         ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
+    };
+    use synapse_domain::ports::realtime_call::{
+        RealtimeCallAnswerRequest, RealtimeCallHangupRequest, RealtimeCallOrigin,
+        RealtimeCallRuntimePort, RealtimeCallSpeakRequest, RealtimeCallStartRequest,
     };
     use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 
@@ -832,10 +1013,104 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
             }
             Ok(())
         }
-        VoiceCommands::Profiles { json } => {
-            let profiles = voice_delivery_channel_profiles();
+        VoiceCommands::Doctor { json } => {
+            let report = synapseclaw::channels::voice_doctor_report(config);
             if json {
-                println!("{}", serde_json::to_string_pretty(&profiles)?);
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("CLI voice environment:");
+                println!("  stdin tty:       {}", report.stdin_tty);
+                println!("  stdout tty:      {}", report.stdout_tty);
+                println!("  stderr tty:      {}", report.stderr_tty);
+                println!("  ssh session:     {}", report.ssh_session);
+                println!("  display:         {}", report.display);
+                println!("  wayland:         {}", report.wayland);
+                println!("  pulse socket:    {}", report.pulse_socket);
+                println!("  pipewire socket: {}", report.pipewire_socket);
+                println!(
+                    "  runtime dir:     {}",
+                    report
+                        .audio_runtime_dir
+                        .as_deref()
+                        .unwrap_or("not detected")
+                );
+                println!(
+                    "  playback bins:   {}",
+                    if report.playback_binaries.is_empty() {
+                        "none".into()
+                    } else {
+                        report.playback_binaries.join(", ")
+                    }
+                );
+                println!(
+                    "  record bins:     {}",
+                    if report.recording_binaries.is_empty() {
+                        "none".into()
+                    } else {
+                        report.recording_binaries.join(", ")
+                    }
+                );
+                println!();
+                println!("Speech synthesis ready: {}", report.speech_synthesis_ready);
+                if report.speech_synthesis_candidates.is_empty() {
+                    println!("  candidates: none");
+                } else {
+                    for candidate in &report.speech_synthesis_candidates {
+                        println!(
+                            "  lane_candidate={} provider={} model={} voice={} format={}",
+                            candidate.lane_candidate_index,
+                            candidate.provider,
+                            candidate.model,
+                            candidate.voice,
+                            candidate.format
+                        );
+                    }
+                }
+                if let Some(error) = report.speech_synthesis_error.as_deref() {
+                    println!("  error: {error}");
+                }
+                println!();
+                println!(
+                    "Speech transcription ready: {}",
+                    report.speech_transcription_ready
+                );
+                if let Some(transcription) = report.speech_transcription.as_ref() {
+                    println!("  provider: {}", transcription.provider);
+                    println!("  model:    {}", transcription.model);
+                    println!(
+                        "  language: {}",
+                        transcription.language.as_deref().unwrap_or("auto")
+                    );
+                    println!("  max_secs: {}", transcription.max_duration_secs);
+                } else {
+                    println!("  provider: not resolved");
+                }
+                if let Some(error) = report.speech_transcription_error.as_deref() {
+                    println!("  error: {error}");
+                }
+                println!();
+                println!("Notes:");
+                for note in &report.notes {
+                    println!("  - {note}");
+                }
+            }
+            Ok(())
+        }
+        VoiceCommands::Profiles { json } => {
+            let profiles = voice_delivery_channel_profiles(
+                synapseclaw::channels::declared_channel_capability_profiles(),
+            );
+            let call_profiles = realtime_call_channel_profiles(
+                synapseclaw::channels::declared_channel_capability_profiles(),
+            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "voice_profiles": profiles,
+                        "call_profiles": call_profiles,
+                    }))?
+                );
             } else {
                 println!("Voice delivery profiles:");
                 for profile in profiles {
@@ -845,6 +1120,13 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
                         profile.native_voice_formats,
                         profile.fallback_mode,
                         profile.notes
+                    );
+                }
+                println!("Realtime call profiles:");
+                for profile in call_profiles {
+                    println!(
+                        "  {}: audio_call={}; video_call={}; notes={:?}",
+                        profile.channel, profile.audio_call, profile.video_call, profile.notes
                     );
                 }
             }
@@ -1193,6 +1475,599 @@ async fn handle_voice_command(config: &mut Config, command: VoiceCommands) -> Re
             );
             Ok(())
         }
+        VoiceCommands::Mode { mode_command } => match mode_command {
+            VoiceModeCommands::Status { json } => {
+                let settings = load_cli_voice_mode_settings(config)?;
+                let doctor = synapseclaw::channels::voice_doctor_report(config);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "settings": settings,
+                            "doctor": doctor,
+                        }))?
+                    );
+                } else {
+                    println!("CLI voice mode: {}", enabled_label(settings.enabled));
+                    println!("Auto playback:  {}", settings.auto_playback);
+                    println!(
+                        "Session id:     {}",
+                        settings.session_id.as_deref().unwrap_or("(none)")
+                    );
+                    println!();
+                    println!("Environment notes:");
+                    for note in doctor.notes {
+                        println!("  - {note}");
+                    }
+                }
+                Ok(())
+            }
+            VoiceModeCommands::On {
+                session,
+                playback,
+                no_playback,
+                json,
+            } => {
+                let mut settings = load_cli_voice_mode_settings(config)?;
+                settings.enabled = true;
+                settings.auto_playback = resolve_voice_mode_playback(
+                    if settings == synapse_domain::application::services::voice_mode_service::VoiceModeSettings::default()
+                    {
+                        default_cli_voice_mode_playback(config)
+                    } else {
+                        settings.auto_playback
+                    },
+                    playback,
+                    no_playback,
+                )?;
+                if let Some(session) = normalize_optional_cli_string(session) {
+                    settings.session_id = Some(session);
+                }
+                let settings = settings.normalized();
+                save_cli_voice_mode_settings(config, settings.clone())?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "settings": settings,
+                        }))?
+                    );
+                } else {
+                    println!("CLI voice mode enabled.");
+                    println!("  auto_playback: {}", settings.auto_playback);
+                    println!(
+                        "  session_id:    {}",
+                        settings.session_id.as_deref().unwrap_or("(none)")
+                    );
+                }
+                Ok(())
+            }
+            VoiceModeCommands::Off { json } => {
+                let mut settings = load_cli_voice_mode_settings(config)?;
+                settings.enabled = false;
+                let settings = settings.normalized();
+                save_cli_voice_mode_settings(config, settings.clone())?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "settings": settings,
+                        }))?
+                    );
+                } else {
+                    println!("CLI voice mode disabled.");
+                }
+                Ok(())
+            }
+            VoiceModeCommands::Turn {
+                file,
+                session,
+                playback,
+                no_playback,
+                text_only,
+                output,
+                provider,
+                model,
+                voice,
+                format,
+                json,
+            } => {
+                if text_only && output.is_some() {
+                    bail!("--output cannot be used together with --text-only");
+                }
+                let settings = load_cli_voice_mode_settings(config)?;
+                let session_id = normalize_optional_cli_string(session).or(settings.session_id);
+                let playback_enabled =
+                    resolve_voice_mode_playback(settings.auto_playback, playback, no_playback)?;
+                let transcript = transcribe_cli_audio(config, &file, None).await?;
+                let reply =
+                    agent::process_message(config.clone(), &transcript.text, session_id.as_deref())
+                        .await?;
+
+                let audio = if text_only {
+                    None
+                } else {
+                    let preference =
+                        merge_voice_mode_preference(config, provider, model, voice, format)?;
+                    Some(
+                        synthesize_cli_audio(config, &reply, &preference, output, playback_enabled)
+                            .await?,
+                    )
+                };
+
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "mode_enabled": settings.enabled,
+                            "session_id": session_id,
+                            "transcript": transcript,
+                            "reply": {
+                                "text": reply,
+                                "audio": audio,
+                            }
+                        }))?
+                    );
+                } else {
+                    println!("Transcript:");
+                    println!("{}", transcript.text);
+                    println!();
+                    println!("Reply:");
+                    println!("{reply}");
+                    if let Some(audio) = audio {
+                        println!();
+                        println!("Audio:");
+                        println!("  path: {}", audio.path.display());
+                        println!(
+                            "  provider/model/voice: {}/{}/{}",
+                            audio.provider, audio.model, audio.voice
+                        );
+                        if let Some(player) = audio.playback_player.as_deref() {
+                            println!("  playback: {player}");
+                        }
+                        if let Some(error) = audio.playback_error.as_deref() {
+                            println!("  playback_error: {error}");
+                        }
+                    }
+                }
+                Ok(())
+            }
+        },
+        VoiceCommands::Call { call_command } => match call_command {
+            VoiceCallCommands::Status { json } => {
+                let report =
+                    synapseclaw::channels::realtime_call_status_report_live_with_synapseclaw_dir(
+                        &config.channels_config,
+                        config.config_path.parent().map(|path| path.to_path_buf()),
+                        synapseclaw::channels::lane_selected_tts_config(&config).ok(),
+                        synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                    )
+                    .await;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "report": report,
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "Default runtime: {}",
+                        report.default_channel.as_deref().unwrap_or("none")
+                    );
+                    for status in report.channels {
+                        let health = status.health.as_ref();
+                        println!(
+                            "{} transport_configured={} audio={:?} video={:?} media_attached={} selected={} ready={} active_calls={}",
+                            status.channel,
+                            status.transport_configured,
+                            status.audio_call_runtime,
+                            status.video_call_runtime,
+                            status.media_attached,
+                            status.runtime_selected_by_default,
+                            status.runtime_ready,
+                            health.map(|value| value.active_calls.len()).unwrap_or(0)
+                        );
+                        println!(
+                            "  actions start={} answer={} speak={} hangup={} inspect={}",
+                            status.action_support.start,
+                            status.action_support.answer,
+                            status.action_support.speak,
+                            status.action_support.hangup,
+                            status.action_support.inspect
+                        );
+                        if let Some(details) = status.details.as_ref() {
+                            match details {
+                                synapseclaw::channels::RealtimeCallTransportDetails::ClawdTalk {
+                                    api_key_configured,
+                                    websocket_configured,
+                                    websocket_url,
+                                    api_base_url,
+                                    assistant_configured,
+                                    bridge_ready,
+                                    outbound_start_ready,
+                                    call_control_ready,
+                                } => {
+                                    println!(
+                                        "  clawdtalk api_key_configured={} websocket_configured={} assistant_configured={} bridge_ready={} outbound_start_ready={} call_control_ready={}",
+                                        api_key_configured,
+                                        websocket_configured,
+                                        assistant_configured,
+                                        bridge_ready,
+                                        outbound_start_ready,
+                                        call_control_ready
+                                    );
+                                    if let Some(url) = websocket_url.as_deref() {
+                                        println!("  websocket_url={url}");
+                                    }
+                                    if let Some(url) = api_base_url.as_deref() {
+                                        println!("  api_base_url={url}");
+                                    }
+                                }
+                                synapseclaw::channels::RealtimeCallTransportDetails::Matrix {
+                                    auth_mode,
+                                    auth_source,
+                                    widget_support_enabled,
+                                    room_reference,
+                                    resolved_room_id,
+                                    room_accessible,
+                                    room_encrypted,
+                                    rtc_bootstrap,
+                                    turn_engine,
+                                } => {
+                                    println!(
+                                        "  matrix auth_mode={:?} auth_source={:?} widget_support_enabled={} room_accessible={} room_encrypted={}",
+                                        auth_mode,
+                                        auth_source,
+                                        widget_support_enabled,
+                                        room_accessible.map(|value| value.to_string()).unwrap_or_else(|| "unknown".into()),
+                                        room_encrypted.map(|value| value.to_string()).unwrap_or_else(|| "unknown".into())
+                                    );
+                                    if let Some(room) = room_reference.as_deref() {
+                                        println!("  room_reference={room}");
+                                    }
+                                    if let Some(room) = resolved_room_id.as_deref() {
+                                        println!("  resolved_room_id={room}");
+                                    }
+                                    if let Some(bootstrap) = rtc_bootstrap.as_ref() {
+                                        println!(
+                                            "  rtc_bootstrap focus_source={:?} authorizer_api={:?} media_bootstrap_ready={}",
+                                            bootstrap.focus_source,
+                                            bootstrap.authorizer_api,
+                                            bootstrap.media_bootstrap_ready
+                                        );
+                                        if let Some(url) = bootstrap.focus_url.as_deref() {
+                                            println!("  rtc_focus_url={url}");
+                                        }
+                                        if let Some(path) = bootstrap.transports_api_path.as_deref() {
+                                            println!("  rtc_transports_api_path={path}");
+                                        }
+                                        if let Some(supported) = bootstrap.transports_api_supported {
+                                            println!("  rtc_transports_supported={supported}");
+                                        }
+                                        if let Some(healthy) = bootstrap.authorizer_healthy {
+                                            println!("  rtc_authorizer_healthy={healthy}");
+                                        }
+                                        if let Some(openid_ready) = bootstrap.openid_token_ready {
+                                            println!("  rtc_openid_token_ready={openid_ready}");
+                                        }
+                                        if let Some(grant_ready) = bootstrap.authorizer_grant_ready {
+                                            println!("  rtc_authorizer_grant_ready={grant_ready}");
+                                        }
+                                        if let Some(url) = bootstrap.livekit_service_url.as_deref() {
+                                            println!("  rtc_livekit_service_url={url}");
+                                        }
+                                        if let Some(error) = bootstrap.last_probe_error.as_deref() {
+                                            println!("  rtc_last_probe_error={error}");
+                                        }
+                                    }
+                                    if let Some(turn_engine) = turn_engine.as_ref() {
+                                        println!(
+                                            "  turn_engine provider={} configured={} ready={}",
+                                            turn_engine.provider,
+                                            turn_engine.configured,
+                                            turn_engine.ready
+                                        );
+                                        if let Some(model) = turn_engine.model.as_deref() {
+                                            println!("  turn_engine_model={model}");
+                                        }
+                                        if !turn_engine.language_hints.is_empty() {
+                                            println!(
+                                                "  turn_engine_language_hints={}",
+                                                turn_engine.language_hints.join(",")
+                                            );
+                                        }
+                                        if let Some(error) = turn_engine.last_error.as_deref() {
+                                            println!("  turn_engine_last_error={error}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(health) = health {
+                            if let Some(connected) = health.connected {
+                                println!("  connected={connected}");
+                            }
+                            if let Some(reconnect_attempts) = health.reconnect_attempts {
+                                println!("  reconnect_attempts={reconnect_attempts}");
+                            }
+                            if let Some(error) = health.last_error.as_deref() {
+                                println!("  last_error={error}");
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+            VoiceCallCommands::Sessions { channel, json } => {
+                let channel =
+                    synapseclaw::channels::resolve_realtime_audio_call_inspection_channel(
+                        channel.as_deref(),
+                        &config.channels_config,
+                    )?;
+                let sessions =
+                    synapseclaw::channels::list_realtime_audio_call_sessions_with_synapseclaw_dir(
+                        &channel,
+                        &config.channels_config,
+                        config.config_path.parent().map(|path| path.to_path_buf()),
+                    )?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "channel": channel,
+                            "sessions": sessions,
+                        }))?
+                    );
+                } else if sessions.is_empty() {
+                    println!("No realtime call sessions.");
+                } else {
+                    for session in sessions {
+                        println!(
+                            "{} {} {:?} source={}{}",
+                            session.call_control_id,
+                            session.channel,
+                            session.state,
+                            session.origin.source.as_str(),
+                            session
+                                .objective
+                                .as_deref()
+                                .map(|objective| format!(" objective={objective}"))
+                                .unwrap_or_default()
+                        );
+                    }
+                }
+                Ok(())
+            }
+            VoiceCallCommands::Get {
+                channel,
+                call_control_id,
+                json,
+            } => {
+                let channel =
+                    synapseclaw::channels::resolve_realtime_audio_call_inspection_channel(
+                        channel.as_deref(),
+                        &config.channels_config,
+                    )?;
+                let call_control_id = non_empty_cli_value("--call-control-id", call_control_id)?;
+                let session =
+                    synapseclaw::channels::get_realtime_audio_call_session_with_synapseclaw_dir(
+                        &channel,
+                        &call_control_id,
+                        &config.channels_config,
+                        config.config_path.parent().map(|path| path.to_path_buf()),
+                    )?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "ok",
+                            "channel": channel,
+                            "session": session,
+                        }))?
+                    );
+                } else if let Some(session) = session {
+                    println!("Call: {}", session.call_control_id);
+                    println!("State: {:?}", session.state);
+                    println!("Direction: {:?}", session.direction);
+                    println!("Triggered by: {}", session.origin.source.as_str());
+                    if let (Some(channel), Some(recipient)) = (
+                        session.origin.channel.as_deref(),
+                        session.origin.recipient.as_deref(),
+                    ) {
+                        match session.origin.thread_ref.as_deref() {
+                            Some(thread_ref) => {
+                                println!(
+                                    "Trigger conversation: {channel}:{recipient}#{thread_ref}"
+                                );
+                            }
+                            None => println!("Trigger conversation: {channel}:{recipient}"),
+                        }
+                    }
+                    if let Some(objective) = session.objective.as_deref() {
+                        println!("Objective: {objective}");
+                    }
+                    if let Some(end_reason) = session.end_reason.as_deref() {
+                        println!("End reason: {end_reason}");
+                    }
+                    if let Some(summary) = session.summary.as_deref() {
+                        println!("Summary: {summary}");
+                    }
+                    if !session.decisions.is_empty() {
+                        println!("Decisions:");
+                        for decision in &session.decisions {
+                            println!("  - {decision}");
+                        }
+                    }
+                    println!("Messages: {}", session.message_count);
+                    println!("Interruptions: {}", session.interruption_count);
+                } else {
+                    bail!("realtime call session not found");
+                }
+                Ok(())
+            }
+            VoiceCallCommands::Start {
+                channel,
+                to,
+                prompt,
+                objective,
+                context,
+                agenda,
+                confirm,
+            } => {
+                synapseclaw::channels::require_realtime_call_confirmation(confirm)?;
+                let channel = synapseclaw::channels::resolve_realtime_audio_call_channel(
+                    channel.as_deref(),
+                    &config.channels_config,
+                )?;
+                let runtime = synapseclaw::channels::configured_realtime_audio_call_runtime_with_support_configs(
+                    &channel,
+                    &config.channels_config,
+                    config.config_path.parent().map(|path| path.to_path_buf()),
+                    synapseclaw::channels::lane_selected_tts_config(&config).ok(),
+                    synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                )?;
+                let to = non_empty_cli_value("--to", to)?;
+                let result = runtime
+                    .start_audio_call(RealtimeCallStartRequest {
+                        to,
+                        prompt: prompt
+                            .map(|value| non_empty_cli_value("--prompt", value))
+                            .transpose()?,
+                        origin: RealtimeCallOrigin::cli_request(),
+                        objective: objective
+                            .map(|value| non_empty_cli_value("--objective", value))
+                            .transpose()?,
+                        context: context
+                            .map(|value| non_empty_cli_value("--context", value))
+                            .transpose()?,
+                        agenda: agenda
+                            .into_iter()
+                            .map(|value| non_empty_cli_value("--agenda", value))
+                            .collect::<Result<Vec<_>>>()?,
+                    })
+                    .await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "channel": channel,
+                        "call": result,
+                    }))?
+                );
+                Ok(())
+            }
+            VoiceCallCommands::Speak {
+                channel,
+                call_control_id,
+                text,
+                confirm,
+            } => {
+                synapseclaw::channels::require_realtime_call_confirmation(confirm)?;
+                let channel = synapseclaw::channels::resolve_realtime_audio_call_channel(
+                    channel.as_deref(),
+                    &config.channels_config,
+                )?;
+                let runtime = synapseclaw::channels::configured_realtime_audio_call_runtime_with_support_configs(
+                    &channel,
+                    &config.channels_config,
+                    config.config_path.parent().map(|path| path.to_path_buf()),
+                    synapseclaw::channels::lane_selected_tts_config(&config).ok(),
+                    synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                )?;
+                let result = RealtimeCallRuntimePort::speak(
+                    runtime.as_ref(),
+                    RealtimeCallSpeakRequest {
+                        call_control_id: non_empty_cli_value("--call-control-id", call_control_id)?,
+                        text: non_empty_cli_value("--text", text)?,
+                    },
+                )
+                .await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "channel": channel,
+                        "result": result,
+                    }))?
+                );
+                Ok(())
+            }
+            VoiceCallCommands::Answer {
+                channel,
+                call_control_id,
+                confirm,
+            } => {
+                synapseclaw::channels::require_realtime_call_confirmation(confirm)?;
+                let channel = synapseclaw::channels::resolve_realtime_audio_call_channel(
+                    channel.as_deref(),
+                    &config.channels_config,
+                )?;
+                let runtime = synapseclaw::channels::configured_realtime_audio_call_runtime_with_support_configs(
+                    &channel,
+                    &config.channels_config,
+                    config.config_path.parent().map(|path| path.to_path_buf()),
+                    synapseclaw::channels::lane_selected_tts_config(&config).ok(),
+                    synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                )?;
+                let result = RealtimeCallRuntimePort::answer(
+                    runtime.as_ref(),
+                    RealtimeCallAnswerRequest {
+                        call_control_id: non_empty_cli_value("--call-control-id", call_control_id)?,
+                    },
+                )
+                .await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "channel": channel,
+                        "result": result,
+                    }))?
+                );
+                Ok(())
+            }
+            VoiceCallCommands::Hangup {
+                channel,
+                call_control_id,
+                confirm,
+            } => {
+                synapseclaw::channels::require_realtime_call_confirmation(confirm)?;
+                let channel = synapseclaw::channels::resolve_realtime_audio_call_channel(
+                    channel.as_deref(),
+                    &config.channels_config,
+                )?;
+                let runtime = synapseclaw::channels::configured_realtime_audio_call_runtime_with_support_configs(
+                    &channel,
+                    &config.channels_config,
+                    config.config_path.parent().map(|path| path.to_path_buf()),
+                    synapseclaw::channels::lane_selected_tts_config(&config).ok(),
+                    synapseclaw::channels::lane_selected_transcription_config(&config).ok(),
+                )?;
+                let result = RealtimeCallRuntimePort::hangup(
+                    runtime.as_ref(),
+                    RealtimeCallHangupRequest {
+                        call_control_id: non_empty_cli_value("--call-control-id", call_control_id)?,
+                    },
+                )
+                .await?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "status": "ok",
+                        "channel": channel,
+                        "result": result,
+                    }))?
+                );
+                Ok(())
+            }
+        },
     }
 }
 
@@ -1253,6 +2128,267 @@ fn cli_voice_target(
                 .map_err(anyhow::Error::msg)
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceModeTurnTranscript {
+    provider: String,
+    model: String,
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VoiceModeTurnAudio {
+    path: PathBuf,
+    bytes: usize,
+    provider: String,
+    model: String,
+    voice: String,
+    format: String,
+    mime_type: String,
+    playback_player: Option<String>,
+    playback_error: Option<String>,
+}
+
+fn cli_user_profile_store_path(config: &Config) -> PathBuf {
+    config
+        .config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("user_profiles.json")
+}
+
+fn cli_user_profile_store(
+    config: &Config,
+) -> Result<synapse_infra::user_profile_store::FileUserProfileStore> {
+    synapse_infra::user_profile_store::FileUserProfileStore::new(cli_user_profile_store_path(
+        config,
+    ))
+}
+
+fn load_cli_voice_mode_settings(
+    config: &Config,
+) -> Result<synapse_domain::application::services::voice_mode_service::VoiceModeSettings> {
+    use synapse_domain::application::services::voice_mode_service::{
+        read_voice_mode_settings, VOICE_MODE_PROFILE_KEY,
+    };
+    use synapse_domain::ports::user_profile_store::UserProfileStorePort;
+
+    let store = cli_user_profile_store(config)?;
+    Ok(read_voice_mode_settings(store.load(VOICE_MODE_PROFILE_KEY)))
+}
+
+fn save_cli_voice_mode_settings(
+    config: &Config,
+    settings: synapse_domain::application::services::voice_mode_service::VoiceModeSettings,
+) -> Result<()> {
+    use synapse_domain::application::services::voice_mode_service::{
+        write_voice_mode_settings, VOICE_MODE_PROFILE_KEY,
+    };
+    use synapse_domain::ports::user_profile_store::UserProfileStorePort;
+
+    let store = cli_user_profile_store(config)?;
+    if let Some(profile) = write_voice_mode_settings(settings) {
+        store.upsert(VOICE_MODE_PROFILE_KEY, profile)?;
+    } else {
+        let _ = store.remove(VOICE_MODE_PROFILE_KEY)?;
+    }
+    Ok(())
+}
+
+fn normalize_optional_cli_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_voice_mode_playback(default: bool, playback: bool, no_playback: bool) -> Result<bool> {
+    if playback && no_playback {
+        bail!("--playback and --no-playback cannot be used together");
+    }
+    if playback {
+        Ok(true)
+    } else if no_playback {
+        Ok(false)
+    } else {
+        Ok(default)
+    }
+}
+
+fn default_cli_voice_mode_playback(config: &Config) -> bool {
+    !synapseclaw::channels::voice_doctor_report(config)
+        .playback_binaries
+        .is_empty()
+}
+
+fn merge_voice_mode_preference(
+    config: &Config,
+    provider: Option<String>,
+    model: Option<String>,
+    voice: Option<String>,
+    format: Option<String>,
+) -> Result<synapse_domain::application::services::voice_preference_service::VoicePreference> {
+    use synapse_domain::application::services::voice_preference_service::read_voice_settings;
+    use synapse_domain::ports::user_profile_store::UserProfileStorePort;
+
+    let store = cli_user_profile_store(config)?;
+    let mut preference = read_voice_settings(store.load("voice:global"))
+        .preference
+        .unwrap_or_default();
+    if let Some(provider) = normalize_optional_cli_string(provider) {
+        preference.provider = Some(provider);
+    }
+    if let Some(model) = normalize_optional_cli_string(model) {
+        preference.model = Some(model);
+    }
+    if let Some(voice) = normalize_optional_cli_string(voice) {
+        preference.voice = Some(voice);
+    }
+    if let Some(format) = normalize_optional_cli_string(format) {
+        preference.format = Some(format);
+    }
+    let preference = preference.normalized();
+    validate_cli_voice_preference(config, &preference)?;
+    Ok(preference)
+}
+
+async fn transcribe_cli_audio(
+    config: &Config,
+    file: &std::path::Path,
+    provider: Option<String>,
+) -> Result<VoiceModeTurnTranscript> {
+    let transcription = synapseclaw::channels::lane_selected_transcription_config(config)?;
+    if !transcription.enabled {
+        bail!("voice transcription is not enabled");
+    }
+    let file_name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("--file must include a valid file name")?
+        .to_string();
+    let audio = tokio::fs::read(file)
+        .await
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let manager = synapseclaw::channels::transcription::TranscriptionManager::new(&transcription)?;
+    let selected_provider = provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or(transcription.default_provider.as_str())
+        .to_string();
+    let text = if provider.is_some() {
+        manager
+            .transcribe_with_provider(&audio, &file_name, &selected_provider)
+            .await?
+    } else {
+        manager.transcribe(&audio, &file_name).await?
+    };
+    Ok(VoiceModeTurnTranscript {
+        provider: selected_provider,
+        model: transcription.model,
+        text,
+    })
+}
+
+async fn synthesize_cli_audio(
+    config: &Config,
+    text: &str,
+    preference: &synapse_domain::application::services::voice_preference_service::VoicePreference,
+    output: Option<PathBuf>,
+    playback: bool,
+) -> Result<VoiceModeTurnAudio> {
+    use synapse_domain::application::services::media_artifact_delivery::{
+        tts_output_extension, tts_output_mime, tts_provider_output_format,
+    };
+
+    let mut tts = select_cli_tts_config(config, preference)?;
+    if let Some(voice) = preference.voice.clone() {
+        tts.default_voice = voice;
+    }
+    if let Some(format) = preference.format.clone() {
+        tts.default_format = format;
+    }
+    let manager = synapseclaw::channels::TtsManager::new(&tts)?;
+    let bytes = manager.synthesize(text).await?;
+    if bytes.is_empty() {
+        bail!("voice synthesis returned empty audio");
+    }
+
+    let provider_format = tts_provider_output_format(&tts);
+    let provider = tts.default_provider.clone();
+    let model = voice_selected_model(&tts);
+    let voice = tts.default_voice.clone();
+    let extension = tts_output_extension(&provider_format);
+    let output = match output {
+        Some(path) => path,
+        None => {
+            let dir = config.workspace_dir.join("voice_out");
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .with_context(|| format!("failed to create {}", dir.display()))?;
+            dir.join(format!("voice_turn_{}.{}", uuid::Uuid::new_v4(), extension))
+        }
+    };
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    tokio::fs::write(&output, &bytes)
+        .await
+        .with_context(|| format!("failed to write {}", output.display()))?;
+
+    let (playback_player, playback_error) = if playback {
+        match play_local_audio_file(&output) {
+            Ok(player) => (Some(player), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+
+    Ok(VoiceModeTurnAudio {
+        path: output,
+        bytes: bytes.len(),
+        provider,
+        model,
+        voice,
+        format: provider_format.to_string(),
+        mime_type: tts_output_mime(&provider_format).to_string(),
+        playback_player,
+        playback_error,
+    })
+}
+
+fn play_local_audio_file(path: &std::path::Path) -> Result<String> {
+    let playback_commands: [(&str, &[&str]); 5] = [
+        ("ffplay", &["-nodisp", "-autoexit", "-loglevel", "error"]),
+        ("paplay", &[]),
+        ("pw-play", &[]),
+        ("play", &["-q"]),
+        ("aplay", &[]),
+    ];
+    let mut last_error = None;
+
+    for (binary, args) in playback_commands {
+        let mut command = std::process::Command::new(binary);
+        command.args(args).arg(path);
+        match command.status() {
+            Ok(status) if status.success() => return Ok(binary.to_string()),
+            Ok(status) => {
+                last_error = Some(format!("{binary} exited with status {status}"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                last_error = Some(format!("{binary} failed: {error}"));
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "{}",
+        last_error.unwrap_or_else(|| "no local playback binary is available".into())
+    ))
 }
 
 fn validate_cli_voice_preference(
