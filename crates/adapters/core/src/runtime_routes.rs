@@ -27,6 +27,7 @@ use synapse_domain::application::services::runtime_calibration::{
 use synapse_domain::application::services::runtime_decision_trace::{
     RuntimeDecisionTrace, RuntimeTraceRouteRef,
 };
+use synapse_domain::application::services::runtime_usage_insight_service::build_runtime_usage_insight_snapshot;
 use synapse_domain::application::services::runtime_trace_janitor::{
     append_runtime_watchdog_alerts, RuntimeHandoffArtifact,
 };
@@ -973,11 +974,70 @@ fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
 fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelection) {
     write_route_admission_diagnostics(response, current);
     write_runtime_decision_trace_diagnostics(response, &current.runtime_decision_traces);
+    write_runtime_usage_diagnostics(response, current);
     write_tool_repair_diagnostics(response, current);
     write_runtime_assumptions(response, &current.assumptions);
     write_runtime_calibrations(response, &current.calibrations);
     write_runtime_handoff_artifacts(response, &current.handoff_artifacts);
     write_runtime_watchdog_digest(response, current);
+}
+
+fn write_runtime_usage_diagnostics(response: &mut String, current: &RouteSelection) {
+    let snapshot = build_runtime_usage_insight_snapshot(current, &Config::default());
+    if snapshot.request_count == 0
+        && snapshot.compaction_count == 0
+        && snapshot.tool_failure_count == 0
+        && snapshot.watchdog_alert_count == 0
+    {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime usage: requests={} input_tokens={} output_tokens={} cached_tokens={} estimated_cost_usd={:.6}",
+        snapshot.request_count,
+        snapshot.input_tokens,
+        snapshot.output_tokens,
+        snapshot.cached_input_tokens,
+        snapshot.estimated_cost_microusd as f64 / 1_000_000.0,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage pressure: pre={}bp post={}bp compactions={} handoffs={} cache_hits={}",
+        snapshot.max_pressure_before_basis_points,
+        snapshot.max_pressure_after_basis_points,
+        snapshot.compaction_count,
+        snapshot.handoff_count,
+        snapshot.compaction_cache_hits,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage pricing: known={} unknown={} included={} provider_reported={}",
+        snapshot.pricing_status_counts.known,
+        snapshot.pricing_status_counts.unknown,
+        snapshot.pricing_status_counts.included,
+        snapshot.pricing_status_counts.provider_reported,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage failures: total={} classes={} repaired={} watchdog_alerts={}",
+        snapshot.tool_failure_count,
+        snapshot.tool_failure_classes,
+        snapshot.repaired_tool_count,
+        snapshot.watchdog_alert_count,
+    );
+    if !snapshot.tool_failure_breakdown.is_empty() {
+        let summary = snapshot
+            .tool_failure_breakdown
+            .iter()
+            .take(3)
+            .map(|item| format!("{}:{} x{}", item.tool_name, item.failure_kind, item.count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(response, "Runtime usage failure breakdown: {summary}");
+    }
+    if let Ok(json) = serde_json::to_string(&snapshot) {
+        let _ = writeln!(response, "Runtime usage json: {json}");
+    }
 }
 
 fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
@@ -1142,6 +1202,19 @@ fn write_runtime_decision_trace_diagnostics(
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(response, "Runtime decision memory: {summary}");
+            for memory in trace.memory.iter().rev().take(3) {
+                let _ = writeln!(
+                    response,
+                    "Runtime decision memory detail: {} / reason={} / similarity_bp={} / id_present={}",
+                    memory.category,
+                    memory.reason,
+                    memory
+                        .similarity_basis_points
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    memory.entry_id_present
+                );
+            }
         }
         if !trace.auxiliary.is_empty() {
             let summary = trace
@@ -1153,6 +1226,20 @@ fn write_runtime_decision_trace_diagnostics(
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(response, "Runtime decision auxiliary: {summary}");
+        }
+        if !trace.notes.is_empty() {
+            for note in trace.notes.iter().rev().take(4) {
+                if matches!(
+                    note.kind.as_str(),
+                    "implicit_memory_recall" | "implicit_memory_context" | "post_compaction_pressure"
+                ) {
+                    let _ = writeln!(
+                        response,
+                        "Runtime decision note: {} / {}",
+                        note.kind, note.detail
+                    );
+                }
+            }
         }
     }
 }
@@ -1381,6 +1468,8 @@ fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection
         recent_tool_repairs: &current.recent_tool_repairs,
         context_cache: current.context_cache.as_ref(),
         assumptions: &current.assumptions,
+        calibration_records: &current.calibrations,
+        decision_traces: &current.runtime_decision_traces,
         subsystem_observations: &[],
         now_unix,
     });
@@ -1976,6 +2065,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -2059,6 +2149,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2109,6 +2200,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2140,6 +2232,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: vec![RuntimeDecisionTrace {
+            usage_ledger: Default::default(),
                 trace_id: "trace-1".into(),
                 observed_at_unix: 100,
                 route: RuntimeTraceRouteDecision {
@@ -2244,8 +2337,116 @@ mod tests {
 
         assert!(response.contains("Runtime decision traces retained: 1"));
         assert!(response.contains("Runtime decision memory: explicit_user:core:noop applied=false"));
+        assert!(response.contains(
+            "Runtime decision memory detail: core / reason=secret memory text that must stay out of diagnostics"
+        ));
         assert!(response.contains("Runtime decision auxiliary: reflection:started count=1"));
         assert!(!response.contains("secret memory text"));
+    }
+
+    #[test]
+    fn models_help_includes_implicit_memory_recall_notes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "gpt-5.4-mini".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
+                runtime_decision_traces: vec![RuntimeDecisionTrace {
+                    trace_id: "trace-2".into(),
+                    observed_at_unix: 100,
+                    route: RuntimeTraceRouteDecision {
+                        before: RuntimeTraceRouteRef::new("openrouter", "gpt-5.4-mini", None, None),
+                        after: RuntimeTraceRouteRef::new("openrouter", "gpt-5.4-mini", None, None),
+                        reroute_applied: false,
+                        intent: "reply".into(),
+                        pressure_state: "healthy".into(),
+                        action: "proceed".into(),
+                        reasons: vec![],
+                        recommended_action: None,
+                    },
+                    model_profile: RuntimeTraceModelProfileSnapshot {
+                        context_window_tokens: Some(128000),
+                        max_output_tokens: Some(8192),
+                        features: vec![],
+                        context_window_source: "catalog".into(),
+                        context_window_freshness: "fresh".into(),
+                        context_window_confidence: "high".into(),
+                        max_output_source: "catalog".into(),
+                        max_output_freshness: "fresh".into(),
+                        max_output_confidence: "high".into(),
+                        features_source: "catalog".into(),
+                        features_freshness: "fresh".into(),
+                        features_confidence: "high".into(),
+                    },
+                    context: RuntimeTraceContextSnapshot {
+                        total_chars: 20,
+                        estimated_total_tokens: 10,
+                        target_total_tokens: 100,
+                        ceiling_total_tokens: 200,
+                        protected_chars: 0,
+                        removable_chars: 0,
+                        chars_over_target: 0,
+                        chars_over_ceiling: 0,
+                        tokens_headroom_to_target: 90,
+                        tokens_headroom_to_ceiling: 190,
+                        turn_shape: "default".into(),
+                        budget_tier: "under_budget".into(),
+                        requires_compaction: false,
+                        condensation_mode: None,
+                        condensation_target: None,
+                        condensation_minimum_reclaim_chars: None,
+                        condensation_prefers_cached_artifact: false,
+                        cache: None,
+                    },
+                    tools: Vec::new(),
+                    memory: vec![RuntimeTraceMemoryDecision {
+                        observed_at_unix: 100,
+                        source: "implicit_memory_recall".into(),
+                        category: "local_infra".into(),
+                        write_class: None,
+                        action: "recall_accept".into(),
+                        applied: true,
+                        entry_id_present: true,
+                        reason: "accepted key=local_infra_matrix_homeserver verification_policy=minimal_live_verification".into(),
+                        similarity_basis_points: Some(9600),
+                        failure: None,
+                    }],
+                    auxiliary: Vec::new(),
+                    notes: vec![
+                        RuntimeTraceNote {
+                            observed_at_unix: 100,
+                            kind: "implicit_memory_recall".into(),
+                            detail: "attempted=true query=matrix homeserver | service package local infrastructure scopes=core,local_infra accepted=1 rejected=0 verification_policy=minimal_live_verification".into(),
+                        },
+                        RuntimeTraceNote {
+                            observed_at_unix: 100,
+                            kind: "implicit_memory_context".into(),
+                            detail: "guidance_chars=212 accepted_anchors=1".into(),
+                        },
+                    ],
+                }],
+                usage_ledger: Default::default(),
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime decision note: implicit_memory_recall / attempted=true query=matrix homeserver"));
+        assert!(response.contains("verification_policy=minimal_live_verification"));
+        assert!(response.contains("Runtime decision note: implicit_memory_context / guidance_chars=212 accepted_anchors=1"));
     }
 
     #[test]
@@ -2285,6 +2486,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2327,6 +2529,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2374,6 +2577,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2420,6 +2624,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2460,6 +2665,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime watchdog alerts: 1"));
@@ -2504,6 +2710,7 @@ mod tests {
                 },
             }],
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime handoff artifacts retained: 1"));
@@ -2540,6 +2747,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime calibrations retained: 1"));
@@ -2573,6 +2781,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime assumptions retained: 1"));
@@ -2623,6 +2832,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2684,6 +2894,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -2760,6 +2971,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         };
 
         assert!(local_provider_route_requires_key(&route));

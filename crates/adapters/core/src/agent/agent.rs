@@ -1008,6 +1008,7 @@ impl Agent {
             watchdog_alerts: self.recent_runtime_watchdog_alerts.clone(),
             handoff_artifacts: self.recent_runtime_handoff_artifacts.clone(),
             runtime_decision_traces: self.recent_runtime_decision_traces.clone(),
+            usage_ledger: Default::default(),
         };
         route.run_runtime_trace_maintenance(now_unix);
         self.recent_turn_tool_repairs = route.recent_tool_repairs;
@@ -2811,6 +2812,8 @@ impl Agent {
                 recent_tool_repairs: &self.recent_turn_tool_repairs,
                 context_cache: Some(&context_cache_stats),
                 assumptions: &self.recent_runtime_assumptions,
+                calibration_records: &self.recent_runtime_calibrations,
+                decision_traces: &self.recent_runtime_decision_traces,
                 subsystem_observations: &subsystem_observations,
                 now_unix: observed_at_unix,
             });

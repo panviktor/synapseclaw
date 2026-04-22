@@ -46,6 +46,7 @@ impl RouteSelectionPort for MutexMapRouteSelection {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             })
     }
 

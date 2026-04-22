@@ -17,6 +17,9 @@ use crate::application::services::history_compaction::{
     session_hygiene_dropped_messages_with_indices, HistoryCompressionPolicy,
     SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
 };
+use crate::application::services::implicit_memory_recall_service::{
+    execute_implicit_memory_recall, ImplicitMemoryRecallInput,
+};
 use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
@@ -37,6 +40,10 @@ use crate::application::services::runtime_decision_trace::{
     build_runtime_decision_trace, build_runtime_decision_trace_id,
     merge_runtime_decision_trace_update, runtime_tool_decisions_from_repairs,
     RuntimeDecisionTraceInput, RuntimeDecisionTraceUpdate, RuntimeTraceRouteRef,
+};
+use crate::application::services::runtime_usage_insight_service::{
+    estimate_usage_cost_microusd, record_runtime_usage, runtime_pricing_status_for_route,
+    RuntimePricingStatus, RuntimeUsageRecordInput,
 };
 use crate::application::services::runtime_error_presentation::{
     format_context_limit_recovery_response, format_runtime_failure_response,
@@ -409,6 +416,21 @@ async fn handle_regular_message(
             interpretation.as_ref(),
             ports.channel_registry.configured_delivery_target(),
         );
+    let implicit_memory_recall = execute_implicit_memory_recall(
+        ports.memory.as_ref().map(|memory| memory.as_ref()),
+        ImplicitMemoryRecallInput {
+            agent_id: &config.agent_id,
+            user_message: content,
+            conversation_key: Some(conversation_key),
+            interpretation: interpretation.as_ref(),
+            min_relevance_score: config.min_relevance_score,
+            now: chrono::Utc::now(),
+        },
+    )
+    .await;
+    if let Some(block) = implicit_memory_recall.guidance_block.as_ref() {
+        history.push(ChatMessage::system(block.clone()));
+    }
     if let (Some(loader), Some(plan)) = (
         ports.scoped_instruction_context.as_ref(),
         crate::application::services::scoped_instruction_resolution::build_scoped_instruction_plan(
@@ -578,6 +600,7 @@ async fn handle_regular_message(
                         ports,
                         resolved_turn_defaults.clone(),
                         interpretation.clone(),
+                        implicit_memory_recall.clone(),
                         route.clone(),
                         history,
                     )
@@ -641,6 +664,7 @@ async fn handle_regular_message(
                         ports,
                         resolved_turn_defaults.clone(),
                         interpretation.clone(),
+                        implicit_memory_recall.clone(),
                         route.clone(),
                         history,
                     )
@@ -666,6 +690,7 @@ async fn handle_regular_message(
         ports,
         resolved_turn_defaults,
         interpretation,
+        implicit_memory_recall,
         route,
         history,
     )
@@ -691,6 +716,7 @@ async fn execute_agent_turn(
     ports: &InboundMessagePorts,
     resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
     interpretation: Option<TurnInterpretation>,
+    implicit_memory_recall: crate::application::services::implicit_memory_recall_service::ImplicitMemoryRecallOutcome,
     mut route: crate::ports::route_selection::RouteSelection,
     mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
@@ -838,6 +864,21 @@ async fn execute_agent_turn(
         runtime_trace,
         observed_at_unix,
     );
+    if !implicit_memory_recall.runtime_memory_decisions.is_empty()
+        || !implicit_memory_recall.runtime_notes.is_empty()
+    {
+        route.runtime_decision_traces = merge_runtime_decision_trace_update(
+            &route.runtime_decision_traces,
+            &runtime_trace_id,
+            RuntimeDecisionTraceUpdate {
+                memory: implicit_memory_recall.runtime_memory_decisions.clone(),
+                notes: implicit_memory_recall.runtime_notes.clone(),
+                ..Default::default()
+            },
+            observed_at_unix,
+            RUNTIME_TRACE_JANITOR_TTL_SECS,
+        );
+    }
     let memory_backend_healthy = if let Some(memory) = ports.memory.as_ref() {
         Some(memory.health_check().await)
     } else {
@@ -863,6 +904,8 @@ async fn execute_agent_turn(
         recent_tool_repairs: &route.recent_tool_repairs,
         context_cache: route.context_cache.as_ref(),
         assumptions: &route.assumptions,
+        calibration_records: &route.calibrations,
+        decision_traces: &route.runtime_decision_traces,
         subsystem_observations: &subsystem_observations,
         now_unix: observed_at_unix,
     });
@@ -978,6 +1021,21 @@ async fn execute_agent_turn(
         let stored_compacted = ports
             .history
             .compact_history(conversation_key, keep_non_system_turns);
+        if stored_compacted {
+            route.runtime_decision_traces = merge_runtime_decision_trace_update(
+                &route.runtime_decision_traces,
+                &runtime_trace_id,
+                RuntimeDecisionTraceUpdate {
+                    notes: vec![post_compaction_pressure_note(
+                        &history,
+                    )],
+                    ..Default::default()
+                },
+                observed_at_unix,
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
+            ports.routes.set_route(conversation_key, route.clone());
+        }
         let provider_history_compacted =
             compact_provider_history_for_session_hygiene(&mut history, keep_non_system_turns);
         let precompress_preservation_messages = history
@@ -1195,6 +1253,46 @@ async fn execute_agent_turn(
                 } else {
                     response_text_for_delivery.clone()
                 };
+
+            if let Some(usage) = turn_result.usage.as_ref() {
+                let default_prices = crate::config::model_catalog::default_pricing_table();
+                let (pricing_status, pricing) =
+                    runtime_pricing_status_for_route(
+                        &default_prices,
+                        true,
+                        &route.provider,
+                        &route.model,
+                    );
+                let estimated_cost_microusd = match pricing_status {
+                    RuntimePricingStatus::Known => estimate_usage_cost_microusd(
+                        usage.input_tokens,
+                        usage.output_tokens,
+                        pricing.as_ref(),
+                    ),
+                    _ => 0,
+                };
+                route.usage_ledger = record_runtime_usage(
+                    route.usage_ledger,
+                    RuntimeUsageRecordInput {
+                        provider: &route.provider,
+                        model: &route.model,
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        cached_input_tokens: usage.cached_input_tokens,
+                        pricing_status,
+                        estimated_cost_microusd,
+                    },
+                );
+                if let Some(store) = ports.conversation_store.as_ref() {
+                    let _ = crate::application::services::conversation_service::add_token_usage(
+                        store.as_ref(),
+                        conversation_key,
+                        usage.input_tokens.unwrap_or(0) as i64,
+                        usage.output_tokens.unwrap_or(0) as i64,
+                    )
+                    .await;
+                }
+            }
 
             // ── #16: Persist assistant turn ──────────────────────
             ports
@@ -1488,6 +1586,31 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
+fn post_compaction_pressure_note(
+    history: &[ChatMessage],
+) -> crate::application::services::runtime_decision_trace::RuntimeTraceNote {
+    let context = provider_context_input_for_history(history);
+    let assessment =
+        crate::application::services::provider_context_budget::assess_provider_context_budget(
+            context,
+        );
+    let basis_points =
+        crate::application::services::runtime_usage_insight_service::pressure_basis_points(
+            assessment.snapshot.estimated_total_tokens,
+            assessment.snapshot.ceiling_total_tokens,
+        );
+    crate::application::services::runtime_decision_trace::RuntimeTraceNote {
+        observed_at_unix: chrono::Utc::now().timestamp(),
+        kind: "post_compaction_pressure".into(),
+        detail: format!(
+            "basis_points={} estimated_tokens={} ceiling_tokens={}",
+            basis_points,
+            assessment.snapshot.estimated_total_tokens,
+            assessment.snapshot.ceiling_total_tokens
+        ),
+    }
+}
+
 fn insert_preservation_message_before_current_user(
     history: &mut Vec<ChatMessage>,
     current_user_content: &str,
@@ -1609,6 +1732,11 @@ mod tests {
         ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
     };
     use crate::domain::channel::SourceKind;
+    use crate::domain::memory::{
+        AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
+        MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult,
+        SearchSource, SessionId, Skill, SkillUpdate, TemporalFact, Visibility,
+    };
     use crate::ports::hooks::NoOpHooks;
     use crate::ports::route_selection::RouteSelection;
     use async_trait::async_trait;
@@ -1697,6 +1825,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1744,6 +1873,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             }
         }
     }
@@ -1795,6 +1925,7 @@ mod tests {
                 last_tool_repair: None,
                 tool_repairs: vec![],
                 media_artifacts: vec![],
+                usage: None,
             })
         }
     }
@@ -1820,6 +1951,107 @@ mod tests {
         > {
             Err(self.error.clone())
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingRuntime {
+        history: Mutex<Vec<ChatMessage>>,
+        response: String,
+    }
+
+    #[async_trait]
+    impl AgentRuntimePort for RecordingRuntime {
+        async fn execute_turn(
+            &self,
+            history: Vec<ChatMessage>,
+            _p: &str,
+            _m: &str,
+            _t: f64,
+            _mi: usize,
+            _to: u64,
+            _delta: Option<tokio::sync::mpsc::Sender<String>>,
+        ) -> std::result::Result<
+            crate::ports::agent_runtime::AgentTurnResult,
+            crate::ports::agent_runtime::AgentRuntimeError,
+        > {
+            *self.history.lock().unwrap() = history;
+            Ok(crate::ports::agent_runtime::AgentTurnResult {
+                response: self.response.clone(),
+                history: vec![],
+                tools_used: false,
+                tool_names: vec![],
+                tool_facts: vec![],
+                tool_summary: String::new(),
+                last_tool_repair: None,
+                tool_repairs: vec![],
+                media_artifacts: vec![],
+                usage: None,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct StubMemory {
+        hybrid: HybridSearchResult,
+    }
+
+    #[async_trait]
+    impl crate::ports::memory::WorkingMemoryPort for StubMemory {
+        async fn get_core_blocks(&self, _: &AgentId) -> Result<Vec<CoreMemoryBlock>, MemoryError> { Ok(vec![]) }
+        async fn update_core_block(&self, _: &AgentId, _: &str, _: String) -> Result<(), MemoryError> { Ok(()) }
+        async fn append_core_block(&self, _: &AgentId, _: &str, _: &str) -> Result<(), MemoryError> { Ok(()) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::EpisodicMemoryPort for StubMemory {
+        async fn store_episode(&self, _: MemoryEntry) -> Result<MemoryId, MemoryError> { Ok(String::new()) }
+        async fn get_recent(&self, _: &AgentId, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> { Ok(vec![]) }
+        async fn get_session(&self, _: &SessionId) -> Result<Vec<MemoryEntry>, MemoryError> { Ok(vec![]) }
+        async fn search_episodes(&self, _: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> { Ok(vec![]) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::SemanticMemoryPort for StubMemory {
+        async fn upsert_entity(&self, _: Entity) -> Result<MemoryId, MemoryError> { Ok(String::new()) }
+        async fn find_entity(&self, _: &str) -> Result<Option<Entity>, MemoryError> { Ok(None) }
+        async fn add_fact(&self, _: TemporalFact) -> Result<MemoryId, MemoryError> { Ok(String::new()) }
+        async fn invalidate_fact(&self, _: &MemoryId) -> Result<(), MemoryError> { Ok(()) }
+        async fn get_current_facts(&self, _: &MemoryId) -> Result<Vec<TemporalFact>, MemoryError> { Ok(vec![]) }
+        async fn traverse(&self, _: &MemoryId, _: usize) -> Result<Vec<(Entity, TemporalFact)>, MemoryError> { Ok(vec![]) }
+        async fn search_entities(&self, _: &MemoryQuery) -> Result<Vec<Entity>, MemoryError> { Ok(vec![]) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::SkillMemoryPort for StubMemory {
+        async fn store_skill(&self, _: Skill) -> Result<MemoryId, MemoryError> { Ok(String::new()) }
+        async fn find_skills(&self, _: &MemoryQuery) -> Result<Vec<Skill>, MemoryError> { Ok(vec![]) }
+        async fn update_skill(&self, _: &MemoryId, _: SkillUpdate, _: &AgentId) -> Result<(), MemoryError> { Ok(()) }
+        async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> { Ok(None) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::ReflectionPort for StubMemory {
+        async fn store_reflection(&self, _: Reflection) -> Result<MemoryId, MemoryError> { Ok(String::new()) }
+        async fn get_relevant_reflections(&self, _: &MemoryQuery) -> Result<Vec<Reflection>, MemoryError> { Ok(vec![]) }
+        async fn get_failure_patterns(&self, _: &AgentId, _: usize) -> Result<Vec<Reflection>, MemoryError> { Ok(vec![]) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::ConsolidationPort for StubMemory {
+        async fn run_consolidation(&self, _: &AgentId) -> Result<ConsolidationReport, MemoryError> { Ok(ConsolidationReport::default()) }
+        async fn recalculate_importance(&self, _: &AgentId) -> Result<u32, MemoryError> { Ok(0) }
+        async fn gc_low_importance(&self, _: f32, _: u32) -> Result<u32, MemoryError> { Ok(0) }
+    }
+    #[async_trait]
+    impl crate::ports::memory::UnifiedMemoryPort for StubMemory {
+        async fn hybrid_search(&self, _: &MemoryQuery) -> Result<HybridSearchResult, MemoryError> { Ok(self.hybrid.clone()) }
+        async fn embed(&self, _: &str) -> Result<Vec<f32>, MemoryError> { Ok(vec![0.1]) }
+        async fn store(&self, _: &str, _: &str, _: &MemoryCategory, _: Option<&str>) -> Result<(), MemoryError> { Ok(()) }
+        async fn recall(&self, _: &str, _: usize, _: Option<&str>) -> Result<Vec<MemoryEntry>, MemoryError> { Ok(vec![]) }
+        async fn consolidate_turn(&self, _: &str, _: &str) -> Result<(), MemoryError> { Ok(()) }
+        async fn forget(&self, _: &str, _: &AgentId) -> Result<bool, MemoryError> { Ok(false) }
+        async fn get(&self, _: &str, _: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> { Ok(None) }
+        async fn list(&self, _: Option<&MemoryCategory>, _: Option<&str>, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> { Ok(vec![]) }
+        async fn count(&self) -> Result<usize, MemoryError> { Ok(0) }
+        fn name(&self) -> &str { "stub" }
+        async fn health_check(&self) -> bool { true }
+        fn embedding_profile(&self) -> EmbeddingProfile { EmbeddingProfile::default() }
+        async fn promote_visibility(&self, _: &MemoryId, _: &Visibility, _: &[AgentId], _: &AgentId) -> Result<(), MemoryError> { Ok(()) }
     }
 
     struct MockChannelOutput;
@@ -2228,6 +2460,67 @@ mod tests {
         let ports = test_ports("Hi!");
         handle(&env, &caps, &test_config(), &ports).await.unwrap();
         assert_eq!(ports.history.get_history(test_conversation_key()).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn implicit_memory_recall_guidance_is_injected_before_runtime() {
+        let env = test_envelope("What is our self-hosted Matrix server?");
+        let caps = vec![ChannelCapability::SendText];
+        let runtime = Arc::new(RecordingRuntime {
+            response: "It runs as tuwunel.service.".into(),
+            ..Default::default()
+        });
+        let memory = Arc::new(StubMemory {
+            hybrid: HybridSearchResult {
+                episodes: vec![SearchResult {
+                    entry: MemoryEntry {
+                        id: "1".into(),
+                        key: "local_infra_matrix_homeserver".into(),
+                        content: "Our self-hosted Matrix homeserver runs as tuwunel.service package tuwunel.".into(),
+                        category: MemoryCategory::Custom("local_infra".into()),
+                        timestamp: "2026-04-20T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(0.96),
+                    },
+                    score: 0.96,
+                    source: SearchSource::Hybrid,
+                }],
+                ..Default::default()
+            },
+        });
+        let ports = InboundMessagePorts {
+            history: Arc::new(MockHistory::new()),
+            routes: Arc::new(RecordingRoutes::new("openrouter", "default-model")),
+            hooks: Arc::new(NoOpHooks),
+            channel_output: Arc::new(MockChannelOutput),
+            agent_runtime: runtime.clone(),
+            channel_registry: Arc::new(MockRegistry),
+            session_summary: None,
+            memory: Some(memory),
+            event_tx: None,
+            conversation_context: None,
+            model_profile_catalog: None,
+            turn_defaults_context: None,
+            scoped_instruction_context: None,
+            conversation_store: None,
+            dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
+        };
+
+        let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
+        match result {
+            HandleResult::Response { .. } => {}
+            other => panic!("expected Response, got {other:?}"),
+        }
+
+        let history = runtime.history.lock().unwrap().clone();
+        let implicit_block = history
+            .iter()
+            .find(|message| message.role == "system" && message.content.contains("[implicit-memory-recall]"))
+            .expect("implicit memory recall block");
+        assert!(implicit_block.content.contains("tuwunel.service"));
+        assert!(implicit_block.content.contains("avoid broad host inventory"));
     }
 
     #[tokio::test]

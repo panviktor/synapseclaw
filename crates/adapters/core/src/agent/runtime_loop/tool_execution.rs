@@ -125,6 +125,7 @@ pub(crate) struct ToolLoopResult {
     pub(crate) last_tool_repair: Option<ToolRepairTrace>,
     pub(crate) tool_repairs: Vec<ToolRepairTrace>,
     pub(crate) media_artifacts: Vec<MediaArtifact>,
+    pub(crate) usage: Option<synapse_domain::ports::provider::TokenUsage>,
 }
 
 fn collect_tool_facts(
@@ -558,6 +559,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut last_tool_repair = None::<ToolRepairTrace>;
     let mut collected_tool_repairs = Vec::<ToolRepairTrace>::new();
     let mut collected_media_artifacts = Vec::<MediaArtifact>::new();
+    let mut collected_usage: Option<synapse_domain::ports::provider::TokenUsage> = None;
 
     tracing::info!(
         model,
@@ -705,6 +707,21 @@ pub(crate) async fn run_tool_call_loop(
                 });
 
                 let response_text = resp.text_or_empty().to_string();
+                if let Some(ref usage) = resp.usage {
+                    let current = collected_usage.get_or_insert_with(Default::default);
+                    current.input_tokens = Some(
+                        current.input_tokens.unwrap_or(0)
+                            .saturating_add(usage.input_tokens.unwrap_or(0)),
+                    );
+                    current.output_tokens = Some(
+                        current.output_tokens.unwrap_or(0)
+                            .saturating_add(usage.output_tokens.unwrap_or(0)),
+                    );
+                    current.cached_input_tokens = Some(
+                        current.cached_input_tokens.unwrap_or(0)
+                            .saturating_add(usage.cached_input_tokens.unwrap_or(0)),
+                    );
+                }
                 let calls = parse_structured_tool_calls(&resp.tool_calls)?;
 
                 if let Some(parse_issue) = detect_tool_call_parse_issue(&response_text, &calls) {
@@ -873,6 +890,7 @@ pub(crate) async fn run_tool_call_loop(
                 last_tool_repair,
                 tool_repairs: collected_tool_repairs,
                 media_artifacts: collected_media_artifacts,
+                usage: collected_usage,
             });
         }
 
@@ -1318,6 +1336,7 @@ pub(crate) async fn run_tool_call_loop(
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
                     media_artifacts: collected_media_artifacts,
+                    usage: collected_usage,
                 });
             }
             LoopAction::ForceStop => {
@@ -1335,6 +1354,7 @@ pub(crate) async fn run_tool_call_loop(
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
                     media_artifacts: collected_media_artifacts,
+                    usage: collected_usage,
                 });
             }
         }

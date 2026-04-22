@@ -186,6 +186,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         let last_tool_repair = loop_result.last_tool_repair;
         let tool_repairs = loop_result.tool_repairs;
         let media_artifacts = loop_result.media_artifacts;
+        let usage = loop_result.usage;
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);
 
@@ -199,6 +200,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             last_tool_repair,
             tool_repairs,
             media_artifacts,
+            usage,
         })
     }
 

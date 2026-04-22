@@ -236,6 +236,7 @@ fn default_web_route_selection(
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
         runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
     }
 }
 
@@ -1977,6 +1978,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
             },
             Some(&catalog),
         );

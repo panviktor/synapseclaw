@@ -9,6 +9,10 @@ use crate::application::services::runtime_trace_janitor::{
     append_runtime_watchdog_alerts, run_runtime_trace_janitor, RuntimeHandoffArtifact,
     RuntimeTraceJanitorInput,
 };
+use crate::application::services::runtime_usage_insight_service::{
+    update_usage_ledger_from_handoff_artifacts, update_usage_ledger_from_tool_repairs,
+    update_usage_ledger_from_trace, update_usage_ledger_from_watchdog_alerts, RuntimeUsageLedger,
+};
 use crate::application::services::runtime_watchdog::{
     build_runtime_watchdog_digest, RuntimeWatchdogAlert, RuntimeWatchdogInput,
 };
@@ -103,6 +107,8 @@ pub struct RouteSelection {
     pub handoff_artifacts: Vec<RuntimeHandoffArtifact>,
     /// Bounded per-turn runtime decision traces for this route.
     pub runtime_decision_traces: Vec<RuntimeDecisionTrace>,
+    /// Bounded aggregated usage/cost/pressure insights for this route.
+    pub usage_ledger: RuntimeUsageLedger,
 }
 
 impl RouteSelection {
@@ -117,6 +123,7 @@ impl RouteSelection {
         self.watchdog_alerts.clear();
         self.handoff_artifacts.clear();
         self.runtime_decision_traces.clear();
+        self.usage_ledger = RuntimeUsageLedger::default();
     }
 
     pub fn clean_runtime_traces(&mut self, now_unix: i64) {
@@ -136,6 +143,25 @@ impl RouteSelection {
         self.watchdog_alerts = cleaned.watchdog_alerts;
         self.handoff_artifacts = cleaned.handoff_artifacts;
         self.runtime_decision_traces = cleaned.decision_traces;
+        reset_derived_usage_ledger_fields(&mut self.usage_ledger);
+        self.usage_ledger = update_usage_ledger_from_handoff_artifacts(
+            std::mem::take(&mut self.usage_ledger),
+            self.handoff_artifacts.len(),
+        );
+        self.usage_ledger =
+            update_usage_ledger_from_tool_repairs(
+                std::mem::take(&mut self.usage_ledger),
+                &self.recent_tool_repairs,
+            );
+        self.usage_ledger =
+            update_usage_ledger_from_watchdog_alerts(
+                std::mem::take(&mut self.usage_ledger),
+                &self.watchdog_alerts,
+            );
+        for trace in &self.runtime_decision_traces {
+            self.usage_ledger =
+                update_usage_ledger_from_trace(std::mem::take(&mut self.usage_ledger), trace);
+        }
     }
 
     pub fn run_runtime_trace_maintenance(&mut self, now_unix: i64) {
@@ -148,12 +174,31 @@ impl RouteSelection {
             recent_tool_repairs: &self.recent_tool_repairs,
             context_cache: self.context_cache.as_ref(),
             assumptions: &self.assumptions,
+            calibration_records: &self.calibrations,
+            decision_traces: &self.runtime_decision_traces,
             subsystem_observations: &[],
             now_unix,
         });
         self.watchdog_alerts =
             append_runtime_watchdog_alerts(&self.watchdog_alerts, &digest.alerts, now_unix);
+        self.usage_ledger =
+            update_usage_ledger_from_watchdog_alerts(
+                std::mem::take(&mut self.usage_ledger),
+                &self.watchdog_alerts,
+            );
     }
+}
+
+fn reset_derived_usage_ledger_fields(ledger: &mut RuntimeUsageLedger) {
+    ledger.compaction_count = 0;
+    ledger.handoff_count = 0;
+    ledger.compaction_cache_hits = 0;
+    ledger.tool_failure_count = 0;
+    ledger.tool_failure_classes = 0;
+    ledger.repaired_tool_count = 0;
+    ledger.watchdog_alert_count = 0;
+    ledger.max_pressure_before_basis_points = 0;
+    ledger.max_pressure_after_basis_points = 0;
 }
 
 /// Port for managing per-sender route overrides.

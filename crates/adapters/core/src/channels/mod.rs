@@ -1053,6 +1053,7 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
         runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
     }
 }
 
@@ -1905,6 +1906,7 @@ fn seed_live_realtime_call_route_override(
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
         runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
     };
     ctx.route_overrides
         .lock()
@@ -4925,6 +4927,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         };
         let effective_compression =
             synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
@@ -5113,6 +5116,7 @@ mod tests {
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
                 runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
         );
 

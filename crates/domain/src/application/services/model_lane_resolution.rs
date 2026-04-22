@@ -601,6 +601,7 @@ mod tests {
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
             runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         };
 
         let resolved = resolve_route_selection_profile(&config, &route, Some(&StubCatalog));

@@ -114,6 +114,7 @@ fn check_runtime_capabilities(config: &Config, items: &mut Vec<DiagItem>) {
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
         runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
     };
     let provider_capabilities = if provider.trim().is_empty() {
         Default::default()

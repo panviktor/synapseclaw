@@ -1,6 +1,8 @@
 # Realtime Calls
 
-Realtime calls are separate from voice notes and speech synthesis. A voice note is an audio artifact sent through a chat channel; a realtime call is an external call session with start, answer, speak, and hangup side effects.
+Realtime calls are separate from voice notes and speech synthesis. A voice note is an audio artifact sent through a chat channel; a realtime call is a live session with start, answer, speak, and hangup side effects.
+
+As of the current `6.1` implementation, the most complete live-call path is Matrix audio calls. ClawdTalk remains available as a typed call runtime, but Matrix is the path that currently has the full `speech in -> transcript -> LLM -> TTS -> speech out` loop plus `chat -> call -> chat` handoff.
 
 ## Capability Model
 
@@ -21,13 +23,13 @@ GET /api/channels/capabilities
 
 ## Current Runtime
 
-The first available audio-call runtime is `clawdtalk`. It is wired as a typed runtime with `start`, `answer`, `speak`, and `hangup` operations.
+`clawdtalk` exposes a typed telephony runtime with `start`, `answer`, `speak`, and `hangup`.
 
-`matrix` now exposes a typed audio-call runtime path too. It can start a room call ring, track inbound and outbound call-control events, answer by attaching to the MatrixRTC/LiveKit media session, publish synthesized audio back into the call, and send a typed hangup/decline event. Inbound remote speech-to-agent transcription inside the live call is still the remaining gap there.
+`matrix` exposes a typed MatrixRTC runtime too. It can start a room call ring, track inbound and outbound call-control events, answer by attaching to the MatrixRTC/LiveKit media session, decrypt remote audio, stream it into the configured realtime speech provider, publish synthesized audio back into the call, and send a typed hangup or decline event.
 
 Call sessions use a shared state vocabulary: `created`, `ringing`, `connected`, `listening`, `thinking`, `speaking`, `ended`, and `failed`. Adapters must move through valid transitions, so future Matrix, Telegram, Signal, Discord, or WebRTC integrations report status in the same shape instead of inventing per-channel state strings.
 
-The current ClawdTalk runtime uses those states directly: inbound speech moves the session to `listening`, the agent turn moves it to `thinking`, and sending the reply moves it to `speaking`.
+The current Matrix runtime uses those states directly too: remote caller speech moves the session to `listening`, the agent turn moves it to `thinking`, and synthesized playback moves it to `speaking`.
 
 Outbound calls can also carry a generic call plan. The shared contract supports a free-form `objective`, optional `context`, and optional `agenda`, so the same runtime can handle a morning briefing, a restaurant booking, a stock check, or another call task without baking product behavior into an enum.
 
@@ -59,6 +61,73 @@ allowed_destinations = ["+1555"]
 
 `https://` endpoints are normalized to `wss://` for the outbound socket. If `api_base_url` is omitted, SynapseClaw derives `https://.../v1` from `websocket_url` for outbound `POST /calls`. Without `websocket_url`, the ClawdTalk channel does not start the transcript bridge.
 
+## Matrix Setup
+
+For Matrix live calls, four things must be configured together:
+
+1. a working Matrix channel login
+2. a `speech_transcription` path that can handle live call audio
+3. a `speech_synthesis` path for call replies
+4. a live-call runtime policy under `[agent.live_calls]`
+
+Keep secrets in `~/.config/systemd/user/synapseclaw.env`, not in tracked config files.
+
+Minimal example:
+
+```toml
+[channels_config.matrix]
+homeserver_url = "https://matrix.example.com"
+bot_user_id = "@openclaw:example.com"
+access_token = "${MATRIX_ACCESS_TOKEN}"
+room_id = "!ops:example.com"
+
+[transcription]
+enabled = true
+default_provider = "deepgram"
+model = "nova-3"
+
+[transcription.deepgram]
+api_key = "${DEEPGRAM_API_KEY}"
+model = "nova-3"
+
+[transcription.deepgram.flux]
+enabled = true
+model = "flux-general-multi"
+sample_rate_hz = 48000
+
+[tts]
+enabled = true
+default_provider = "openai"
+default_voice = "alloy"
+default_format = "wav"
+
+[tts.openai]
+api_key = "${OPENAI_API_KEY}"
+model = "gpt-4o-mini-tts"
+
+[agent.live_calls]
+provider = "openai-codex"
+model = "gpt-5.4-mini"
+max_tool_iterations = 2
+max_spoken_chars = 220
+max_spoken_sentences = 2
+excluded_tools = ["memory_recall", "session_search", "shell"]
+profile_locale_key = "response_locale"
+fallback_locale = "en"
+
+[agent.live_calls.greetings]
+en = "Hello. I'm here."
+ru = "Привет. Я на связи."
+```
+
+Operational notes:
+
+- `speech_transcription` is what hears the caller.
+- `transcription.deepgram.flux` is what owns turn boundaries for live calls.
+- `speech_synthesis` is what the bot speaks back into the call.
+- `[agent.live_calls]` controls the live-call model, reply budget, excluded tools, locale fallback, and per-locale greeting.
+- Current production expectation is audio calls, not video calls.
+
 ## CLI
 
 Realtime call commands require explicit confirmation because they create external telephony side effects.
@@ -84,7 +153,7 @@ If exactly one realtime call transport is configured, CLI, tool, and gateway pat
 
 For `clawdtalk`, `answer` means "attach to or resume handling an inbound call session that is already established by the transport". It does not claim a separate provider-side accept step that the current websocket runtime does not expose.
 
-For `matrix`, `answer` now means "attach the bot to the MatrixRTC media session for this call", and `speak` publishes a synthesized WAV/PCM speech segment into that attached LiveKit room. The current implementation requires a WAV-capable `speech_synthesis` lane for Matrix call media; inbound remote speech transcription inside the call is still not wired yet.
+For `matrix`, `answer` means "attach the bot to the MatrixRTC media session for this call", and `speak` publishes a synthesized speech segment into that attached LiveKit room.
 
 Matrix `start` accepts four target shapes:
 
@@ -95,11 +164,11 @@ Matrix `start` accepts four target shapes:
 
 When a Matrix call starts in a DM room, later `hangup` resolves that same room from the shared call ledger instead of falling back to the base room.
 
-Inbound Matrix ring events also enter the normal agent message pipeline as a synthetic inbound event tied to the same call session. SynapseClaw accepts both the older `m.rtc.notification` ring path and the newer `org.matrix.msc3401.call.member` membership path used by Element/MatrixRTC clients, so incoming Matrix calls can already trigger chat-side reactions, then move into the same shared answer/speak/hangup runtime once the bot attaches to media.
+Inbound Matrix ring events and live-call transcript turns enter the shared runtime as typed call-related events tied to the same call session. SynapseClaw accepts both the older `m.rtc.notification` ring path and the newer `org.matrix.msc3401.call.member` membership path used by Element and MatrixRTC clients.
 
 `voice call status` reports the shared transport registry: which call transports are configured, which runtimes are available versus control-only versus only planned, whether media is really attached, which runtime would be selected by default, which typed actions are supported (`start`, `answer`, `speak`, `hangup`, `inspect`), and any typed runtime health currently exposed by an adapter. It performs a read-only health probe for configured runtimes before printing the result, exposes transport-specific readiness details such as Matrix configured auth mode, effective auth source, and room access or ClawdTalk outbound/call-control readiness, and intentionally does not store or print transcript text.
 
-For MatrixRTC bootstrap, SynapseClaw now supports both common deployment shapes through one path: the newer homeserver-advertised `/_matrix/client/v1/rtc/transports` plus `/get_token`, and the older `.well-known`/focus discovery plus `/sfu/get`. Status now distinguishes simple route discovery from a real authorizer grant exchange, so `media_bootstrap_ready=true` means SynapseClaw successfully resolved the focus, obtained an OpenID token, and fetched a LiveKit JWT from the deployment-specific authorizer path.
+For MatrixRTC bootstrap, SynapseClaw supports both common deployment shapes through one path: the newer homeserver-advertised `/_matrix/client/v1/rtc/transports` plus `/get_token`, and the older `.well-known` or focus discovery plus `/sfu/get`. Status distinguishes simple route discovery from a real authorizer grant exchange, so `media_bootstrap_ready=true` means SynapseClaw successfully resolved the focus, obtained an OpenID token, and fetched a LiveKit JWT from the deployment-specific authorizer path.
 
 For `clawdtalk`, `runtime_ready` means SynapseClaw has enough outbound call configuration to execute call actions, not merely that a `[channels_config.clawdtalk]` section exists.
 
@@ -107,7 +176,25 @@ For `clawdtalk`, `runtime_ready` means SynapseClaw has enough outbound call conf
 
 ## Chat Tool
 
-When `channels_config.clawdtalk` is configured, the agent also receives the `voice_call` tool. It uses the same typed runtime as the CLI and gateway, so a chat request such as "call me now" does not go through a separate prompt-only command parser. The runtime records that launch as `chat_request`, which later lets the system distinguish it from scheduled or operator-started calls.
+When a realtime call transport is configured, the agent also receives the `voice_call` tool. It uses the same typed runtime as the CLI and gateway, so a chat request such as "call me now" does not go through a separate prompt-only command parser. The runtime records that launch as `chat_request`, which later lets the system distinguish it from scheduled or operator-started calls.
+
+## Current Matrix Behavior
+
+What currently works:
+
+- inbound and outbound Matrix audio calls
+- MatrixRTC media bootstrap on both newer and older homeserver layouts
+- encrypted media key exchange and remote audio decrypt
+- realtime transcript turns from the call
+- short voice replies back into the same call
+- `chat -> call` handoff and `call -> chat` recap
+- live-call policy from `[agent.live_calls]`, including model selection, locale fallback, tool budget, and greeting text
+
+What is still a known limitation:
+
+- long multi-turn calls are usable but still not as fast as they should be
+- voice runtime latency is the main remaining quality gap
+- language and voice selection are policy-driven, but still worth validating per deployment
 
 `voice_call.status`, `voice_call.list_sessions`, and `voice_call.get_session` are read-only inspection actions. `start`, `answer`, `speak`, and `hangup` must pass `confirm: true`; without that explicit confirmation the tool returns before provider access.
 
