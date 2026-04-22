@@ -134,6 +134,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
 
+        /// Use the full advanced onboarding wizard
+        #[arg(long)]
+        advanced: bool,
+
         /// Reinitialize from scratch (backup and reset all configuration)
         #[arg(long)]
         reinit: bool,
@@ -2608,6 +2612,7 @@ async fn main() -> Result<()> {
     // `synapseclaw onboard` in a terminal launches the wizard.
     if let Commands::Onboard {
         force,
+        advanced,
         reinit,
         channels_only,
         api_key,
@@ -2617,6 +2622,7 @@ async fn main() -> Result<()> {
     } = &cli.command
     {
         let force = *force;
+        let advanced = *advanced;
         let reinit = *reinit;
         let channels_only = *channels_only;
         let api_key = api_key.clone();
@@ -2685,8 +2691,10 @@ async fn main() -> Result<()> {
 
         let config = if channels_only {
             Box::pin(synapse_onboard::run_channels_repair_wizard()).await
-        } else if is_tty && !has_provider_flags {
+        } else if is_tty && !has_provider_flags && advanced {
             Box::pin(synapse_onboard::run_wizard(force)).await
+        } else if is_tty && !has_provider_flags {
+            Box::pin(synapse_onboard::run_simple_wizard(force)).await
         } else {
             Box::pin(synapse_onboard::run_quick_setup(
                 api_key.as_deref(),
@@ -4282,6 +4290,7 @@ mod tests {
         match cli.command {
             Commands::Onboard {
                 force,
+                advanced,
                 channels_only,
                 api_key,
                 provider,
@@ -4289,6 +4298,7 @@ mod tests {
                 ..
             } => {
                 assert!(!force);
+                assert!(!advanced);
                 assert!(!channels_only);
                 assert_eq!(provider.as_deref(), Some("openrouter"));
                 assert_eq!(model.as_deref(), Some("custom-model-946"));
@@ -4329,6 +4339,17 @@ mod tests {
 
         match cli.command {
             Commands::Onboard { force, .. } => assert!(force),
+            other => panic!("expected onboard command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn onboard_cli_accepts_advanced_flag() {
+        let cli = Cli::try_parse_from(["synapseclaw", "onboard", "--advanced"])
+            .expect("onboard --advanced should parse");
+
+        match cli.command {
+            Commands::Onboard { advanced, .. } => assert!(advanced),
             other => panic!("expected onboard command, got {other:?}"),
         }
     }

@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 use synapse_domain::application::services::model_preset_resolution::{
     preset_title, recommended_model_preset_for_provider,
@@ -88,6 +89,124 @@ fn has_launchable_channels(channels: &ChannelsConfig) -> bool {
     channels.channels_except_webhook().iter().any(|(_, ok)| *ok)
 }
 
+#[derive(Debug, Clone)]
+struct ProviderSelection {
+    provider: String,
+    api_key: String,
+    model: String,
+    provider_api_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PrimaryChannelSetup {
+    config: ChannelsConfig,
+    env_vars: BTreeMap<String, String>,
+    summary: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SimpleChannelChoice {
+    Telegram,
+    Matrix,
+}
+
+fn default_env_file_path() -> Result<PathBuf> {
+    let home = directories::UserDirs::new()
+        .map(|u| u.home_dir().to_path_buf())
+        .context("Could not find home directory")?;
+
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(home
+            .join(".config")
+            .join("systemd")
+            .join("user")
+            .join("synapseclaw.env"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(home.join(".synapseclaw").join("synapseclaw.env"));
+    }
+
+    #[allow(unreachable_code)]
+    Ok(home.join(".synapseclaw").join("synapseclaw.env"))
+}
+
+fn shell_quote_env_value(value: &str) -> String {
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
+async fn write_env_file_updates(path: &Path, updates: &BTreeMap<String, String>) -> Result<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let existing = fs::read_to_string(path).await.unwrap_or_default();
+    let mut kept_lines = Vec::new();
+
+    'line: for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            kept_lines.push(line.to_string());
+            continue;
+        }
+
+        for key in updates.keys() {
+            if trimmed.starts_with(key) && trimmed[key.len()..].starts_with('=') {
+                continue 'line;
+            }
+        }
+
+        kept_lines.push(line.to_string());
+    }
+
+    if !kept_lines.is_empty() && kept_lines.last().is_some_and(|line| !line.is_empty()) {
+        kept_lines.push(String::new());
+    }
+
+    for (key, value) in updates {
+        kept_lines.push(format!("{key}={}", shell_quote_env_value(value)));
+    }
+
+    let content = kept_lines.join("\n");
+    fs::write(path, format!("{content}\n")).await?;
+    Ok(())
+}
+
+fn apply_env_vars_to_process(env_vars: &BTreeMap<String, String>) {
+    for (key, value) in env_vars {
+        std::env::set_var(key, value);
+    }
+}
+
+fn install_and_start_service_via_cli() -> Result<()> {
+    let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+
+    let install = Command::new(&exe)
+        .args(["service", "install"])
+        .status()
+        .context("Failed to run `synapseclaw service install`")?;
+    if !install.success() {
+        bail!("`synapseclaw service install` failed");
+    }
+
+    let start = Command::new(&exe)
+        .args(["service", "start"])
+        .status()
+        .context("Failed to run `synapseclaw service start`")?;
+    if !start.success() {
+        bail!("`synapseclaw service start` failed");
+    }
+
+    Ok(())
+}
+
 // ── Main wizard entry point ──────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +240,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
     }
 
     print_step(2, 9, "AI Provider & API Key");
-    let (provider, api_key, model, provider_api_url) = setup_provider(&workspace_dir).await?;
+    let provider_setup = setup_provider(&workspace_dir).await?;
 
     print_step(3, 9, "Channels (How You Talk to SynapseClaw)");
     let channels_config = setup_channels()?;
@@ -140,22 +259,23 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
 
     // Scaffold workspace files
     scaffold_workspace(&workspace_dir, &project_ctx).await?;
-    let model_preset = recommended_model_preset_for_provider(&provider).map(str::to_string);
+    let model_preset =
+        recommended_model_preset_for_provider(&provider_setup.provider).map(str::to_string);
 
     // ── Build config ──
     // Defaults: SQLite memory, supervised autonomy, workspace-scoped, native runtime
     let config = Config {
         workspace_dir: workspace_dir.clone(),
         config_path: config_path.clone(),
-        api_key: if api_key.is_empty() {
+        api_key: if provider_setup.api_key.is_empty() {
             None
         } else {
-            Some(api_key)
+            Some(provider_setup.api_key.clone())
         },
-        api_url: provider_api_url,
+        api_url: provider_setup.provider_api_url.clone(),
         api_path: None,
-        default_provider: Some(provider),
-        default_model: Some(model),
+        default_provider: Some(provider_setup.provider.clone()),
+        default_model: Some(provider_setup.model.clone()),
         model_providers: std::collections::HashMap::new(),
         default_temperature: 0.7,
         provider_timeout_secs: 120,
@@ -263,6 +383,195 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
     Ok(config)
 }
 
+pub async fn run_simple_wizard(force: bool) -> Result<Config> {
+    println!("{}", style(BANNER).cyan().bold());
+    println!(
+        "  {}",
+        style("Welcome to SynapseClaw — simple setup.")
+            .white()
+            .bold()
+    );
+    println!(
+        "  {}",
+        style("This flow gets you to one provider and one real channel.").dim()
+    );
+    println!();
+
+    print_step(1, 4, "Workspace Setup");
+    let (workspace_dir, config_path) = setup_workspace().await?;
+
+    match resolve_interactive_onboarding_mode(&config_path, force)? {
+        InteractiveOnboardingMode::FullOnboarding => {}
+        InteractiveOnboardingMode::UpdateProviderOnly => {
+            return Box::pin(run_provider_update_wizard(&workspace_dir, &config_path)).await;
+        }
+    }
+
+    print_step(2, 4, "AI Provider & Model");
+    let provider = setup_provider(&workspace_dir).await?;
+
+    print_step(3, 4, "Primary Channel");
+    let channel = setup_primary_channel_simple()?;
+
+    let env_path = default_env_file_path()?;
+    let mut env_updates = BTreeMap::new();
+    if !provider.api_key.trim().is_empty() {
+        env_updates.insert(provider_env_var(&provider.provider).to_string(), provider.api_key.clone());
+    }
+    env_updates.extend(channel.env_vars.clone());
+    write_env_file_updates(&env_path, &env_updates).await?;
+    apply_env_vars_to_process(&env_updates);
+
+    let model_preset = recommended_model_preset_for_provider(&provider.provider).map(str::to_string);
+    let config_to_save = Config {
+        workspace_dir: workspace_dir.clone(),
+        config_path: config_path.clone(),
+        api_key: None,
+        api_url: provider.provider_api_url.clone(),
+        api_path: None,
+        default_provider: Some(provider.provider.clone()),
+        default_model: Some(provider.model.clone()),
+        model_providers: std::collections::HashMap::new(),
+        default_temperature: 0.7,
+        provider_timeout_secs: 120,
+        extra_headers: std::collections::HashMap::new(),
+        observability: ObservabilityConfig::default(),
+        autonomy: AutonomyConfig::default(),
+        backup: synapse_domain::config::schema::BackupConfig::default(),
+        data_retention: synapse_domain::config::schema::DataRetentionConfig::default(),
+        cloud_ops: synapse_domain::config::schema::CloudOpsConfig::default(),
+        conversational_ai: synapse_domain::config::schema::ConversationalAiConfig::default(),
+        security: synapse_domain::config::schema::SecurityConfig::default(),
+        security_ops: synapse_domain::config::schema::SecurityOpsConfig::default(),
+        runtime: RuntimeConfig::default(),
+        reliability: synapse_domain::config::schema::ReliabilityConfig::default(),
+        scheduler: synapse_domain::config::schema::SchedulerConfig::default(),
+        agent: synapse_domain::config::schema::AgentConfig::default(),
+        skills: synapse_domain::config::schema::SkillsConfig::default(),
+        route_aliases: Vec::new(),
+        model_lanes: Vec::new(),
+        model_preset,
+        heartbeat: HeartbeatConfig::default(),
+        cron: synapse_domain::config::schema::CronConfig::default(),
+        channels_config: channel.config.clone(),
+        memory: MemoryConfig::default(),
+        storage: StorageConfig::default(),
+        tunnel: synapse_domain::config::schema::TunnelConfig::default(),
+        gateway: synapse_domain::config::schema::GatewayConfig::default(),
+        composio: ComposioConfig::default(),
+        microsoft365: synapse_domain::config::schema::Microsoft365Config::default(),
+        secrets: SecretsConfig::default(),
+        browser: BrowserConfig::default(),
+        browser_delegate: synapse_domain::config::adapter_configs::BrowserDelegateConfig::default(),
+        http_request: synapse_domain::config::schema::HttpRequestConfig::default(),
+        multimodal: synapse_domain::config::schema::MultimodalConfig::default(),
+        web_fetch: synapse_domain::config::schema::WebFetchConfig::default(),
+        web_search: synapse_domain::config::schema::WebSearchConfig::default(),
+        project_intel: synapse_domain::config::schema::ProjectIntelConfig::default(),
+        google_workspace: synapse_domain::config::schema::GoogleWorkspaceConfig::default(),
+        proxy: synapse_domain::config::schema::ProxyConfig::default(),
+        identity: synapse_domain::config::schema::IdentityConfig::default(),
+        cost: synapse_domain::config::schema::CostConfig::default(),
+        agents: std::collections::HashMap::new(),
+        swarms: std::collections::HashMap::new(),
+        hooks: synapse_domain::config::schema::HooksConfig::default(),
+        query_classification: synapse_domain::config::schema::QueryClassificationConfig::default(),
+        transcription: synapse_domain::config::schema::TranscriptionConfig::default(),
+        tts: synapse_domain::config::schema::TtsConfig::default(),
+        mcp: synapse_domain::config::schema::McpConfig::default(),
+        nodes: synapse_domain::config::schema::NodesConfig::default(),
+        workspace: synapse_domain::config::schema::WorkspaceConfig::default(),
+        notion: synapse_domain::config::schema::NotionConfig::default(),
+        node_transport: synapse_domain::config::schema::NodeTransportConfig::default(),
+        knowledge: synapse_domain::config::schema::KnowledgeConfig::default(),
+        linkedin: synapse_domain::config::schema::LinkedInConfig::default(),
+        agents_ipc: synapse_domain::config::schema::AgentsIpcConfig::default(),
+        pipelines: synapse_domain::config::schema::PipelineEngineConfig::default(),
+        compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+        compression_overrides: Vec::new(),
+        summary: synapse_domain::config::schema::SummaryConfig::default(),
+    };
+
+    scaffold_workspace(
+        &workspace_dir,
+        &ProjectContext {
+            user_name: std::env::var("USER").unwrap_or_else(|_| "User".into()),
+            agent_name: "SynapseClaw".into(),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    config_to_save.save().await?;
+    persist_workspace_selection(&config_to_save.config_path).await?;
+
+    let mut runtime_config = config_to_save.clone();
+    if !provider.api_key.trim().is_empty() {
+        runtime_config.api_key = Some(provider.api_key.clone());
+    }
+    if let Some(ref mut telegram) = runtime_config.channels_config.telegram {
+        if let Some(token) = env_updates.get("TELEGRAM_BOT_TOKEN") {
+            telegram.bot_token = token.clone();
+        }
+    }
+    if let Some(ref mut matrix) = runtime_config.channels_config.matrix {
+        if let Some(token) = env_updates.get("MATRIX_ACCESS_TOKEN") {
+            matrix.access_token = Some(token.clone());
+        }
+    }
+
+    print_step(4, 4, "Finalize");
+    let channel_summary = channel.summary.clone();
+    println!(
+        "  {} Provider: {} / {}",
+        style("✓").green().bold(),
+        style(&provider.provider).green(),
+        style(&provider.model).green()
+    );
+    println!(
+        "  {} Channel:  {}",
+        style("✓").green().bold(),
+        style(&channel_summary).green()
+    );
+    println!(
+        "  {} Secrets:  {}",
+        style("✓").green().bold(),
+        style(env_path.display()).green()
+    );
+
+    let install_service = Confirm::new()
+        .with_prompt("  Install and start background service now?")
+        .default(true)
+        .interact()?;
+
+    if install_service {
+        install_and_start_service_via_cli()?;
+    } else if has_launchable_channels(&runtime_config.channels_config) && runtime_config.default_provider.is_some() {
+        let launch: bool = Confirm::new()
+            .with_prompt("  Launch channels now in this session?")
+            .default(false)
+            .interact()?;
+        if launch {
+            std::env::set_var("SYNAPSECLAW_AUTOSTART_CHANNELS", "1");
+        }
+    }
+
+    println!();
+    println!(
+        "  {} {}",
+        style("Config saved:").white().bold(),
+        style(runtime_config.config_path.display()).green()
+    );
+    println!(
+        "  {} {}",
+        style("Next test:").white().bold(),
+        style(channel_summary).green()
+    );
+    println!();
+
+    Ok(runtime_config)
+}
+
 /// Interactive repair flow: rerun channel setup only without redoing full onboarding.
 pub async fn run_channels_repair_wizard() -> Result<Config> {
     println!("{}", style(BANNER).cyan().bold());
@@ -339,8 +648,14 @@ async fn run_provider_update_wizard(workspace_dir: &Path, config_path: &Path) ->
     config.config_path = config_path.to_path_buf();
 
     print_step(1, 1, "AI Provider & API Key");
-    let (provider, api_key, model, provider_api_url) = setup_provider(workspace_dir).await?;
-    apply_provider_update(&mut config, provider, api_key, model, provider_api_url);
+    let provider_setup = setup_provider(workspace_dir).await?;
+    apply_provider_update(
+        &mut config,
+        provider_setup.provider,
+        provider_setup.api_key,
+        provider_setup.model,
+        provider_setup.provider_api_url,
+    );
 
     config.save().await?;
     persist_workspace_selection(&config.config_path).await?;
@@ -2149,7 +2464,7 @@ async fn setup_workspace() -> Result<(PathBuf, PathBuf)> {
 // ── Step 2: Provider & API Key ───────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
-async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String, Option<String>)> {
+async fn setup_provider(workspace_dir: &Path) -> Result<ProviderSelection> {
     let setup_styles = vec![
         "✨ ChatGPT / Codex — fastest start if you already use ChatGPT or Codex",
         "✨ Claude — direct Anthropic setup with strong defaults",
@@ -2227,7 +2542,12 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
             style(&model).green()
         );
 
-        return Ok((provider_name, api_key, model, None));
+        return Ok(ProviderSelection {
+            provider: provider_name,
+            api_key,
+            model,
+            provider_api_url: None,
+        });
     }
 
     let provider_name_ref = provider_name.as_str();
@@ -2812,7 +3132,12 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
         style(&model).green()
     );
 
-    Ok((provider_name, api_key, model, provider_api_url))
+    Ok(ProviderSelection {
+        provider: provider_name,
+        api_key,
+        model,
+        provider_api_url,
+    })
 }
 
 fn local_provider_choices() -> Vec<(&'static str, &'static str)> {
@@ -3254,6 +3579,222 @@ fn channel_menu_choices() -> &'static [ChannelMenuChoice] {
 }
 
 #[allow(clippy::too_many_lines)]
+fn setup_primary_channel_simple() -> Result<PrimaryChannelSetup> {
+    let options = [
+        "Telegram — recommended for fastest first success",
+        "Matrix — self-hosted and room-based",
+    ];
+
+    let selection = Select::new()
+        .with_prompt("  Choose your first channel")
+        .items(options)
+        .default(0)
+        .interact()?;
+
+    let choice = match selection {
+        0 => SimpleChannelChoice::Telegram,
+        _ => SimpleChannelChoice::Matrix,
+    };
+
+    match choice {
+        SimpleChannelChoice::Telegram => setup_simple_telegram_channel(),
+        SimpleChannelChoice::Matrix => setup_simple_matrix_channel(),
+    }
+}
+
+fn setup_simple_telegram_channel() -> Result<PrimaryChannelSetup> {
+    println!();
+    println!(
+        "  {} {}",
+        style("Telegram Setup").white().bold(),
+        style("— fastest first-run channel").dim()
+    );
+    print_bullet("1. Open Telegram and message @BotFather");
+    print_bullet("2. Send /newbot and follow the prompts");
+    print_bullet("3. Copy the bot token and paste it below");
+    println!();
+
+    let token: String = Input::new()
+        .with_prompt("  Bot token (from @BotFather)")
+        .interact_text()?;
+
+    if token.trim().is_empty() {
+        bail!("Telegram bot token cannot be empty");
+    }
+
+    print!("  {} Testing connection... ", style("⏳").dim());
+    let token_clone = token.clone();
+    let thread_result = std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("https://api.telegram.org/bot{token_clone}/getMe");
+        let resp = client.get(&url).send()?;
+        let ok = resp.status().is_success();
+        let data: serde_json::Value = resp.json().unwrap_or_default();
+        let bot_name = data
+            .get("result")
+            .and_then(|r| r.get("username"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        Ok::<_, reqwest::Error>((ok, bot_name))
+    })
+    .join();
+
+    let bot_name = match thread_result {
+        Ok(Ok((true, bot_name))) => {
+            println!(
+                "\r  {} Connected as @{bot_name}        ",
+                style("✅").green().bold()
+            );
+            bot_name
+        }
+        _ => {
+            println!(
+                "\r  {} Connection failed — check your token and try again",
+                style("❌").red().bold()
+            );
+            bail!("Telegram token validation failed");
+        }
+    };
+
+    print_bullet("Allowlist your own Telegram username or numeric user ID first.");
+    print_bullet("Use username without '@'. Use '*' only for temporary open testing.");
+
+    let allowed_identity: String = Input::new()
+        .with_prompt("  Allowed Telegram identity (username, numeric user ID, or '*')")
+        .interact_text()?;
+    let allowed_identity = allowed_identity.trim().to_string();
+    if allowed_identity.is_empty() {
+        bail!("At least one Telegram identity must be allowlisted");
+    }
+
+    let mut env_vars = BTreeMap::new();
+    env_vars.insert("TELEGRAM_BOT_TOKEN".into(), token);
+
+    let config = ChannelsConfig {
+        telegram: Some(TelegramConfig {
+            bot_token: String::new(),
+            allowed_users: vec![allowed_identity],
+            stream_mode: StreamMode::default(),
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        }),
+        ..ChannelsConfig::default()
+    };
+
+    Ok(PrimaryChannelSetup {
+        config,
+        env_vars,
+        summary: format!("Telegram bot @{bot_name}"),
+    })
+}
+
+fn setup_simple_matrix_channel() -> Result<PrimaryChannelSetup> {
+    println!();
+    println!(
+        "  {} {}",
+        style("Matrix Setup").white().bold(),
+        style("— one homeserver and one room").dim()
+    );
+    print_bullet("Use an existing bot access token for the fastest path.");
+    print_bullet("You can expand into realtime calls and media after the first working room.");
+    println!();
+
+    let homeserver: String = Input::new()
+        .with_prompt("  Homeserver URL")
+        .default("https://matrix.org".into())
+        .interact_text()?;
+    let homeserver = homeserver.trim().trim_end_matches('/').to_string();
+    if homeserver.is_empty() {
+        bail!("Matrix homeserver cannot be empty");
+    }
+
+    let access_token: String = Input::new()
+        .with_prompt("  Access token")
+        .interact_text()?;
+    if access_token.trim().is_empty() {
+        bail!("Matrix access token cannot be empty");
+    }
+
+    print!("  {} Testing token... ", style("⏳").dim());
+    let homeserver_clone = homeserver.clone();
+    let access_token_clone = access_token.clone();
+    let thread_result = std::thread::spawn(move || {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("{homeserver_clone}/_matrix/client/v3/account/whoami");
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token_clone.trim()))
+            .send()?;
+        let ok = resp.status().is_success();
+        let data: serde_json::Value = resp.json().unwrap_or_default();
+        let user_id = data
+            .get("user_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        Ok::<_, reqwest::Error>((ok, user_id))
+    })
+    .join();
+
+    let user_id = match thread_result {
+        Ok(Ok((true, user_id))) => {
+            println!(
+                "\r  {} Connected as {user_id}        ",
+                style("✅").green().bold()
+            );
+            user_id
+        }
+        _ => {
+            println!(
+                "\r  {} Connection failed — check homeserver and token",
+                style("❌").red().bold()
+            );
+            bail!("Matrix token validation failed");
+        }
+    };
+
+    let room_id: String = Input::new()
+        .with_prompt("  Room ID or DM room to watch")
+        .interact_text()?;
+    let room_id = room_id.trim().to_string();
+    if room_id.is_empty() {
+        bail!("Matrix room ID cannot be empty");
+    }
+
+    let allowed_user: String = Input::new()
+        .with_prompt("  Allowed Matrix user ID (or '*' for open testing)")
+        .interact_text()?;
+    let allowed_user = allowed_user.trim().to_string();
+    if allowed_user.is_empty() {
+        bail!("At least one Matrix user must be allowlisted");
+    }
+
+    let mut env_vars = BTreeMap::new();
+    env_vars.insert("MATRIX_ACCESS_TOKEN".into(), access_token);
+
+    let config = ChannelsConfig {
+        matrix: Some(MatrixConfig {
+            homeserver,
+            access_token: None,
+            user_id: Some(user_id.clone()),
+            device_id: None,
+            room_id,
+            allowed_users: vec![allowed_user],
+            password: None,
+            max_media_download_mb: None,
+        }),
+        ..ChannelsConfig::default()
+    };
+
+    Ok(PrimaryChannelSetup {
+        config,
+        env_vars,
+        summary: format!("Matrix room for {user_id}"),
+    })
+}
+
 fn setup_channels() -> Result<ChannelsConfig> {
     print_bullet("Channels let you talk to SynapseClaw from anywhere.");
     print_bullet("CLI is always available. Connect more channels now.");

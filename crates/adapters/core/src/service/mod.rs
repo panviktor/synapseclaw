@@ -8,6 +8,32 @@ use synapse_domain::config::schema::Config;
 const SERVICE_LABEL_DEFAULT: &str = "com.synapseclaw.daemon";
 const WINDOWS_TASK_DEFAULT: &str = "SynapseClaw Daemon";
 
+#[cfg(target_os = "linux")]
+fn service_env_file() -> Result<PathBuf> {
+    let home = directories::UserDirs::new()
+        .map(|u| u.home_dir().to_path_buf())
+        .context("Failed to resolve home directory")?;
+    Ok(home
+        .join(".config")
+        .join("systemd")
+        .join("user")
+        .join("synapseclaw.env"))
+}
+
+#[cfg(target_os = "macos")]
+fn service_env_file() -> Result<PathBuf> {
+    let home = directories::UserDirs::new()
+        .map(|u| u.home_dir().to_path_buf())
+        .context("Failed to resolve home directory")?;
+    Ok(home.join(".synapseclaw").join("synapseclaw.env"))
+}
+
+#[cfg(target_os = "macos")]
+fn shell_single_quote(value: &str) -> String {
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}
+
 /// Derive macOS service label from instance name.
 fn service_label(instance: Option<&str>) -> String {
     match instance {
@@ -431,8 +457,14 @@ fn install_macos(config: &Config, instance: Option<&str>) -> Result<()> {
         .config_path
         .parent()
         .map_or_else(|| PathBuf::from("."), PathBuf::from);
-    let config_dir_escaped = xml_escape(&config_dir.display().to_string());
-    let exe_escaped = xml_escape(&exe.display().to_string());
+    let env_file = service_env_file()?;
+    let shell_command = format!(
+        "if [ -f {env_file} ]; then set -a; . {env_file}; set +a; fi; exec {exe} --config-dir {config_dir} daemon",
+        env_file = shell_single_quote(&env_file.display().to_string()),
+        exe = shell_single_quote(&exe.display().to_string()),
+        config_dir = shell_single_quote(&config_dir.display().to_string()),
+    );
+    let shell_command_escaped = xml_escape(&shell_command);
 
     let plist = format!(
         r#"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -443,10 +475,9 @@ fn install_macos(config: &Config, instance: Option<&str>) -> Result<()> {
   <string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{exe_escaped}</string>
-    <string>--config-dir</string>
-    <string>{config_dir_escaped}</string>
-    <string>daemon</string>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>{shell_command_escaped}</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -497,6 +528,7 @@ fn install_linux_systemd(config: &Config, instance: Option<&str>) -> Result<()> 
         None => "SynapseClaw daemon".to_string(),
         Some(name) => format!("SynapseClaw Agent ({name})"),
     };
+    let env_file = service_env_file()?;
     let unit = format!(
         "[Unit]\n\
          Description={description}\n\
@@ -507,16 +539,18 @@ fn install_linux_systemd(config: &Config, instance: Option<&str>) -> Result<()> 
          ExecStart=\"{exe}\" --config-dir \"{config_dir}\" daemon\n\
          Restart=always\n\
          RestartSec=3\n\
+         EnvironmentFile=-{env_file}\n\
          # Ensure HOME is set so headless browsers can create profile/cache dirs.\n\
          Environment=HOME=%h\n\
          # Allow inheriting DISPLAY and XDG_RUNTIME_DIR from the user session\n\
          # so graphical/headless browsers can function correctly.\n\
          PassEnvironment=DISPLAY XDG_RUNTIME_DIR\n\
          \n\
-         [Install]\n\
+        [Install]\n\
          WantedBy=default.target\n",
         exe = exe.display(),
         config_dir = config_dir.display(),
+        env_file = env_file.display(),
     );
 
     let unit_name = systemd_unit(instance);
@@ -1387,6 +1421,31 @@ mod tests {
         assert!(
             unit.contains("PassEnvironment=DISPLAY XDG_RUNTIME_DIR"),
             "systemd unit must pass through display/runtime env vars"
+        );
+    }
+
+    #[test]
+    fn systemd_unit_contains_environment_file() {
+        let unit = "[Unit]\n\
+             Description=SynapseClaw daemon\n\
+             After=network.target\n\
+             \n\
+             [Service]\n\
+             Type=simple\n\
+             ExecStart=/usr/local/bin/synapseclaw daemon\n\
+             Restart=always\n\
+             RestartSec=3\n\
+             EnvironmentFile=-/home/test/.config/systemd/user/synapseclaw.env\n\
+             Environment=HOME=%h\n\
+             PassEnvironment=DISPLAY XDG_RUNTIME_DIR\n\
+             \n\
+             [Install]\n\
+             WantedBy=default.target\n"
+            .to_string();
+
+        assert!(
+            unit.contains("EnvironmentFile=-/home/test/.config/systemd/user/synapseclaw.env"),
+            "systemd unit must load the onboarding env file"
         );
     }
 

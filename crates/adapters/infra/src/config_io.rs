@@ -1454,6 +1454,24 @@ impl ConfigIO for Config {
             }
         }
 
+        if let Some(ref mut telegram) = self.channels_config.telegram {
+            if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    telegram.bot_token = token.to_string();
+                }
+            }
+        }
+
+        if let Some(ref mut matrix) = self.channels_config.matrix {
+            if let Ok(token) = std::env::var("MATRIX_ACCESS_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    matrix.access_token = Some(token.to_string());
+                }
+            }
+        }
+
         // Provider HTTP timeout: SYNAPSECLAW_PROVIDER_TIMEOUT_SECS
         if let Ok(timeout_secs) = std::env::var("SYNAPSECLAW_PROVIDER_TIMEOUT_SECS") {
             if let Ok(timeout_secs) = timeout_secs.parse::<u64>() {
@@ -2265,7 +2283,32 @@ async fn sync_directory(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::ConfigIO;
     use super::removed_auxiliary_config_key_error;
+    use synapse_domain::config::schema::{Config, MatrixConfig, TelegramConfig};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                std::env::set_var(self.key, old);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn removed_auxiliary_config_keys_are_rejected() {
@@ -2285,5 +2328,42 @@ mod tests {
             );
         }
         assert!(removed_auxiliary_config_key_error("summary.temperature").is_none());
+    }
+
+    #[test]
+    fn apply_env_overrides_rehydrates_telegram_and_matrix_channel_secrets() {
+        let _telegram = EnvVarGuard::set("TELEGRAM_BOT_TOKEN", "telegram-secret");
+        let _matrix = EnvVarGuard::set("MATRIX_ACCESS_TOKEN", "matrix-secret");
+
+        let mut config = Config::default();
+        config.channels_config.telegram = Some(TelegramConfig {
+            bot_token: String::new(),
+            allowed_users: vec!["*".into()],
+            stream_mode: Default::default(),
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        });
+        config.channels_config.matrix = Some(MatrixConfig {
+            homeserver: "https://matrix.example.com".into(),
+            access_token: None,
+            user_id: Some("@bot:example.com".into()),
+            device_id: None,
+            room_id: "!room:example.com".into(),
+            allowed_users: vec!["*".into()],
+            password: None,
+            max_media_download_mb: None,
+        });
+
+        config.apply_env_overrides();
+
+        assert_eq!(
+            config.channels_config.telegram.as_ref().unwrap().bot_token,
+            "telegram-secret"
+        );
+        assert_eq!(
+            config.channels_config.matrix.as_ref().unwrap().access_token.as_deref(),
+            Some("matrix-secret")
+        );
     }
 }

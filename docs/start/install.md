@@ -1,10 +1,27 @@
 # Install
 
-Synapseclaw is built from the Rust workspace. For the local feature set used by the current service fleet, build with Matrix channel support:
+For normal users, the supported first path is:
+
+1. install the binary
+2. run `synapseclaw onboard`
+3. connect one provider and one channel
+4. optionally install the background service
+
+`install.sh` is prebuilt-first and should be the default entrypoint when you are not developing SynapseClaw itself.
+
+```bash
+./install.sh
+```
+
+If you are building from source, use:
 
 ```bash
 cargo build --release --features channel-matrix
 ```
 
-Local configuration normally lives under `~/.synapseclaw/`, while operational secrets should live outside the repository, usually in a user systemd environment file. Provider and channel setup is still evolving, so keep first installs minimal and move to [operate/config.md](../operate/config.md) once the basic binary works.
+Local configuration normally lives under `~/.synapseclaw/`. Secrets should live outside tracked config files:
 
+- Linux: `~/.config/systemd/user/synapseclaw.env`
+- macOS: `~/.synapseclaw/synapseclaw.env`
+
+After the binary is available, prefer `synapseclaw onboard` over manual config editing for the first run.
