@@ -379,6 +379,7 @@ pub struct SkillUpdate {
     pub new_task_family: Option<Option<String>>,
     pub new_tool_pattern: Option<Vec<String>>,
     pub new_lineage_task_families: Option<Vec<String>>,
+    pub new_tags: Option<Vec<String>>,
     pub new_status: Option<SkillStatus>,
 }
 

@@ -32,7 +32,10 @@ pub use synapse_domain::ports::memory::{
 
 use std::path::Path;
 use std::sync::Arc;
-use synapse_domain::config::schema::MemoryConfig;
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane, AuxiliaryModelResolutionError,
+};
+use synapse_domain::config::schema::{Config, MemoryConfig};
 
 // ── Memory Factory ───────────────────────────────────────────────
 
@@ -55,13 +58,13 @@ pub struct MemoryBackend {
 /// backed by the same SurrealDB instance. This is async because SurrealDB
 /// initialization requires await.
 pub async fn create_memory(
-    config: &MemoryConfig,
+    config: &Config,
     workspace_dir: &Path,
     agent_id: &str,
-    api_key: Option<&str>,
 ) -> anyhow::Result<MemoryBackend> {
+    let memory_config = &config.memory;
     // If backend is "none" or memory is explicitly disabled, use noop.
-    if config.backend == "none" {
+    if memory_config.backend == "none" {
         tracing::info!("Memory backend: none (disabled)");
         let noop = Arc::new(NoopUnifiedMemory);
         return Ok(MemoryBackend {
@@ -72,16 +75,16 @@ pub async fn create_memory(
     }
 
     // Warn about legacy backend names — Phase 4.3 always uses SurrealDB.
-    let backend_lower = config.backend.to_lowercase();
+    let backend_lower = memory_config.backend.to_lowercase();
     if backend_lower != "surrealdb" && backend_lower != "none" {
         tracing::warn!(
             "Memory backend '{}' is deprecated. Phase 4.3 uses SurrealDB. Proceeding with SurrealDB.",
-            config.backend
+            memory_config.backend
         );
     }
 
     // Create embedding provider.
-    let embedder = create_embedding_provider(config, api_key);
+    let embedder = create_embedding_provider(config);
 
     // SurrealDB data directory: workspace_dir/memory/brain.surreal
     let data_dir = workspace_dir.join("memory").join("brain.surreal");
@@ -118,114 +121,131 @@ pub async fn create_memory(
 const EMBEDDING_CACHE_SIZE: usize = 10_000;
 
 /// Create the embedding provider from config, wrapped in LRU cache.
-fn create_embedding_provider(
-    config: &MemoryConfig,
-    api_key: Option<&str>,
-) -> Arc<dyn embeddings::EmbeddingProvider> {
-    if config.embedding_provider == "none" || config.embedding_provider.is_empty() {
-        return Arc::new(embeddings::NoopEmbedding);
-    }
+fn create_embedding_provider(config: &Config) -> Arc<dyn embeddings::EmbeddingProvider> {
+    let resolution = match resolve_auxiliary_model(config, AuxiliaryLane::Embedding, None) {
+        Ok(resolution) => resolution,
+        Err(AuxiliaryModelResolutionError::LaneNotConfigured { lane }) => {
+            tracing::info!(
+                auxiliary_lane = lane.as_str(),
+                "Embedding auxiliary lane is not configured; vector embeddings disabled"
+            );
+            return Arc::new(embeddings::NoopEmbedding);
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                auxiliary_lane = AuxiliaryLane::Embedding.as_str(),
+                "Embedding auxiliary lane has no supported candidate; vector embeddings disabled"
+            );
+            return Arc::new(embeddings::NoopEmbedding);
+        }
+    };
 
-    let provider_name = config.embedding_provider.as_str();
-    let Some(profile) = embeddings::resolve_embedding_profile(
-        provider_name,
-        &config.embedding_model,
-        config.embedding_dimensions,
-    ) else {
+    let selected = &resolution.selected;
+    let Some(selected_dimensions) = selected.dimensions.filter(|value| *value > 0) else {
         tracing::warn!(
-            provider = %config.embedding_provider,
-            model = %config.embedding_model,
-            dimensions = config.embedding_dimensions,
-            "Embedding profile is not catalogued; embeddings disabled. Add an embedding_profiles entry to model_catalog.json."
+            provider = selected.provider.as_str(),
+            model = selected.model.as_str(),
+            auxiliary_lane = resolution.lane.as_str(),
+            selected_candidate_index = resolution.selected_index,
+            "Embedding lane candidate has no positive dimensions value; vector embeddings disabled"
         );
         return Arc::new(embeddings::NoopEmbedding);
     };
 
-    // llama.cpp: no API key needed
-    if provider_name == "llama.cpp" || provider_name.starts_with("llama.cpp:") {
-        let url = if provider_name == "llama.cpp" {
-            "http://127.0.0.1:8081"
-        } else {
-            match provider_name
-                .strip_prefix("llama.cpp:")
-                .filter(|url| !url.is_empty())
-            {
-                Some(url) => url,
-                None => {
-                    tracing::warn!("Empty llama.cpp embedding URL; embeddings disabled");
-                    return Arc::new(embeddings::NoopEmbedding);
-                }
-            }
-        };
-        let inner = Box::new(embeddings::LlamaCppEmbedding::new(
-            url,
-            &config.embedding_model,
-            config.embedding_dimensions,
-            profile,
-        ));
-        return Arc::new(embeddings::CachedEmbeddingProvider::new(
-            inner,
-            EMBEDDING_CACHE_SIZE,
-        ));
-    }
-
-    // Resolve API key: provider-specific env var > caller-supplied key
-    let resolved_key = embedding_provider_env_key(provider_name)
-        .and_then(|var| std::env::var(var).ok())
-        .or_else(|| api_key.map(String::from));
-
-    if let Some(key) = resolved_key {
-        let base_url = if provider_name.starts_with("custom:") {
-            let base_url = provider_name.trim_start_matches("custom:");
-            if base_url.is_empty() {
-                tracing::warn!("Empty custom embedding base URL; embeddings disabled");
-                return Arc::new(embeddings::NoopEmbedding);
-            }
-            base_url.to_string()
-        } else {
-            match embeddings::default_base_url_for_provider(provider_name) {
-                Some(base_url) => base_url,
-                None => {
-                    tracing::warn!(
-                        provider = %config.embedding_provider,
-                        "Embedding provider has no known base URL; embeddings disabled"
-                    );
-                    return Arc::new(embeddings::NoopEmbedding);
-                }
-            }
+    let mut providers = Vec::new();
+    for supported in &resolution.supported_candidates {
+        let candidate = &supported.candidate;
+        let Some(dimensions) = candidate.dimensions.filter(|value| *value > 0) else {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate has no positive dimensions value; skipping candidate"
+            );
+            continue;
         };
 
-        let inner = Box::new(embeddings::OpenAiEmbedding::new(
-            &base_url,
-            &key,
-            &config.embedding_model,
-            config.embedding_dimensions,
-            profile,
-        ));
-        Arc::new(embeddings::CachedEmbeddingProvider::new(
-            inner,
-            EMBEDDING_CACHE_SIZE,
-        ))
-    } else {
-        tracing::warn!(
-            provider = %config.embedding_provider,
-            "No API key for embedding provider; embeddings disabled"
+        if dimensions != selected_dimensions {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                dimensions,
+                selected_dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate dimensions differ from selected candidate; skipping failover candidate"
+            );
+            continue;
+        }
+
+        let api_key = candidate
+            .api_key_env
+            .as_deref()
+            .and_then(|env| std::env::var(env).ok())
+            .or_else(|| candidate.api_key.clone());
+        let inner = embeddings::create_embedding_provider(
+            candidate.provider.as_str(),
+            api_key.as_deref(),
+            candidate.model.as_str(),
+            dimensions,
         );
-        Arc::new(embeddings::NoopEmbedding)
-    }
-}
 
-/// Look up the provider-specific environment variable for embedding API keys.
-fn embedding_provider_env_key(provider: &str) -> Option<&'static str> {
-    match provider.to_lowercase().as_str() {
-        "openai" => Some("OPENAI_API_KEY"),
-        "openrouter" => Some("OPENROUTER_API_KEY"),
-        "anthropic" => Some("ANTHROPIC_API_KEY"),
-        "cohere" => Some("COHERE_API_KEY"),
-        "voyageai" | "voyage" => Some("VOYAGE_API_KEY"),
-        "gemini" | "google" => Some("GEMINI_API_KEY"),
-        _ => None,
+        if inner.dimensions() == 0 {
+            tracing::warn!(
+                provider = candidate.provider.as_str(),
+                model = candidate.model.as_str(),
+                dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                candidate_index = supported.index,
+                "Embedding lane candidate could not initialize; skipping candidate"
+            );
+            continue;
+        }
+
+        providers.push(embeddings::EmbeddingFailoverCandidate {
+            index: supported.index,
+            provider: candidate.provider.as_str().to_string(),
+            model: candidate.model.as_str().to_string(),
+            inner,
+        });
     }
+
+    let provider_count = providers.len();
+    let inner: Box<dyn embeddings::EmbeddingProvider> = match provider_count {
+        0 => {
+            tracing::warn!(
+                provider = selected.provider.as_str(),
+                model = selected.model.as_str(),
+                dimensions = selected_dimensions,
+                auxiliary_lane = resolution.lane.as_str(),
+                selected_candidate_index = resolution.selected_index,
+                "Embedding lane has no initialized candidates; vector embeddings disabled"
+            );
+            return Arc::new(embeddings::NoopEmbedding);
+        }
+        1 => providers.pop().expect("provider").inner,
+        _ => Box::new(
+            embeddings::FailoverEmbeddingProvider::new(providers)
+                .expect("embedding failover candidates"),
+        ),
+    };
+
+    tracing::info!(
+        provider = selected.provider.as_str(),
+        model = selected.model.as_str(),
+        dimensions = selected_dimensions,
+        auxiliary_lane = resolution.lane.as_str(),
+        selected_candidate_index = resolution.selected_index,
+        candidate_count = resolution.candidates.len(),
+        initialized_candidate_count = provider_count,
+        "Embedding auxiliary lane selected"
+    );
+    Arc::new(embeddings::CachedEmbeddingProvider::new(
+        inner,
+        EMBEDDING_CACHE_SIZE,
+    ))
 }
 
 // ── Utility functions (backend-agnostic) ─────────────────────────
@@ -355,6 +375,13 @@ impl synapse_domain::ports::memory::SkillMemoryPort for NoopUnifiedMemory {
         Ok(())
     }
     async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
+        Ok(None)
+    }
+    async fn get_skill_by_id(
+        &self,
+        _: &MemoryId,
+        _: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
         Ok(None)
     }
 }

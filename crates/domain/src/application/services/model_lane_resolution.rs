@@ -1,5 +1,6 @@
 use crate::application::services::model_capability_support::profile_supports_lane_confidently;
 use crate::application::services::model_preset_resolution::resolve_effective_model_lanes;
+use crate::config::model_catalog::model_profile as bundled_model_profile;
 use crate::config::schema::{CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature};
 use crate::ports::model_profile_catalog::{
     CatalogModelProfile, CatalogModelProfileSource, ModelProfileCatalogPort,
@@ -159,32 +160,14 @@ pub fn resolve_lane_candidates(
     lane: CapabilityLane,
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> Vec<ResolvedModelCandidate> {
-    let effective_lanes = resolve_effective_model_lanes(config);
-
-    if let Some(explicit) = effective_lanes.iter().find(|entry| entry.lane == lane) {
-        if !explicit.candidates.is_empty() {
-            return explicit
-                .candidates
-                .iter()
-                .map(|candidate| {
-                    resolve_candidate(
-                        ModelLaneResolutionSource::ExplicitLaneConfig,
-                        candidate.provider.as_str(),
-                        candidate.model.as_str(),
-                        candidate.api_key.clone(),
-                        candidate.api_key_env.clone(),
-                        candidate.dimensions,
-                        &candidate.profile,
-                        catalog,
-                    )
-                })
-                .collect();
-        }
+    let explicit = resolve_explicit_lane_candidates(config, lane, catalog);
+    if !explicit.is_empty() {
+        return explicit;
     }
 
     let mut resolved = Vec::new();
 
-    if resolved.is_empty() && lane_allows_implicit_reasoning_candidates(lane) {
+    if lane_allows_implicit_reasoning_candidates(lane) {
         resolved = resolve_lane_candidates(config, CapabilityLane::Reasoning, catalog)
             .into_iter()
             .filter(|candidate| profile_supports_lane_confidently(&candidate.profile, lane))
@@ -216,13 +199,45 @@ pub fn resolve_lane_candidates(
     resolved
 }
 
+pub fn resolve_explicit_lane_candidates(
+    config: &Config,
+    lane: CapabilityLane,
+    catalog: Option<&dyn ModelProfileCatalogPort>,
+) -> Vec<ResolvedModelCandidate> {
+    let effective_lanes = resolve_effective_model_lanes(config);
+
+    if let Some(explicit) = effective_lanes.iter().find(|entry| entry.lane == lane) {
+        if !explicit.candidates.is_empty() {
+            return explicit
+                .candidates
+                .iter()
+                .map(|candidate| {
+                    resolve_candidate(
+                        ModelLaneResolutionSource::ExplicitLaneConfig,
+                        candidate.provider.as_str(),
+                        candidate.model.as_str(),
+                        candidate.api_key.clone(),
+                        candidate.api_key_env.clone(),
+                        candidate.dimensions,
+                        &candidate.profile,
+                        catalog,
+                    )
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 pub fn resolve_candidate_profile(
     provider: &str,
     model: &str,
     manual: &ModelCandidateProfileConfig,
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> ResolvedModelProfile {
-    let auto = catalog.and_then(|catalog| catalog.lookup_model_profile(provider, model));
+    let auto = catalog
+        .and_then(|catalog| catalog.lookup_model_profile(provider, model))
+        .or_else(|| bundled_model_profile(provider, model));
     merge_profile(manual, auto)
 }
 
@@ -441,6 +456,7 @@ fn lane_allows_implicit_reasoning_candidates(lane: CapabilityLane) -> bool {
             | CapabilityLane::AudioGeneration
             | CapabilityLane::VideoGeneration
             | CapabilityLane::MusicGeneration
+            | CapabilityLane::WebExtraction
     )
 }
 
@@ -584,6 +600,8 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         };
 
         let resolved = resolve_route_selection_profile(&config, &route, Some(&StubCatalog));

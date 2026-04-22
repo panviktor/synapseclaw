@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use tokio::fs;
 
 /// Workspace backup tool: create, list, verify, and restore timestamped backups
@@ -257,6 +260,20 @@ impl Tool for BackupTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("command")
+                    .with_values(["create", "list", "verify", "restore"]),
+                ToolArgumentPolicy::workspace_local("backup_name"),
+                ToolArgumentPolicy::blocked("confirm"),
+            ])
     }
 
     fn extract_facts(

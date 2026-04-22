@@ -6,6 +6,9 @@ use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 const NOTION_API_BASE: &str = "https://api.notion.com/v1";
 const NOTION_VERSION: &str = "2022-06-28";
@@ -215,6 +218,31 @@ impl Tool for NotionTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values([
+                "query_database",
+                "read_page",
+                "create_page",
+                "update_page",
+                "search",
+            ]),
+            ToolArgumentPolicy::sensitive("database_id").user_private(),
+            ToolArgumentPolicy::sensitive("page_id").user_private(),
+            ToolArgumentPolicy::sensitive("filter").user_private(),
+            ToolArgumentPolicy::sensitive("properties").user_private(),
+            ToolArgumentPolicy::sensitive("query").user_private(),
+        ])
     }
 
     fn extract_facts(

@@ -7,7 +7,9 @@ use std::time::Duration;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolExecution, ToolRuntimeRole,
+};
 
 /// Tavily Extract tool — fetches and extracts content from URLs using the
 /// Tavily Extract API. Returns clean markdown/text content from web pages.
@@ -266,6 +268,18 @@ impl Tool for TavilyExtractTool {
             },
             "required": ["urls"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("urls")
+                .with_transform(ToolArgumentTransform::UrlOriginPath),
+            ToolArgumentPolicy::replayable("format").with_values(["markdown", "text"]),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

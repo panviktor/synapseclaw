@@ -1789,12 +1789,45 @@ pub fn create_routed_provider_with_options(
             )
         })
         .collect();
+    let route_chains = provider_router_route_chains(route_aliases);
 
-    Ok(Box::new(router::RouterProvider::new(
+    Ok(Box::new(router::RouterProvider::new_with_chains(
         providers,
         routes,
+        route_chains,
         default_model.to_string(),
     )))
+}
+
+fn provider_router_route_chains(
+    route_aliases: &[synapse_domain::config::schema::ModelRouteConfig],
+) -> Vec<(String, Vec<router::Route>)> {
+    let mut chains: Vec<(String, Vec<router::Route>)> = Vec::new();
+
+    for alias in route_aliases {
+        let Some(capability) = alias.capability else {
+            continue;
+        };
+        let hint = capability.as_str().to_string();
+        let route = router::Route {
+            provider_name: alias.provider.clone(),
+            model: alias.model.clone(),
+        };
+        if let Some((_, chain)) = chains.iter_mut().find(|(existing, _)| existing == &hint) {
+            if !chain.iter().any(|existing| {
+                existing
+                    .provider_name
+                    .eq_ignore_ascii_case(&route.provider_name)
+                    && existing.model.eq_ignore_ascii_case(&route.model)
+            }) {
+                chain.push(route);
+            }
+        } else {
+            chains.push((hint, vec![route]));
+        }
+    }
+
+    chains
 }
 
 /// Information about a supported provider for display purposes.

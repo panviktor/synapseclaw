@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use reqwest::{header::HeaderMap, Client, Url};
+use reqwest::{
+    header::{HeaderMap, AUTHORIZATION},
+    Client, Url,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -42,8 +45,16 @@ struct Args {
     route: String,
 
     /// User message to send. Repeat for multi-turn scenarios in the same session.
-    #[arg(long = "message", short = 'm', required = true)]
+    #[arg(long = "message", short = 'm', required_unless_present = "skill_smoke")]
     messages: Vec<String>,
+
+    /// Run a live user-skill smoke test over gateway HTTP API and runtime commands.
+    #[arg(long)]
+    skill_smoke: bool,
+
+    /// Prefix for --skill-smoke created skill/package names.
+    #[arg(long, default_value = "slice5-live")]
+    skill_smoke_prefix: String,
 
     /// Per-turn timeout in seconds.
     #[arg(long, default_value_t = 180)]
@@ -70,6 +81,7 @@ struct HarnessReport {
     primed_route: Option<String>,
     history: Option<Value>,
     turns: Vec<TurnReport>,
+    skill_smoke: Option<SkillSmokeReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,6 +92,27 @@ struct TurnReport {
     rpc_result: Option<Value>,
     rpc_error: Option<String>,
     events: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillSmokeReport {
+    prefix: String,
+    api_skill_name: String,
+    runtime_skill_name: String,
+    api_create: Value,
+    authored_after_api_create: Value,
+    api_export: Value,
+    runtime_create_turn: TurnReport,
+    authored_after_runtime_create: Value,
+    runtime_skill: Option<Value>,
+    auto_policy: AutoSkillPolicySmokeReport,
+}
+
+#[derive(Debug, Serialize)]
+struct AutoSkillPolicySmokeReport {
+    candidates: Value,
+    review: Value,
+    autopromote: Value,
 }
 
 #[tokio::main]
@@ -99,6 +132,17 @@ async fn main() -> Result<()> {
         .session
         .clone()
         .unwrap_or_else(|| format!("harness-{}", Uuid::new_v4()));
+
+    if args.skill_smoke {
+        let smoke = run_skill_smoke(&args, &gateway_url, &token, &session).await?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&smoke)?);
+        } else {
+            print_skill_smoke_summary(&smoke);
+        }
+        return Ok(());
+    }
+
     let ws_url = build_ws_url(&gateway_url, &token, &session, args.agent.as_deref())?;
     let (mut socket, _) = connect_async(ws_url.as_str())
         .await
@@ -111,6 +155,7 @@ async fn main() -> Result<()> {
         primed_route: None,
         history: None,
         turns: Vec::new(),
+        skill_smoke: None,
     };
 
     let route = args.route.trim();
@@ -277,6 +322,242 @@ async fn fetch_history(
         }
         return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
     }
+}
+
+async fn run_skill_smoke(
+    args: &Args,
+    gateway_url: &str,
+    token: &str,
+    session: &str,
+) -> Result<SkillSmokeReport> {
+    let run_id = Uuid::new_v4().to_string();
+    let short_id = run_id.split('-').next().unwrap_or(run_id.as_str());
+    let prefix = format!("{}-{}", slug_component(&args.skill_smoke_prefix), short_id);
+    let api_skill_name = format!("{prefix} API skill");
+    let runtime_skill_name = format!("{prefix} runtime skill");
+    let client = Client::builder()
+        .build()
+        .context("Failed to build HTTP client for skill smoke")?;
+
+    let api_create = gateway_post_json(
+        &client,
+        gateway_url,
+        token,
+        "/api/skills/create",
+        serde_json::json!({
+            "name": api_skill_name,
+            "description": "Live API-created user skill for Slice 5 smoke.",
+            "body": "# Live API skill\n\nUse repo discovery and git release status for Matrix-like local repositories.",
+            "task_family": "slice5-live-skill-smoke",
+            "tool_pattern": ["repo_discovery", "git_operations"],
+            "tags": ["slice5-smoke", "api"],
+            "status": "active",
+        }),
+    )
+    .await?;
+
+    let authored_after_api_create = gateway_get_json(
+        &client,
+        gateway_url,
+        token,
+        "/api/skills/authored",
+        &[("limit", "500")],
+    )
+    .await?;
+    let api_skill_id = api_create
+        .get("skill_id")
+        .and_then(Value::as_str)
+        .context("skill create response missing skill_id")?;
+    assert_authored_skill_present(&authored_after_api_create, api_skill_id, &api_skill_name)?;
+
+    let api_export = gateway_post_json(
+        &client,
+        gateway_url,
+        token,
+        "/api/skills/export",
+        serde_json::json!({
+            "skill": api_skill_id,
+            "package_name": format!("{prefix}-api-package"),
+            "overwrite": true,
+        }),
+    )
+    .await?;
+
+    let ws_url = build_ws_url(gateway_url, token, session, args.agent.as_deref())?;
+    let (mut socket, _) = connect_async(ws_url.as_str())
+        .await
+        .with_context(|| format!("Failed to connect to gateway WebSocket at {gateway_url}"))?;
+    let runtime_create_turn = run_turn(
+        &mut socket,
+        session,
+        1,
+        &format!(
+            "/skills create {runtime_skill_name} --task-family=slice5-runtime-smoke --tools=skill_read,repo_discovery --tags=slice5-smoke,runtime :: # Live runtime skill\n\nRemember that this smoke verifies runtime command user-skill creation without provider prompt hacks."
+        ),
+        Duration::from_secs(args.timeout_secs),
+        args.json,
+    )
+    .await?;
+    let _ = socket.close(None).await;
+
+    let authored_after_runtime_create = gateway_get_json(
+        &client,
+        gateway_url,
+        token,
+        "/api/skills/authored",
+        &[("limit", "500")],
+    )
+    .await?;
+    let runtime_skill =
+        find_authored_skill_by_name(&authored_after_runtime_create, &runtime_skill_name);
+    if runtime_skill.is_none() {
+        bail!(
+            "runtime-created skill was not returned by /api/skills/authored: {runtime_skill_name}"
+        );
+    }
+    let runtime_skill_value = runtime_skill.as_ref().expect("checked above");
+    if runtime_skill_value
+        .get("task_family")
+        .and_then(Value::as_str)
+        != Some("slice5-runtime-smoke")
+    {
+        bail!("runtime-created skill did not preserve task_family metadata");
+    }
+    let runtime_tools = runtime_skill_value
+        .get("tool_pattern")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !runtime_tools
+        .iter()
+        .any(|tool| tool.as_str() == Some("skill_read"))
+    {
+        bail!("runtime-created skill did not preserve tool_pattern metadata");
+    }
+    let auto_policy = AutoSkillPolicySmokeReport {
+        candidates: gateway_get_json(
+            &client,
+            gateway_url,
+            token,
+            "/api/skills/candidates",
+            &[("limit", "25")],
+        )
+        .await?,
+        review: gateway_get_json(
+            &client,
+            gateway_url,
+            token,
+            "/api/skills/review",
+            &[("limit", "25")],
+        )
+        .await?,
+        autopromote: gateway_get_json(
+            &client,
+            gateway_url,
+            token,
+            "/api/skills/autopromote",
+            &[("limit", "25")],
+        )
+        .await?,
+    };
+
+    Ok(SkillSmokeReport {
+        prefix,
+        api_skill_name,
+        runtime_skill_name,
+        api_create,
+        authored_after_api_create,
+        api_export,
+        runtime_create_turn,
+        authored_after_runtime_create,
+        runtime_skill,
+        auto_policy,
+    })
+}
+
+async fn gateway_get_json(
+    client: &Client,
+    gateway_url: &str,
+    token: &str,
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<Value> {
+    let mut url = Url::parse(&format!("{}{}", gateway_url.trim_end_matches('/'), path))
+        .with_context(|| format!("invalid gateway URL for {path}"))?;
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query.iter().copied());
+    }
+    let response = with_gateway_auth(client.get(url), token)
+        .send()
+        .await
+        .with_context(|| format!("failed to GET {path}"))?;
+    decode_gateway_json(response, path).await
+}
+
+async fn gateway_post_json(
+    client: &Client,
+    gateway_url: &str,
+    token: &str,
+    path: &str,
+    body: Value,
+) -> Result<Value> {
+    let url = format!("{}{}", gateway_url.trim_end_matches('/'), path);
+    let response = with_gateway_auth(client.post(&url).json(&body), token)
+        .send()
+        .await
+        .with_context(|| format!("failed to POST {url}"))?;
+    decode_gateway_json(response, path).await
+}
+
+fn with_gateway_auth(builder: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
+    if token.is_empty() {
+        builder
+    } else {
+        builder.header(AUTHORIZATION, format!("Bearer {token}"))
+    }
+}
+
+async fn decode_gateway_json(response: reqwest::Response, path: &str) -> Result<Value> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .with_context(|| format!("failed to read {path} response body"))?;
+    let value: Value = serde_json::from_str(&body)
+        .with_context(|| format!("failed to decode {path} JSON response: {body}"))?;
+    if !status.is_success() {
+        bail!("{path} failed with {status}: {value}");
+    }
+    Ok(value)
+}
+
+fn assert_authored_skill_present(authored: &Value, skill_id: &str, skill_name: &str) -> Result<()> {
+    if find_authored_skill(authored, skill_id, skill_name).is_some() {
+        Ok(())
+    } else {
+        bail!("created skill missing from /api/skills/authored: {skill_name} ({skill_id})")
+    }
+}
+
+fn find_authored_skill(authored: &Value, skill_id: &str, skill_name: &str) -> Option<Value> {
+    authored
+        .get("skills")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|skill| {
+            skill.get("id").and_then(Value::as_str) == Some(skill_id)
+                || skill.get("name").and_then(Value::as_str) == Some(skill_name)
+        })
+        .cloned()
+}
+
+fn find_authored_skill_by_name(authored: &Value, skill_name: &str) -> Option<Value> {
+    authored
+        .get("skills")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|skill| skill.get("name").and_then(Value::as_str) == Some(skill_name))
+        .cloned()
 }
 
 async fn recv_json(socket: &mut GatewaySocket, deadline: Instant) -> Result<Value> {
@@ -506,6 +787,90 @@ fn print_history_summary(history: &Value) {
     println!("History> {count} messages ({label})");
 }
 
+fn print_skill_smoke_summary(report: &SkillSmokeReport) {
+    println!("Skill smoke> prefix={}", report.prefix);
+    println!(
+        "Skill smoke> api_create id={} name={}",
+        report
+            .api_create
+            .get("skill_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        report.api_skill_name
+    );
+    println!(
+        "Skill smoke> api_export package={}",
+        report
+            .api_export
+            .get("package_dir")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+    );
+    println!(
+        "Skill smoke> runtime_create name={} run_id={}",
+        report.runtime_skill_name,
+        report
+            .runtime_create_turn
+            .run_id
+            .as_deref()
+            .unwrap_or("command")
+    );
+    let authored_count = report
+        .authored_after_runtime_create
+        .get("skills")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    println!("Skill smoke> authored_count_after_runtime={authored_count}");
+    let candidate_count = report
+        .auto_policy
+        .candidates
+        .get("patch_candidates")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let review_count = report
+        .auto_policy
+        .review
+        .get("decisions")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let autopromote_count = report
+        .auto_policy
+        .autopromote
+        .get("evaluations")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    println!(
+        "Skill smoke> auto_policy candidates={candidate_count} review_decisions={review_count} autopromote_evaluations={autopromote_count}"
+    );
+}
+
+fn slug_component(value: &str) -> String {
+    let mut out = String::new();
+    let mut pending_separator = false;
+    for ch in value.trim().chars() {
+        if ch.is_alphanumeric() {
+            if pending_separator && !out.is_empty() {
+                out.push('-');
+            }
+            for lowered in ch.to_lowercase() {
+                out.push(lowered);
+            }
+            pending_separator = false;
+        } else {
+            pending_separator = true;
+        }
+        if out.chars().count() >= 48 {
+            break;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "skill-smoke".to_string()
+    } else {
+        trimmed
+    }
+}
+
 fn truncate(text: &str, limit: usize) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= limit {
@@ -517,7 +882,7 @@ fn truncate(text: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ws_url, default_gateway_url, is_token_hash};
+    use super::{build_ws_url, default_gateway_url, is_token_hash, slug_component};
     use synapse_domain::config::schema::Config;
 
     #[test]
@@ -550,5 +915,15 @@ mod tests {
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         ));
         assert!(!is_token_hash("zc_plaintext_token"));
+    }
+
+    #[test]
+    fn slug_component_keeps_unicode_words_and_bounds_length() {
+        assert_eq!(
+            slug_component(" Matrix Skill / Проверка "),
+            "matrix-skill-проверка"
+        );
+        assert_eq!(slug_component("///"), "skill-smoke");
+        assert!(slug_component(&"x".repeat(80)).chars().count() <= 48);
     }
 }

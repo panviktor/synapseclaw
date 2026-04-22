@@ -16,6 +16,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.cron': '定时任务',
     'nav.integrations': '集成',
     'nav.memory': '记忆',
+    'nav.skills': '技能',
     'nav.config': '配置',
     'nav.cost': '成本追踪',
     'nav.logs': '日志',
@@ -28,6 +29,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'cron.subtitle': '管理定时任务和 Cron 计划',
     'integrations.subtitle': '连接外部服务',
     'memory.subtitle': '浏览和管理智能体记忆',
+    'skills.subtitle': '审查技能生命周期和候选项',
     'config.subtitle': '编辑运行时配置',
     'cost.subtitle': '追踪 API 用量和成本',
     'logs.subtitle': '实时事件流',
@@ -39,7 +41,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': '审查被标记的消息',
     'ipc.audit_subtitle': '安全和访问审计日志',
     'ipc.cron_subtitle': '管理全局智能体定时任务',
-    'agent.summary_model': '摘要',
     'agent.summary_auto': '自动（主模型）',
 
     // Dashboard
@@ -336,6 +337,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.cron': 'Scheduled Jobs',
     'nav.integrations': 'Integrations',
     'nav.memory': 'Memory',
+    'nav.skills': 'Skills',
     'nav.config': 'Configuration',
     'nav.cost': 'Cost Tracker',
     'nav.logs': 'Logs',
@@ -348,6 +350,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'cron.subtitle': 'Manage scheduled tasks and cron jobs',
     'integrations.subtitle': 'Connect external services',
     'memory.subtitle': 'Browse and manage agent memory',
+    'skills.subtitle': 'Review skill lifecycle and candidates',
     'config.subtitle': 'Edit runtime configuration',
     'cost.subtitle': 'Track API usage and costs',
     'logs.subtitle': 'Real-time event stream',
@@ -359,7 +362,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': 'Review flagged messages',
     'ipc.audit_subtitle': 'Security and access audit log',
     'ipc.cron_subtitle': 'Manage cron jobs across fleet agents',
-    'agent.summary_model': 'Summary',
     'agent.summary_auto': 'auto (primary)',
 
     // Dashboard
@@ -678,6 +680,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.cron': 'Zamanlanmış Görevler',
     'nav.integrations': 'Entegrasyonlar',
     'nav.memory': 'Hafıza',
+    'nav.skills': 'Beceriler',
     'nav.config': 'Yapılandırma',
     'nav.cost': 'Maliyet Takibi',
     'nav.logs': 'Kayıtlar',
@@ -690,6 +693,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'cron.subtitle': 'Zamanlanmış görevleri ve cron işlerini yönetin',
     'integrations.subtitle': 'Harici servisleri bağlayın',
     'memory.subtitle': 'Ajan hafızasını görüntüleyin ve yönetin',
+    'skills.subtitle': 'Beceri yaşam döngüsünü ve adayları inceleyin',
     'config.subtitle': 'Çalışma zamanı yapılandırmasını düzenleyin',
     'cost.subtitle': 'API kullanımını ve maliyetleri takip edin',
     'logs.subtitle': 'Gerçek zamanlı olay akışı',
@@ -701,7 +705,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'ipc.quarantine_subtitle': 'İşaretlenen mesajları inceleyin',
     'ipc.audit_subtitle': 'Güvenlik ve erişim denetim günlüğü',
     'ipc.cron_subtitle': 'Filo ajanları genelinde cron işlerini yönetin',
-    'agent.summary_model': 'Özet',
     'agent.summary_auto': 'otomatik (birincil)',
 
     // Dashboard

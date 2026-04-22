@@ -8,7 +8,9 @@ use synapse_cron::{Db, JobType, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 pub struct CronRunTool {
     config: Arc<Config>,
@@ -202,6 +204,18 @@ impl Tool for CronRunTool {
             },
             "required": ["job_id"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("job_id"),
+                ToolArgumentPolicy::blocked("approved"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

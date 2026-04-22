@@ -10,10 +10,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::application::services::media_artifact_delivery::{
-    artifact_delivery_uri, strip_media_artifact_markers,
+    artifact_delivery_uri, audio_extension_for_media, strip_media_artifact_markers,
 };
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::MediaArtifact;
 use tokio::io::AsyncWriteExt;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -2244,13 +2244,9 @@ impl SlackChannel {
         uri: &str,
     ) -> anyhow::Result<SlackOutboundArtifactUpload> {
         let client = self.http_client();
-        let upload = resolve_outbound_media_artifact(
-            &client,
-            artifact,
-            uri,
-            artifact.kind.marker_label(),
-        )
-        .await?;
+        let upload =
+            resolve_outbound_media_artifact(&client, artifact, uri, artifact.kind.marker_label())
+                .await?;
         Ok(Self::artifact_upload_from_bytes(
             artifact,
             &upload.file_name,
@@ -2267,7 +2263,7 @@ impl SlackChannel {
     ) -> SlackOutboundArtifactUpload {
         let safe_name = Self::sanitize_attachment_filename(file_name)
             .unwrap_or_else(|| artifact.kind.marker_label().to_ascii_lowercase());
-        let ext = Self::media_artifact_extension(artifact, mime_type);
+        let ext = Self::media_artifact_extension(artifact, mime_type, &safe_name);
         let file_name = Self::ensure_file_extension(&safe_name, ext);
         let title = artifact
             .label
@@ -2281,7 +2277,24 @@ impl SlackChannel {
         }
     }
 
-    fn media_artifact_extension(artifact: &MediaArtifact, mime_type: &str) -> &'static str {
+    fn media_artifact_extension(
+        artifact: &MediaArtifact,
+        mime_type: &str,
+        file_name: &str,
+    ) -> &'static str {
+        if matches!(
+            artifact.kind,
+            synapse_domain::ports::provider::MediaArtifactKind::Audio
+                | synapse_domain::ports::provider::MediaArtifactKind::Voice
+                | synapse_domain::ports::provider::MediaArtifactKind::Music
+        ) {
+            if let Some(extension) =
+                audio_extension_for_media(Some(mime_type), Some(file_name), None)
+            {
+                return extension;
+            }
+        }
+
         match mime_type {
             "image/png" => "png",
             "image/jpeg" => "jpg",
@@ -2297,6 +2310,7 @@ impl SlackChannel {
             _ => match artifact.kind {
                 synapse_domain::ports::provider::MediaArtifactKind::Image => "png",
                 synapse_domain::ports::provider::MediaArtifactKind::Audio => "bin",
+                synapse_domain::ports::provider::MediaArtifactKind::Voice => "bin",
                 synapse_domain::ports::provider::MediaArtifactKind::Video => "mp4",
                 synapse_domain::ports::provider::MediaArtifactKind::Music => "bin",
             },
@@ -2359,12 +2373,13 @@ impl SlackChannel {
             .send()
             .await?;
 
-        let ticket =
-            Self::slack_json_payload(resp, "Slack files.getUploadURLExternal").await?;
+        let ticket = Self::slack_json_payload(resp, "Slack files.getUploadURLExternal").await?;
         let upload_url = ticket
             .get("upload_url")
             .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Slack files.getUploadURLExternal omitted upload_url"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Slack files.getUploadURLExternal omitted upload_url")
+            })?;
         let file_id = ticket
             .get("file_id")
             .and_then(|value| value.as_str())
@@ -2463,7 +2478,7 @@ impl Channel for SlackChannel {
             message.thread_ts.as_deref(),
             &message.content,
         )
-            .await
+        .await
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
@@ -3083,6 +3098,23 @@ mod tests {
             Some("..__..__secret.txt")
         );
         assert!(SlackChannel::sanitize_attachment_filename("..").is_none());
+    }
+
+    #[test]
+    fn slack_voice_upload_uses_audio_mime_parameters_for_extension() {
+        let artifact = MediaArtifact::new(
+            synapse_domain::ports::provider::MediaArtifactKind::Voice,
+            "/tmp/voice",
+        );
+
+        assert_eq!(
+            SlackChannel::media_artifact_extension(
+                &artifact,
+                "audio/ogg; codecs=opus",
+                "assistant-voice"
+            ),
+            "ogg"
+        );
     }
 
     #[test]

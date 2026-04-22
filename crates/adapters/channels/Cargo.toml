@@ -6,7 +6,7 @@ publish = false
 
 [features]
 channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr"]
-channel-matrix = ["dep:matrix-sdk"]
+channel-matrix = ["dep:matrix-sdk", "dep:matrix-sdk-base", "dep:livekit"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
@@ -75,7 +75,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # Platform channels (optional)
 nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"], optional = true }
 prost = { version = "0.14", optional = true }
-matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite", "experimental-widgets", "uniffi"] }
+matrix-sdk-base = { version = "0.16", optional = true, default-features = false }
+livekit = { version = "0.7.36", optional = true, default-features = false, features = ["tokio", "rustls-tls-native-roots"] }
 wa-rs = { version = "0.2", optional = true, default-features = false }
 wa-rs-core = { version = "0.2", optional = true, default-features = false }
 wa-rs-binary = { version = "0.2", optional = true, default-features = false }

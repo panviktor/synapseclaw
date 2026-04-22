@@ -19,6 +19,17 @@ pub trait ChannelRegistryPort: Send + Sync {
     /// Declared capabilities for a channel (without building the adapter).
     fn capabilities(&self, channel_name: &str) -> Vec<ChannelCapability>;
 
+    /// Declared capabilities for a channel plus transport identity.
+    fn capability_profile(&self, channel_name: &str) -> ChannelCapabilityProfile {
+        ChannelCapabilityProfile::new(
+            channel_name.trim().to_ascii_lowercase(),
+            self.capabilities(channel_name),
+        )
+    }
+
+    /// Declared profiles for channels known to this registry.
+    fn capability_profiles(&self) -> Vec<ChannelCapabilityProfile>;
+
     /// Resolve adapter, check required capabilities, apply degradation
     /// policy, and deliver the intent via `channel.send()`.
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()>;
@@ -38,5 +49,38 @@ pub trait ChannelRegistryPort: Send + Sync {
     /// defaults and should avoid heuristics based on workspace files.
     fn configured_delivery_target(&self) -> Option<ConversationDeliveryTarget> {
         None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelCapabilityProfile {
+    pub channel: String,
+    pub capabilities: Vec<ChannelCapability>,
+    pub planned_capabilities: Vec<ChannelCapability>,
+}
+
+impl ChannelCapabilityProfile {
+    pub fn new(channel: impl Into<String>, capabilities: Vec<ChannelCapability>) -> Self {
+        Self {
+            channel: channel.into(),
+            capabilities,
+            planned_capabilities: Vec::new(),
+        }
+    }
+
+    pub fn with_planned_capabilities(
+        mut self,
+        planned_capabilities: Vec<ChannelCapability>,
+    ) -> Self {
+        self.planned_capabilities = planned_capabilities;
+        self
+    }
+
+    pub fn has(&self, capability: ChannelCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+
+    pub fn plans(&self, capability: ChannelCapability) -> bool {
+        self.planned_capabilities.contains(&capability)
     }
 }

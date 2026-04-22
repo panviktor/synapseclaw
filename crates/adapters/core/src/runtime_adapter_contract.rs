@@ -3,19 +3,29 @@
 //! Web and channel adapters intentionally keep different transports and
 //! lifecycles, but must not fork the common runtime-command decisions.
 
+use std::sync::Arc;
+
 use synapse_domain::application::services::assistant_output_presentation::{
     AssistantOutputPresenter, OutputDeliveryHints, PresentedOutput,
 };
-use synapse_domain::application::services::inbound_message_service::CommandEffect;
+use synapse_domain::application::services::capability_doctor::CapabilityDoctorReport;
+use synapse_domain::application::services::inbound_message_service::{
+    CommandEffect, RuntimeSkillStatusView, RuntimeUserSkillCreateMetadata,
+};
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflight;
 use synapse_domain::application::services::runtime_command_presentation::{
-    format_clear_session_response, format_common_command_effect,
+    format_clear_session_response, format_common_command_effect, format_compact_session_response,
     format_provider_initialization_failure, format_switch_model_blocked,
     format_switch_model_failure, format_switch_model_success, format_switch_provider_success,
     format_unknown_provider, RuntimeCommandPresentationOptions,
 };
 use synapse_domain::config::schema::{CapabilityLane, Config};
+use synapse_domain::domain::memory::SkillStatus;
+use synapse_domain::ports::conversation_history::ConversationHistoryPort;
+use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::route_selection::RouteSelection;
+use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeAdapterSurface {
@@ -146,6 +156,16 @@ pub(crate) struct RuntimeModelHelpSnapshot {
     pub config: Config,
 }
 
+pub(crate) struct RuntimeSessionCompactionTarget {
+    pub history: Arc<dyn ConversationHistoryPort>,
+    pub conversation_key: String,
+    pub target_profile: ResolvedModelProfile,
+    pub memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    pub agent_id: String,
+    pub surface: crate::runtime_history_hygiene::RuntimeCompactionSurface,
+}
+
 #[async_trait::async_trait]
 pub(crate) trait RuntimeCommandHost {
     fn current_provider(&self) -> String;
@@ -153,6 +173,52 @@ pub(crate) trait RuntimeCommandHost {
     async fn provider_help_route(&mut self) -> anyhow::Result<RouteSelection>;
 
     async fn model_help_snapshot(&mut self) -> anyhow::Result<RuntimeModelHelpSnapshot>;
+
+    async fn capability_doctor_report(&mut self) -> anyhow::Result<CapabilityDoctorReport>;
+
+    async fn skill_status_output(&mut self, view: RuntimeSkillStatusView)
+        -> anyhow::Result<String>;
+
+    async fn skill_tool_contracts_output(&mut self) -> anyhow::Result<String>;
+
+    async fn skill_use_traces_output(&mut self) -> anyhow::Result<String>;
+
+    async fn skill_health_output(&mut self, apply: bool) -> anyhow::Result<String>;
+
+    async fn skill_patch_diff_output(&mut self, candidate: &str) -> anyhow::Result<String>;
+
+    async fn apply_skill_patch_output(&mut self, candidate: &str) -> anyhow::Result<String>;
+
+    async fn skill_patch_versions_output(
+        &mut self,
+        skill_ref: Option<&str>,
+    ) -> anyhow::Result<String>;
+
+    async fn create_user_skill_output(
+        &mut self,
+        name: &str,
+        body: &str,
+        metadata: &RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String>;
+
+    async fn update_user_skill_output(
+        &mut self,
+        skill_ref: &str,
+        body: &str,
+        metadata: &RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String>;
+
+    async fn rollback_skill_patch_output(&mut self, rollback_ref: &str) -> anyhow::Result<String>;
+
+    async fn skill_auto_promotion_output(&mut self, apply: bool) -> anyhow::Result<String>;
+
+    async fn skill_review_output(&mut self, apply: bool) -> anyhow::Result<String>;
+
+    async fn update_skill_status_output(
+        &mut self,
+        skill_ref: &str,
+        target_status: SkillStatus,
+    ) -> anyhow::Result<String>;
 
     async fn switch_provider(
         &mut self,
@@ -164,6 +230,9 @@ pub(crate) trait RuntimeCommandHost {
         request: RuntimeRouteMutationRequest,
         compacted: bool,
     ) -> anyhow::Result<RuntimeModelSwitchOutcome>;
+
+    async fn session_compaction_target(&mut self)
+        -> anyhow::Result<RuntimeSessionCompactionTarget>;
 
     async fn clear_session(&mut self) -> anyhow::Result<()>;
 }
@@ -211,6 +280,43 @@ where
                 &snapshot.route,
                 &snapshot.config,
             ))
+        }
+        CommandEffect::ShowDoctor => {
+            let report = host.capability_doctor_report().await?;
+            Ok(crate::runtime_routes::build_capability_doctor_response(
+                &report,
+            ))
+        }
+        CommandEffect::ShowSkills { view } => host.skill_status_output(*view).await,
+        CommandEffect::ShowSkillTools => host.skill_tool_contracts_output().await,
+        CommandEffect::ShowSkillTraces => host.skill_use_traces_output().await,
+        CommandEffect::ShowSkillHealth { apply } => host.skill_health_output(*apply).await,
+        CommandEffect::ShowSkillDiff { candidate } => host.skill_patch_diff_output(candidate).await,
+        CommandEffect::ApplySkillPatch { candidate } => {
+            host.apply_skill_patch_output(candidate).await
+        }
+        CommandEffect::ShowSkillVersions { skill } => {
+            host.skill_patch_versions_output(skill.as_deref()).await
+        }
+        CommandEffect::CreateUserSkill {
+            name,
+            body,
+            metadata,
+        } => host.create_user_skill_output(name, body, metadata).await,
+        CommandEffect::UpdateUserSkill {
+            skill,
+            body,
+            metadata,
+        } => host.update_user_skill_output(skill, body, metadata).await,
+        CommandEffect::RollbackSkillPatch { rollback } => {
+            host.rollback_skill_patch_output(rollback).await
+        }
+        CommandEffect::AutoPromoteSkills { apply } => {
+            host.skill_auto_promotion_output(*apply).await
+        }
+        CommandEffect::ReviewSkills { apply } => host.skill_review_output(*apply).await,
+        CommandEffect::UpdateSkillStatus { skill, status } => {
+            host.update_skill_status_output(skill, status.clone()).await
         }
         CommandEffect::SwitchProvider { provider } => match contract.canonical_provider(provider) {
             Some(provider_name) => match host
@@ -288,6 +394,22 @@ where
             Ok(format_common_command_effect(effect, &presentation_options)
                 .expect("common command formatter should handle blocked model switches"))
         }
+        CommandEffect::CompactSession { .. } => {
+            let target = host.session_compaction_target().await?;
+            let memory = target.memory.as_ref().map(|memory| memory.as_ref());
+            let run_recipe_store = target.run_recipe_store.as_ref().map(|store| store.as_ref());
+            let outcome = crate::runtime_history_hygiene::compact_history_for_runtime_command(
+                target.history.as_ref(),
+                &target.conversation_key,
+                &target.target_profile,
+                memory,
+                run_recipe_store,
+                &target.agent_id,
+                target.surface,
+            )
+            .await;
+            Ok(format_compact_session_response(outcome.compacted))
+        }
         CommandEffect::ClearSession => {
             host.clear_session().await?;
             Ok(format_clear_session_response())
@@ -354,6 +476,11 @@ pub(crate) fn runtime_adapter_descriptors() -> [RuntimeAdapterDescriptor; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::application::services::capability_doctor::{
+        CapabilityDoctorModelProfileSnapshot, CapabilityDoctorNode, CapabilityDoctorReadiness,
+        CapabilityDoctorRouteSnapshot, CapabilityDoctorSeverity, CapabilityDoctorSubsystem,
+        CapabilityDoctorSummary,
+    };
     use synapse_domain::application::services::inbound_message_service::CommandEffect;
     use synapse_domain::application::services::route_switch_preflight::{
         RouteSwitchPreflight, RouteSwitchStatus,
@@ -464,6 +591,7 @@ mod tests {
                 },
                 compacted: true,
             },
+            CommandEffect::CompactSession { compacted: true },
             CommandEffect::ClearSession,
         ];
 
@@ -492,7 +620,8 @@ mod tests {
             "{path} must instantiate {contract_type} on the runtime-command hot path"
         );
         assert!(
-            source.contains("execute_runtime_command_effect"),
+            source.contains("execute_runtime_command_effect")
+                || source.contains("execute_runtime_command_output"),
             "{path} must execute runtime commands through the shared adapter-core executor"
         );
     }
@@ -502,8 +631,20 @@ mod tests {
         current_provider: String,
         show_providers: usize,
         show_model: usize,
+        show_doctor: usize,
+        show_skill_tools: usize,
+        show_skill_traces: usize,
+        show_skill_health: usize,
+        show_skill_diff: usize,
+        apply_skill_patch: usize,
+        show_skill_versions: usize,
+        create_user_skill: usize,
+        update_user_skill: usize,
+        rollback_skill_patch: usize,
+        auto_promote_skills: usize,
         switched_provider: Option<String>,
         switched_model: Option<String>,
+        compact_target_requests: usize,
         cleared: bool,
     }
 
@@ -522,6 +663,8 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         }
     }
 
@@ -546,6 +689,99 @@ mod tests {
                 route: test_route("openrouter", "test-model"),
                 config: Config::default(),
             })
+        }
+
+        async fn capability_doctor_report(&mut self) -> anyhow::Result<CapabilityDoctorReport> {
+            self.show_doctor += 1;
+            Ok(test_capability_doctor_report())
+        }
+
+        async fn skill_status_output(
+            &mut self,
+            _view: RuntimeSkillStatusView,
+        ) -> anyhow::Result<String> {
+            Ok("Skills status: 0 total, 0 active, 0 review, 0 blocked".to_string())
+        }
+
+        async fn skill_tool_contracts_output(&mut self) -> anyhow::Result<String> {
+            self.show_skill_tools += 1;
+            Ok("Tool replay contracts\nAudit: ok".to_string())
+        }
+
+        async fn skill_use_traces_output(&mut self) -> anyhow::Result<String> {
+            self.show_skill_traces += 1;
+            Ok("Skill use traces for agent test-agent (0):".to_string())
+        }
+
+        async fn skill_health_output(&mut self, apply: bool) -> anyhow::Result<String> {
+            self.show_skill_health += 1;
+            Ok(format!("Skill health for agent test-agent: apply={apply}"))
+        }
+
+        async fn skill_patch_diff_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+            self.show_skill_diff += 1;
+            Ok(format!("Skill patch diff for {candidate}"))
+        }
+
+        async fn apply_skill_patch_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+            self.apply_skill_patch += 1;
+            Ok(format!("Applied skill patch {candidate}"))
+        }
+
+        async fn skill_patch_versions_output(
+            &mut self,
+            skill_ref: Option<&str>,
+        ) -> anyhow::Result<String> {
+            self.show_skill_versions += 1;
+            Ok(format!(
+                "Skill versions for {}",
+                skill_ref.unwrap_or("all skills")
+            ))
+        }
+
+        async fn create_user_skill_output(
+            &mut self,
+            name: &str,
+            _body: &str,
+            _metadata: &RuntimeUserSkillCreateMetadata,
+        ) -> anyhow::Result<String> {
+            self.create_user_skill += 1;
+            Ok(format!("Created user-authored skill `{name}`"))
+        }
+
+        async fn update_user_skill_output(
+            &mut self,
+            skill_ref: &str,
+            _body: &str,
+            _metadata: &RuntimeUserSkillCreateMetadata,
+        ) -> anyhow::Result<String> {
+            self.update_user_skill += 1;
+            Ok(format!("Updated skill `{skill_ref}`"))
+        }
+
+        async fn rollback_skill_patch_output(
+            &mut self,
+            rollback_ref: &str,
+        ) -> anyhow::Result<String> {
+            self.rollback_skill_patch += 1;
+            Ok(format!("Rolled back skill patch {rollback_ref}"))
+        }
+
+        async fn skill_auto_promotion_output(&mut self, apply: bool) -> anyhow::Result<String> {
+            self.auto_promote_skills += 1;
+            Ok(format!("Skill patch auto-promotion apply={apply}"))
+        }
+
+        async fn skill_review_output(&mut self, apply: bool) -> anyhow::Result<String> {
+            Ok(format!("Skill review apply={apply}"))
+        }
+
+        async fn update_skill_status_output(
+            &mut self,
+            skill_ref: &str,
+            target_status: SkillStatus,
+        ) -> anyhow::Result<String> {
+            Ok(format!("Updated {skill_ref} to {target_status}"))
         }
 
         async fn switch_provider(
@@ -578,9 +814,56 @@ mod tests {
             })
         }
 
+        async fn session_compaction_target(
+            &mut self,
+        ) -> anyhow::Result<RuntimeSessionCompactionTarget> {
+            self.compact_target_requests += 1;
+            Err(anyhow::anyhow!("mock compaction target unavailable"))
+        }
+
         async fn clear_session(&mut self) -> anyhow::Result<()> {
             self.cleared = true;
             Ok(())
+        }
+    }
+
+    fn test_capability_doctor_report() -> CapabilityDoctorReport {
+        CapabilityDoctorReport {
+            generated_at_unix: 100,
+            route: CapabilityDoctorRouteSnapshot {
+                provider: "openrouter".into(),
+                model: "test-model".into(),
+                lane: None,
+                candidate_index: None,
+            },
+            model_profile: CapabilityDoctorModelProfileSnapshot {
+                context_window_tokens: Some(128_000),
+                max_output_tokens: Some(8_192),
+                features: vec!["tool_calling".into()],
+                context_window_source: "manual_config".into(),
+                context_window_freshness: "explicit".into(),
+                context_window_confidence: "high".into(),
+                max_output_source: "manual_config".into(),
+                max_output_freshness: "explicit".into(),
+                max_output_confidence: "high".into(),
+                features_source: "manual_config".into(),
+                features_freshness: "explicit".into(),
+                features_confidence: "high".into(),
+                observed_at_unix: None,
+            },
+            summary: CapabilityDoctorSummary {
+                ok: 1,
+                warn: 0,
+                error: 0,
+            },
+            nodes: vec![CapabilityDoctorNode {
+                subsystem: CapabilityDoctorSubsystem::ProviderAdapter,
+                subject: "openrouter".into(),
+                readiness: CapabilityDoctorReadiness::Ready,
+                severity: CapabilityDoctorSeverity::Ok,
+                evidence: vec!["provider adapter is registered".into()],
+                recommendation: None,
+            }],
         }
     }
 
@@ -658,6 +941,301 @@ mod tests {
         assert_eq!(host.show_model, 1);
         assert!(response.contains("Current provider: `openrouter`"));
         assert!(response.contains("Current model: `test-model`"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_show_doctor_from_shared_report() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowDoctor,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowDoctor,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_doctor, 1);
+        assert_eq!(channel_host.show_doctor, 1);
+        assert!(web_response.contains("Capability doctor"));
+        assert!(web_response.contains("provider_adapter"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_skill_tool_contracts_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowSkillTools,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowSkillTools,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_skill_tools, 1);
+        assert_eq!(channel_host.show_skill_tools, 1);
+        assert!(web_response.contains("Tool replay contracts"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_skill_use_traces_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowSkillTraces,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowSkillTraces,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_skill_traces, 1);
+        assert_eq!(channel_host.show_skill_traces, 1);
+        assert!(web_response.contains("Skill use traces"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_skill_health_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowSkillHealth { apply: false },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowSkillHealth { apply: false },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_skill_health, 1);
+        assert_eq!(channel_host.show_skill_health, 1);
+        assert!(web_response.contains("Skill health"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_skill_patch_diff_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowSkillDiff {
+                candidate: "patch-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowSkillDiff {
+                candidate: "patch-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_skill_diff, 1);
+        assert_eq!(channel_host.show_skill_diff, 1);
+        assert!(web_response.contains("Skill patch diff"));
+    }
+
+    #[tokio::test]
+    async fn executor_applies_skill_patch_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ApplySkillPatch {
+                candidate: "patch-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ApplySkillPatch {
+                candidate: "patch-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.apply_skill_patch, 1);
+        assert_eq!(channel_host.apply_skill_patch, 1);
+        assert!(web_response.contains("Applied skill patch"));
+    }
+
+    #[tokio::test]
+    async fn executor_renders_skill_patch_versions_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::ShowSkillVersions {
+                skill: Some("Skill A".into()),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::ShowSkillVersions {
+                skill: Some("Skill A".into()),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.show_skill_versions, 1);
+        assert_eq!(channel_host.show_skill_versions, 1);
+        assert!(web_response.contains("Skill versions"));
+    }
+
+    #[tokio::test]
+    async fn executor_rolls_back_skill_patch_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::RollbackSkillPatch {
+                rollback: "apply-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::RollbackSkillPatch {
+                rollback: "apply-a".into(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.rollback_skill_patch, 1);
+        assert_eq!(channel_host.rollback_skill_patch, 1);
+        assert!(web_response.contains("Rolled back skill patch"));
+    }
+
+    #[tokio::test]
+    async fn executor_runs_skill_auto_promotion_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::AutoPromoteSkills { apply: false },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::AutoPromoteSkills { apply: false },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.auto_promote_skills, 1);
+        assert_eq!(channel_host.auto_promote_skills, 1);
+        assert!(web_response.contains("Skill patch auto-promotion"));
+    }
+
+    #[tokio::test]
+    async fn executor_creates_user_skill_through_shared_host() {
+        let mut web_host = MockRuntimeCommandHost::default();
+        let web_response = execute_runtime_command_effect(
+            &WebRuntimeAdapterContract,
+            &mut web_host,
+            &CommandEffect::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find the local checkout and compare tags.".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        let mut channel_host = MockRuntimeCommandHost::default();
+        let channel_response = execute_runtime_command_effect(
+            &ChannelRuntimeAdapterContract,
+            &mut channel_host,
+            &CommandEffect::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find the local checkout and compare tags.".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            },
+            "openrouter",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(web_response, channel_response);
+        assert_eq!(web_host.create_user_skill, 1);
+        assert_eq!(channel_host.create_user_skill, 1);
+        assert!(web_response.contains("Created user-authored skill"));
     }
 
     #[tokio::test]

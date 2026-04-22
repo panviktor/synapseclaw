@@ -8,7 +8,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolResult, ToolRuntimeRole,
+};
 
 pub struct ClarifyTool;
 
@@ -54,6 +56,23 @@ impl Tool for ClarifyTool {
             },
             "required": ["question"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("question").user_private(),
+            ToolArgumentPolicy::sensitive("options").user_private(),
+            ToolArgumentPolicy::sensitive("recommendation").user_private(),
+            ToolArgumentPolicy::sensitive("context").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

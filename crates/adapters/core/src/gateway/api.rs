@@ -11,6 +11,31 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use synapse_domain::application::services::media_artifact_delivery::{
+    realtime_call_channel_profiles, tts_output_extension, tts_output_mime,
+    tts_provider_output_format, voice_delivery_channel_profiles,
+};
+use synapse_domain::application::services::voice_mode_service::{
+    read_voice_mode_settings, write_voice_mode_settings, VOICE_MODE_PROFILE_KEY,
+};
+use synapse_domain::application::services::voice_preference_service::{
+    candidate_matches_preference, read_voice_settings, write_voice_settings, AutoTtsPolicy,
+    VoicePreference, VoicePreferenceScope, VoicePreferenceTarget,
+};
+use synapse_domain::application::services::{
+    skill_governance_service::SkillPatchCandidate,
+    skill_patch_candidate_service,
+    skill_trace_service::{
+        parse_skill_use_trace_entry, skill_use_trace_memory_category,
+        skill_use_trace_memory_key_prefix,
+    },
+};
+use synapse_domain::domain::memory::{Skill, SkillOrigin, SkillStatus};
+use synapse_domain::ports::realtime_call::{
+    RealtimeCallAnswerRequest as RealtimeCallAnswerCommand, RealtimeCallHangupRequest,
+    RealtimeCallOrigin, RealtimeCallRuntimePort, RealtimeCallSpeakRequest,
+    RealtimeCallStartRequest,
+};
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -61,6 +86,149 @@ pub struct MemoryProjectionQuery {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillListQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillHealthQuery {
+    pub limit: Option<usize>,
+    pub trace_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillHealthApplyBody {
+    pub limit: Option<usize>,
+    pub trace_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillVersionsQuery {
+    pub skill: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillReviewApplyBody {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SkillAutoPromotionApplyBody {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillCreateBody {
+    pub name: String,
+    pub description: Option<String>,
+    pub body: String,
+    pub task_family: Option<String>,
+    #[serde(default)]
+    pub tool_pattern: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoicePreferenceQuery {
+    pub scope: Option<VoicePreferenceScope>,
+    pub channel: Option<String>,
+    pub recipient: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoicePreferenceBody {
+    pub scope: Option<VoicePreferenceScope>,
+    pub channel: Option<String>,
+    pub recipient: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub voice: Option<String>,
+    pub format: Option<String>,
+    pub auto_tts_policy: Option<AutoTtsPolicy>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct VoiceModeUpdateBody {
+    pub enabled: Option<bool>,
+    pub auto_playback: Option<bool>,
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub clear_session: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VoiceSynthesizeBody {
+    pub text: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub voice: Option<String>,
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VoiceTranscribeBody {
+    pub path: std::path::PathBuf,
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillExportBody {
+    pub skill: String,
+    pub package_name: Option<String>,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UserSkillUpdateBody {
+    pub skill: String,
+    pub description: Option<String>,
+    pub body: Option<String>,
+    pub task_family: Option<String>,
+    pub tool_pattern: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillRefBody {
+    pub skill: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillStatusBody {
+    pub skill: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateTestBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateDiffBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchCandidateApplyBody {
+    pub candidate: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillPatchRollbackBody {
+    pub rollback: String,
+    pub limit: Option<usize>,
+}
+
 fn skill_origin_priority(origin: &str) -> u8 {
     match origin {
         "manual" => 3,
@@ -71,7 +239,7 @@ fn skill_origin_priority(origin: &str) -> u8 {
 }
 
 fn normalize_skill_name(name: &str) -> String {
-    name.trim().to_ascii_lowercase()
+    name.trim().to_lowercase()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,9 +346,6 @@ pub async fn handle_api_status(
     let body = serde_json::json!({
         "provider": config.default_provider,
         "model": state.model,
-        "summary_model": config.summary.model.as_ref().or(config.summary_model.as_ref()),
-        "embedding_provider": config.memory.embedding_provider,
-        "embedding_model": config.memory.embedding_model,
         "embedding_profile": state.mem.embedding_profile(),
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
@@ -193,6 +358,1242 @@ pub async fn handle_api_status(
     });
 
     Json(body).into_response()
+}
+
+/// GET /api/voice/status — resolved speech synthesis status for dashboard clients.
+pub async fn handle_api_voice_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let mut preferences = state
+        .user_profile_store
+        .list()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("voice:"))
+        .map(|(key, profile)| {
+            serde_json::json!({
+                "key": key,
+                "settings": read_voice_settings(Some(profile)),
+            })
+        })
+        .collect::<Vec<_>>();
+    preferences.sort_by(|a, b| {
+        a.get("key")
+            .and_then(|value| value.as_str())
+            .cmp(&b.get("key").and_then(|value| value.as_str()))
+    });
+    let candidates = match crate::channels::lane_selected_tts_candidate_configs(&config) {
+        Ok(candidates) => serde_json::json!({
+            "ready": true,
+            "error": null,
+            "candidates": candidates.into_iter().map(|(lane_candidate_index, tts)| {
+                let format = tts_provider_output_format(&tts);
+                serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                })
+            }).collect::<Vec<_>>()
+        }),
+        Err(error) => serde_json::json!({
+            "ready": false,
+            "error": error.to_string(),
+            "candidates": []
+        }),
+    };
+    let transcription = match crate::channels::lane_selected_transcription_config(&config) {
+        Ok(transcription) => {
+            let providers =
+                synapse_channels::transcription::TranscriptionManager::new(&transcription)
+                    .map(|manager| {
+                        let mut providers = manager
+                            .available_providers()
+                            .into_iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>();
+                        providers.sort();
+                        providers
+                    })
+                    .unwrap_or_default();
+            serde_json::json!({
+                "ready": true,
+                "error": null,
+                "default_provider": transcription.default_provider,
+                "model": transcription.model,
+                "language": transcription.language,
+                "max_duration_secs": transcription.max_duration_secs,
+                "available_providers": providers,
+            })
+        }
+        Err(error) => serde_json::json!({
+            "ready": false,
+            "error": error.to_string(),
+            "available_providers": []
+        }),
+    };
+
+    Json(serde_json::json!({
+        "enabled": config.tts.enabled,
+        "default_voice": config.tts.default_voice,
+        "base_provider": config.tts.default_provider,
+        "base_format": config.tts.default_format,
+        "max_text_length": config.tts.max_text_length,
+        "resolution": candidates,
+        "transcription": transcription,
+        "delivery_profiles": voice_delivery_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+        "call_profiles": realtime_call_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+        "preferences": preferences,
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/doctor — environment and lane preflight for voice workflows.
+pub async fn handle_api_voice_doctor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    Json(crate::channels::voice_doctor_report(&config)).into_response()
+}
+
+/// GET /api/voice/mode — read CLI voice mode settings plus current voice preflight.
+pub async fn handle_api_voice_mode_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let settings = read_voice_mode_settings(state.user_profile_store.load(VOICE_MODE_PROFILE_KEY));
+    Json(serde_json::json!({
+        "status": "ok",
+        "settings": settings,
+        "doctor": crate::channels::voice_doctor_report(&config),
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/mode — update persisted CLI voice mode settings.
+pub async fn handle_api_voice_mode_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceModeUpdateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    if body.enabled.is_none()
+        && body.auto_playback.is_none()
+        && body.session_id.is_none()
+        && !body.clear_session
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "request must set enabled, auto_playback, session_id, or clear_session"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut settings =
+        read_voice_mode_settings(state.user_profile_store.load(VOICE_MODE_PROFILE_KEY));
+    if let Some(enabled) = body.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(auto_playback) = body.auto_playback {
+        settings.auto_playback = auto_playback;
+    }
+    if body.clear_session {
+        settings.session_id = None;
+    } else if let Some(session_id) = body.session_id {
+        let trimmed = session_id.trim();
+        settings.session_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+    let settings = settings.normalized();
+
+    let persist = if let Some(profile) = write_voice_mode_settings(settings.clone()) {
+        state
+            .user_profile_store
+            .upsert(VOICE_MODE_PROFILE_KEY, profile)
+    } else {
+        state
+            .user_profile_store
+            .remove(VOICE_MODE_PROFILE_KEY)
+            .map(|_| ())
+    };
+
+    match persist {
+        Ok(()) => Json(serde_json::json!({
+            "status": "ok",
+            "settings": settings,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("voice mode update failed: {error}")
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/voice/mode — clear persisted CLI voice mode settings.
+pub async fn handle_api_voice_mode_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.user_profile_store.remove(VOICE_MODE_PROFILE_KEY) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "removed": removed,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("voice mode clear failed: {error}")
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/voice/profiles — channel-specific native voice/audio delivery profiles.
+pub async fn handle_api_voice_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    Json(serde_json::json!({
+        "profiles": voice_delivery_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+        "call_profiles": realtime_call_channel_profiles(
+            state
+                .channel_registry
+                .as_ref()
+                .map(|registry| registry.capability_profiles())
+                .unwrap_or_default()
+        ),
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/calls/status — process-local realtime call bridge status.
+pub async fn handle_api_voice_call_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let report = synapse_channels::realtime_call_status_report_live_with_synapseclaw_dir(
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+        crate::channels::lane_selected_tts_config(&config).ok(),
+        crate::channels::lane_selected_transcription_config(&config).ok(),
+    )
+    .await;
+    Json(serde_json::json!({
+        "status": "ok",
+        "report": report,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallSessionQuery {
+    #[serde(default)]
+    pub channel: Option<String>,
+}
+
+/// GET /api/voice/calls/sessions — list recent realtime call sessions.
+pub async fn handle_api_voice_call_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoiceCallSessionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let channel = match resolve_realtime_call_inspection_channel(&state, query.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let config = state.config.lock().clone();
+    match synapse_channels::list_realtime_audio_call_sessions_with_synapseclaw_dir(
+        &channel,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+    ) {
+        Ok(sessions) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "sessions": sessions }))
+                .into_response()
+        }
+        Err(error) => realtime_call_config_error(error, &channel).into_response(),
+    }
+}
+
+/// GET /api/voice/calls/sessions/{call_control_id} — inspect one realtime call session.
+pub async fn handle_api_voice_call_session_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(call_control_id): Path<String>,
+    Query(query): Query<VoiceCallSessionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let channel = match resolve_realtime_call_inspection_channel(&state, query.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let config = state.config.lock().clone();
+    match synapse_channels::get_realtime_audio_call_session_with_synapseclaw_dir(
+        &channel,
+        &call_control_id,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+    ) {
+        Ok(Some(session)) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "session": session }))
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "realtime call session not found",
+                "channel": channel,
+                "call_control_id": call_control_id,
+            })),
+        )
+            .into_response(),
+        Err(error) => realtime_call_config_error(error, &channel).into_response(),
+    }
+}
+
+/// GET /api/voice/voices — supported voice IDs for resolved speech_synthesis candidates.
+pub async fn handle_api_voice_voices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let candidates = match crate::channels::lane_selected_tts_candidate_configs(&config) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let voices = candidates
+        .into_iter()
+        .filter(|(_, tts)| tts.enabled)
+        .map(|(lane_candidate_index, tts)| {
+            let format = tts_provider_output_format(&tts);
+            match synapse_channels::TtsManager::new(&tts)
+                .and_then(|manager| manager.supported_voices(&tts.default_provider))
+            {
+                Ok(voices) => serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "default_voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                    "voices": voices,
+                    "error": null,
+                }),
+                Err(error) => serde_json::json!({
+                    "lane_candidate_index": lane_candidate_index,
+                    "provider": tts.default_provider,
+                    "model": selected_tts_model_for_api(&tts),
+                    "default_voice": tts.default_voice,
+                    "format": format,
+                    "extension": tts_output_extension(&format),
+                    "mime_type": tts_output_mime(&format),
+                    "voices": [],
+                    "error": error.to_string(),
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({ "voices": voices })).into_response()
+}
+
+/// POST /api/voice/synthesize — synthesize text to a local audio artifact.
+pub async fn handle_api_voice_synthesize(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceSynthesizeBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "text must not be empty" })),
+        )
+            .into_response();
+    }
+
+    let preference = VoicePreference {
+        provider: body.provider,
+        model: body.model,
+        voice: body.voice,
+        format: body.format,
+    }
+    .normalized();
+    let config = state.config.lock().clone();
+    let mut tts = match select_voice_synthesis_config_for_api(&config, &preference) {
+        Ok(tts) => tts,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    if let Some(voice) = preference.voice {
+        tts.default_voice = voice;
+    }
+
+    let manager = match synapse_channels::TtsManager::new(&tts) {
+        Ok(manager) => manager,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let audio = match manager.synthesize(&text).await {
+        Ok(audio) if !audio.is_empty() => audio,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": "voice synthesis returned empty audio" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    let provider_format = tts_provider_output_format(&tts);
+    let extension = tts_output_extension(&provider_format);
+    let dir = config.workspace_dir.join("voice_out");
+    if let Err(error) = tokio::fs::create_dir_all(&dir).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to create {}: {error}", dir.display()) })),
+        )
+            .into_response();
+    }
+    let path = dir.join(format!("voice_{}.{}", uuid::Uuid::new_v4(), extension));
+    if let Err(error) = tokio::fs::write(&path, &audio).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("failed to write {}: {error}", path.display()) })),
+        )
+            .into_response();
+    }
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "path": path,
+        "bytes": audio.len(),
+        "provider": tts.default_provider,
+        "model": selected_tts_model_for_api(&tts),
+        "voice": tts.default_voice,
+        "format": provider_format,
+        "mime_type": tts_output_mime(&provider_format),
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/transcribe — transcribe a local audio artifact.
+pub async fn handle_api_voice_transcribe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceTranscribeBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let audio = match tokio::fs::read(&body.path).await {
+        Ok(audio) if !audio.is_empty() => audio,
+        Ok(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "audio file must not be empty" })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("failed to read {}: {error}", body.path.display())
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let config = state.config.lock().clone();
+    let transcription = match crate::channels::lane_selected_transcription_config(&config) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let manager = match synapse_channels::transcription::TranscriptionManager::new(&transcription) {
+        Ok(manager) => manager,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let file_name = body
+        .path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio")
+        .to_string();
+    let provider = body
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let text = match provider {
+        Some(provider) => {
+            manager
+                .transcribe_with_provider(&audio, &file_name, provider)
+                .await
+        }
+        None => manager.transcribe(&audio, &file_name).await,
+    };
+    let text = match text {
+        Ok(text) => text,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "path": body.path,
+        "provider": provider.unwrap_or(transcription.default_provider.as_str()),
+        "model": transcription.model,
+        "text": text,
+    }))
+    .into_response()
+}
+
+/// GET /api/voice/preferences — read scoped voice preferences.
+pub async fn handle_api_voice_preferences_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoicePreferenceQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    if query.scope.is_none() {
+        let preferences = state
+            .user_profile_store
+            .list()
+            .into_iter()
+            .filter(|(key, _)| key.starts_with("voice:"))
+            .map(|(key, profile)| {
+                serde_json::json!({
+                    "key": key,
+                    "settings": read_voice_settings(Some(profile)),
+                })
+            })
+            .collect::<Vec<_>>();
+        return Json(serde_json::json!({ "voice_preferences": preferences })).into_response();
+    }
+
+    let target = match voice_preference_target(query.scope, query.channel, query.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let settings = read_voice_settings(state.user_profile_store.load(&key));
+    Json(serde_json::json!({
+        "key": key,
+        "target": target,
+        "settings": settings,
+    }))
+    .into_response()
+}
+
+/// POST /api/voice/preferences — set scoped voice preference or auto-TTS policy.
+pub async fn handle_api_voice_preferences_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoicePreferenceBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let target = match voice_preference_target(body.scope, body.channel, body.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let preference = VoicePreference {
+        provider: body.provider,
+        model: body.model,
+        voice: body.voice,
+        format: body.format,
+    }
+    .normalized();
+
+    if !preference.is_empty() {
+        let config = state.config.lock().clone();
+        if let Err(error) = validate_voice_preference_for_api(&config, &preference) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response();
+        }
+    }
+
+    let mut settings = read_voice_settings(state.user_profile_store.load(&key));
+    if !preference.is_empty() {
+        settings.preference = Some(preference);
+    }
+    if let Some(policy) = body.auto_tts_policy {
+        settings.auto_tts_policy = policy;
+    }
+    if settings.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "request must set a voice preference field or auto_tts_policy"
+            })),
+        )
+            .into_response();
+    }
+
+    match write_voice_settings(settings.clone())
+        .map(|profile| state.user_profile_store.upsert(&key, profile))
+        .transpose()
+    {
+        Ok(_) => Json(serde_json::json!({
+            "status": "ok",
+            "key": key,
+            "target": target,
+            "settings": settings,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(
+                serde_json::json!({ "error": format!("voice preference update failed: {error}") }),
+            ),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/voice/preferences — clear scoped voice preference and policy.
+pub async fn handle_api_voice_preferences_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<VoicePreferenceQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let target = match voice_preference_target(query.scope, query.channel, query.recipient) {
+        Ok(target) => target,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let key = match target.storage_key() {
+        Ok(key) => key,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    match state.user_profile_store.remove(&key) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "key": key,
+            "removed": removed,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("voice preference clear failed: {error}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallStartRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub to: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub objective: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub agenda: Vec<String>,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallSpeakRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallAnswerRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoiceCallHangupRequest {
+    #[serde(default)]
+    pub channel: Option<String>,
+    pub call_control_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// POST /api/voice/calls/start — start a confirmed realtime audio call.
+pub async fn handle_api_voice_call_start(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallStartRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let to = body.to.trim();
+    if to.is_empty() {
+        return bad_voice_call_request("missing non-empty `to`").into_response();
+    }
+
+    match runtime
+        .start_audio_call(RealtimeCallStartRequest {
+            to: to.into(),
+            prompt: body.prompt,
+            origin: RealtimeCallOrigin::api_request(),
+            objective: body.objective.map(|value| value.trim().to_string()),
+            context: body.context.map(|value| value.trim().to_string()),
+            agenda: body
+                .agenda
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect(),
+        })
+        .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "call": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/speak — speak text into an active realtime call.
+pub async fn handle_api_voice_call_speak(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallSpeakRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    let text = body.text.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+    if text.is_empty() {
+        return bad_voice_call_request("missing non-empty `text`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::speak(
+        runtime.as_ref(),
+        RealtimeCallSpeakRequest {
+            call_control_id: call_control_id.into(),
+            text: text.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/answer — answer or attach to an inbound realtime call.
+pub async fn handle_api_voice_call_answer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallAnswerRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::answer(
+        runtime.as_ref(),
+        RealtimeCallAnswerCommand {
+            call_control_id: call_control_id.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+/// POST /api/voice/calls/hangup — hang up an active realtime call.
+pub async fn handle_api_voice_call_hangup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VoiceCallHangupRequest>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    if let Err(response) = require_call_confirmation(body.confirm) {
+        return response.into_response();
+    }
+
+    let channel = match resolve_realtime_call_channel(&state, body.channel.as_deref()) {
+        Ok(channel) => channel,
+        Err(response) => return response.into_response(),
+    };
+    let runtime = match realtime_call_runtime(&state, &channel) {
+        Ok(runtime) => runtime,
+        Err(response) => return response.into_response(),
+    };
+
+    let call_control_id = body.call_control_id.trim();
+    if call_control_id.is_empty() {
+        return bad_voice_call_request("missing non-empty `call_control_id`").into_response();
+    }
+
+    match RealtimeCallRuntimePort::hangup(
+        runtime.as_ref(),
+        RealtimeCallHangupRequest {
+            call_control_id: call_control_id.into(),
+        },
+    )
+    .await
+    {
+        Ok(result) => {
+            Json(serde_json::json!({ "status": "ok", "channel": channel, "result": result }))
+                .into_response()
+        }
+        Err(error) => voice_call_error(error).into_response(),
+    }
+}
+
+fn require_call_confirmation(confirm: bool) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    synapse_channels::require_realtime_call_confirmation(confirm).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+    })
+}
+
+fn realtime_call_runtime(
+    state: &AppState,
+    channel: &str,
+) -> Result<Box<dyn RealtimeCallRuntimePort>, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    let tts_config = crate::channels::lane_selected_tts_config(&config).ok();
+    let transcription_config = crate::channels::lane_selected_transcription_config(&config).ok();
+    synapse_channels::configured_realtime_audio_call_runtime_with_support_configs(
+        channel,
+        &config.channels_config,
+        config.config_path.parent().map(|path| path.to_path_buf()),
+        tts_config,
+        transcription_config,
+        Some(config.agent.live_calls.clone()),
+    )
+    .map_err(|error| realtime_call_config_error(error, channel))
+}
+
+fn resolve_realtime_call_channel(
+    state: &AppState,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    synapse_channels::resolve_realtime_audio_call_channel(requested, &config.channels_config)
+        .map_err(|error| realtime_call_config_error(error, requested.unwrap_or("auto")))
+}
+
+fn resolve_realtime_call_inspection_channel(
+    state: &AppState,
+    requested: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let config = state.config.lock().clone();
+    synapse_channels::resolve_realtime_audio_call_inspection_channel(
+        requested,
+        &config.channels_config,
+    )
+    .map_err(|error| realtime_call_config_error(error, requested.unwrap_or("auto")))
+}
+
+fn realtime_call_config_error(
+    error: synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError,
+    channel: &str,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let status = match error {
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::NoConfiguredRuntime => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::AmbiguousDefault {
+            ..
+        } => StatusCode::BAD_REQUEST,
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::MissingConfig { .. } => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::EmptyArgument { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::ConfirmationRequired => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::Unavailable { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        synapse_channels::realtime_calls::RealtimeCallRuntimeConfigError::MissingRuntimeFactory {
+            ..
+        } => StatusCode::NOT_IMPLEMENTED,
+    };
+    (
+        status,
+        Json(serde_json::json!({
+            "error": error.to_string(),
+            "channel": channel,
+        })),
+    )
+}
+
+fn bad_voice_call_request(message: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+}
+
+fn voice_call_error(error: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(serde_json::json!({ "error": error.to_string() })),
+    )
+}
+
+fn voice_preference_target(
+    scope: Option<VoicePreferenceScope>,
+    channel: Option<String>,
+    recipient: Option<String>,
+) -> Result<VoicePreferenceTarget, String> {
+    match scope.unwrap_or(VoicePreferenceScope::Global) {
+        VoicePreferenceScope::Global => VoicePreferenceTarget::global().normalized(),
+        VoicePreferenceScope::Channel => channel
+            .map(VoicePreferenceTarget::channel)
+            .ok_or_else(|| "channel scope requires channel".to_string())?
+            .normalized(),
+        VoicePreferenceScope::Conversation => match (channel, recipient) {
+            (Some(channel), Some(recipient)) => {
+                VoicePreferenceTarget::conversation(channel, recipient).normalized()
+            }
+            _ => Err("conversation scope requires channel and recipient".into()),
+        },
+    }
+}
+
+fn validate_voice_preference_for_api(
+    config: &synapse_domain::config::schema::Config,
+    preference: &VoicePreference,
+) -> Result<(), String> {
+    let _ = select_voice_synthesis_config_for_api(config, preference)?;
+    Ok(())
+}
+
+fn select_voice_synthesis_config_for_api(
+    config: &synapse_domain::config::schema::Config,
+    preference: &VoicePreference,
+) -> Result<synapse_domain::config::schema::TtsConfig, String> {
+    let candidates = crate::channels::lane_selected_tts_candidate_configs(config)
+        .map_err(|error| format!("Voice synthesis is not ready: {error}"))?;
+    let matching = candidates
+        .into_iter()
+        .map(|(_, tts)| tts)
+        .filter(|tts| tts.enabled)
+        .filter(|tts| {
+            preference
+                .provider
+                .as_deref()
+                .is_none_or(|provider| tts.default_provider.eq_ignore_ascii_case(provider))
+        })
+        .filter(|tts| {
+            preference
+                .model
+                .as_deref()
+                .is_none_or(|model| selected_tts_model_for_api(tts).eq_ignore_ascii_case(model))
+        })
+        .filter(|tts| {
+            candidate_matches_preference(
+                tts,
+                Some(selected_tts_model_for_api(tts).as_str()),
+                preference,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if matching.is_empty() {
+        return Err("no active speech_synthesis lane candidate matches request".into());
+    }
+    if let Some(voice) = preference.voice.as_deref() {
+        for tts in matching {
+            let manager = synapse_channels::TtsManager::new(&tts)
+                .map_err(|error| format!("voice catalog unavailable: {error}"))?;
+            let voices = manager
+                .supported_voices(&tts.default_provider)
+                .map_err(|error| format!("voice catalog unavailable: {error}"))?;
+            if voices
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(voice))
+            {
+                return Ok(tts);
+            }
+        }
+        return Err(format!(
+            "voice `{voice}` is not supported by matching candidates"
+        ));
+    }
+    matching
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no active speech_synthesis lane candidate matches request".into())
+}
+
+fn selected_tts_model_for_api(config: &synapse_domain::config::schema::TtsConfig) -> String {
+    match config.default_provider.as_str() {
+        "openai" => config
+            .openai
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "tts-1".to_string()),
+        "groq" => config
+            .groq
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "canopylabs/orpheus-v1-english".to_string()),
+        "elevenlabs" => "elevenlabs".to_string(),
+        "google" => "google-cloud-tts".to_string(),
+        "edge" => "edge-tts".to_string(),
+        "minimax" => config
+            .minimax
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "speech-02-hd".to_string()),
+        "mistral" => config
+            .mistral
+            .as_ref()
+            .map(|cfg| cfg.model.clone())
+            .unwrap_or_else(|| "voxtral-mini-tts-2603".to_string()),
+        "xai" => "tts".to_string(),
+        _ => config.default_provider.clone(),
+    }
 }
 
 /// GET /api/agents — list registered agent daemons with live status (Phase 3.8).
@@ -477,82 +1878,6 @@ pub async fn handle_api_agent_heartbeat_runs_proxy(
             .into_response(),
         Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
     }
-}
-
-/// PUT /api/agents/:agent_id/summary-model — proxy summary model change to a specific agent.
-pub async fn handle_api_agent_summary_model_proxy(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(agent_id): Path<String>,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    let agent = match state.agent_registry.get(&agent_id) {
-        Some(a) => a,
-        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
-
-    let url = format!("{}/api/summary-model", agent.gateway_url);
-    match client
-        .put(&url)
-        .bearer_auth(&agent.proxy_token)
-        .header("Content-Type", "application/json")
-        .body(body.to_vec())
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(body) => Json(body).into_response(),
-            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
-        },
-        Ok(resp) => (
-            StatusCode::BAD_GATEWAY,
-            format!("Agent returned {}", resp.status()),
-        )
-            .into_response(),
-        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
-    }
-}
-
-/// PUT /api/summary-model — switch the summary model on the fly
-pub async fn handle_api_summary_model_put(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-
-    let payload: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(_) => {
-            return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
-        }
-    };
-
-    let model = payload["model"].as_str().map(String::from);
-
-    // Update AppState (summary_model is behind Arc so we need interior mutability)
-    // Since AppState.summary_model is not behind a lock, we store it in config
-    {
-        let mut config = state.config.lock();
-        config.summary_model = model.clone();
-    }
-
-    Json(serde_json::json!({
-        "ok": true,
-        "summary_model": model,
-    }))
-    .into_response()
 }
 
 /// GET /api/config — current config (api_key masked)
@@ -2107,6 +3432,1067 @@ fn resolution_source_name(
     }
 }
 
+fn parse_skill_status_strict(raw: &str) -> Option<SkillStatus> {
+    match raw.trim().to_lowercase().as_str() {
+        "active" => Some(SkillStatus::Active),
+        "candidate" => Some(SkillStatus::Candidate),
+        "deprecated" | "rejected" | "reject" => Some(SkillStatus::Deprecated),
+        _ => None,
+    }
+}
+
+fn learned_skill_json(skill: &Skill) -> serde_json::Value {
+    serde_json::json!({
+        "id": skill.id,
+        "name": skill.name,
+        "description": skill.description,
+        "task_family": skill.task_family,
+        "lineage_task_families": skill.lineage_task_families,
+        "tool_pattern": skill.tool_pattern,
+        "tags": skill.tags,
+        "success_count": skill.success_count,
+        "fail_count": skill.fail_count,
+        "version": skill.version,
+        "origin": skill.origin.to_string(),
+        "status": skill.status.to_string(),
+        "created_by": skill.created_by,
+        "updated_at": skill.updated_at.to_rfc3339(),
+        "projection": synapse_domain::application::services::memory_projection_service::format_skill_projection(skill),
+    })
+}
+
+fn skill_patch_candidate_json(candidate: &SkillPatchCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "id": candidate.id,
+        "target_skill_id": candidate.target_skill_id,
+        "target_version": candidate.target_version,
+        "diff_summary": candidate.diff_summary,
+        "proposed_body_chars": candidate.proposed_body.chars().count(),
+        "procedure_claims": candidate.procedure_claims,
+        "replay_criteria": candidate.replay_criteria,
+        "eval_results": candidate.eval_results,
+        "status": candidate.status.to_string(),
+    })
+}
+
+fn skill_use_outcome_json_name(
+    outcome: &synapse_domain::application::services::skill_governance_service::SkillUseOutcome,
+) -> &'static str {
+    match outcome {
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Succeeded => {
+            "succeeded"
+        }
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Failed => {
+            "failed"
+        }
+        synapse_domain::application::services::skill_governance_service::SkillUseOutcome::Repaired => {
+            "repaired"
+        }
+    }
+}
+
+fn skill_use_trace_json(
+    trace: &synapse_domain::application::services::skill_governance_service::SkillUseTrace,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": trace.id,
+        "skill_id": trace.skill_id,
+        "task_family": trace.task_family,
+        "route_model": trace.route_model,
+        "tool_pattern": trace.tool_pattern,
+        "outcome": skill_use_outcome_json_name(&trace.outcome),
+        "verification": trace.verification,
+        "repair_evidence_count": trace.repair_evidence.len(),
+        "observed_at_unix": trace.observed_at_unix,
+    })
+}
+
+async fn load_skill_patch_candidates_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<SkillPatchCandidate>, String> {
+    let category = skill_patch_candidate_service::skill_patch_candidate_memory_category();
+    let entries = state
+        .mem
+        .list(Some(&category), None, limit)
+        .await
+        .map_err(|error| format!("failed to list skill patch candidates: {error}"))?;
+    Ok(entries
+        .iter()
+        .filter_map(skill_patch_candidate_service::parse_skill_patch_candidate_entry)
+        .collect())
+}
+
+async fn load_skill_use_traces_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<
+    Vec<synapse_domain::application::services::skill_governance_service::SkillUseTrace>,
+    String,
+> {
+    let limit = limit.max(1);
+    let category = skill_use_trace_memory_category();
+    let prefix = skill_use_trace_memory_key_prefix(&state.agent_id);
+    let entries = state
+        .mem
+        .list(Some(&category), None, limit.saturating_mul(4))
+        .await
+        .map_err(|error| format!("failed to list skill use traces: {error}"))?;
+    let mut traces = entries
+        .iter()
+        .filter(|entry| entry.key.starts_with(&prefix))
+        .filter_map(parse_skill_use_trace_entry)
+        .collect::<Vec<_>>();
+    traces.sort_by(|left, right| {
+        right
+            .observed_at_unix
+            .cmp(&left.observed_at_unix)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    traces.truncate(limit);
+    Ok(traces)
+}
+
+fn skill_matches_ref(skill: &Skill, skill_ref: &str) -> bool {
+    let needle = skill_ref.trim();
+    !needle.is_empty() && (skill.id == needle || skill.name.to_lowercase() == needle.to_lowercase())
+}
+
+fn skill_filter_fetch_limit(limit: usize) -> usize {
+    limit.max(100).saturating_mul(4).min(1000)
+}
+
+async fn load_learned_skills_for_api(state: &AppState, limit: usize) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| skill.origin == SkillOrigin::Learned)
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn load_user_authored_skills_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| skill.origin == SkillOrigin::Manual)
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn load_local_memory_skills_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<Skill>, String> {
+    state
+        .mem
+        .list_skills(&state.agent_id, skill_filter_fetch_limit(limit))
+        .await
+        .map_err(|error| format!("failed to list skills: {error}"))
+        .map(|skills| {
+            skills
+                .into_iter()
+                .filter(|skill| matches!(skill.origin, SkillOrigin::Manual | SkillOrigin::Learned))
+                .take(limit)
+                .collect()
+        })
+}
+
+async fn resolve_learned_skill_for_api(state: &AppState, skill_ref: &str) -> Result<Skill, String> {
+    let needle = skill_ref.trim();
+    if needle.is_empty() {
+        return Err("skill id/name must not be empty".into());
+    }
+
+    let skills = load_local_memory_skills_for_api(state, 512).await?;
+    skills
+        .into_iter()
+        .find(|skill| skill_matches_ref(skill, needle))
+        .ok_or_else(|| {
+            format!(
+                "learned skill not found for agent {}: {needle}",
+                state.agent_id
+            )
+        })
+}
+
+async fn update_learned_skill_status_for_api(
+    state: &AppState,
+    skill_ref: &str,
+    target_status: SkillStatus,
+) -> Result<serde_json::Value, String> {
+    let skill = resolve_learned_skill_for_api(state, skill_ref).await?;
+    let previous_status = skill.status.clone();
+    let outcome = crate::skills::update_user_skill(
+        state.mem.as_ref(),
+        &state.agent_id,
+        crate::skills::UserSkillUpdateRequest {
+            skill_ref: skill.id.clone(),
+            description: None,
+            body: None,
+            task_family: None,
+            tool_pattern: None,
+            tags: None,
+            status: Some(target_status.clone()),
+        },
+    )
+    .await
+    .map_err(|error| format!("failed to update skill status: {error}"))?;
+
+    Ok(serde_json::json!({
+        "agent_id": state.agent_id,
+        "skill_id": skill.id,
+        "skill_name": skill.name,
+        "previous_status": previous_status.to_string(),
+        "target_status": target_status.to_string(),
+        "previous_version": outcome.previous_version,
+        "new_version": outcome.new_version,
+        "apply_record_id": outcome.apply_record_id,
+        "rollback_skill_id": outcome.rollback_skill_id,
+    }))
+}
+
+async fn build_skill_review_decisions_for_api(
+    state: &AppState,
+    limit: usize,
+) -> Result<
+    Vec<synapse_domain::application::services::skill_review_service::SkillReviewDecision>,
+    String,
+> {
+    let maintenance_config =
+        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
+    let recent_cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(maintenance_config.activity_window.as_secs() as i64);
+    let learned_skills = state
+        .mem
+        .list_recent_skills(&state.agent_id, limit, recent_cutoff)
+        .await
+        .map_err(|error| format!("failed to list recent skills: {error}"))?;
+    let now_secs = chrono::Utc::now().timestamp().max(0) as u64;
+    let mut recent_run_recipes = state.run_recipe_store.list_recent(
+        &state.agent_id,
+        now_secs.saturating_sub(maintenance_config.activity_window.as_secs()),
+    );
+    recent_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let failure_clusters = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
+        state.mem.as_ref(),
+        &state.agent_id,
+        synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+        limit,
+        6,
+        0.96,
+        Some(recent_cutoff),
+    )
+    .await
+    .unwrap_or_default();
+
+    Ok(synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
+        &learned_skills,
+        &recent_run_recipes,
+        &failure_clusters,
+    ))
+}
+
+/// GET /api/skills/learned — list learned/runtime-generated skills owned by this agent.
+pub async fn handle_api_skills_learned(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match load_learned_skills_for_api(&state, limit).await {
+        Ok(skills) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skills": skills.iter().map(learned_skill_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/authored — list memory-backed user-authored skills owned by this agent.
+pub async fn handle_api_skills_authored(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match load_user_authored_skills_for_api(&state, limit).await {
+        Ok(skills) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skills": skills.iter().map(learned_skill_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/create — create a memory-backed user-authored skill.
+pub async fn handle_api_skills_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillCreateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let status = match body
+        .status
+        .as_deref()
+        .unwrap_or("active")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "active" => SkillStatus::Active,
+        "candidate" => SkillStatus::Candidate,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid skill status; expected active or candidate"
+                })),
+            )
+                .into_response();
+        }
+    };
+    let request = crate::skills::UserAuthoredSkillCreateRequest {
+        name: body.name,
+        description: body.description,
+        body: body.body,
+        task_family: body.task_family,
+        tool_pattern: body.tool_pattern,
+        tags: body.tags,
+        status,
+    };
+
+    match crate::skills::create_user_authored_skill(state.mem.as_ref(), &state.agent_id, request)
+        .await
+    {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_authored_skill_create_outcome_text(&outcome);
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "status": outcome.status.to_string(),
+                "origin": outcome.origin.to_string(),
+                "version": outcome.version,
+                "output": output,
+                "skill": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/export — export a memory-backed skill as a workspace SKILL.md package.
+pub async fn handle_api_skills_export(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillExportBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let request = crate::skills::UserSkillPackageExportRequest {
+        skill_ref: body.skill,
+        destination: None,
+        package_name: body.package_name,
+        overwrite: body.overwrite,
+    };
+
+    match crate::skills::export_user_skill_package(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &config.workspace_dir,
+        request,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_skill_package_export_outcome_text(&outcome);
+            let package_dir = outcome.package_dir.display().to_string();
+            let skill_file = outcome.skill_file.display().to_string();
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "origin": outcome.origin.to_string(),
+                "status": outcome.status.to_string(),
+                "version": outcome.version,
+                "package_dir": package_dir,
+                "skill_file": skill_file,
+                "diff_summary": outcome.diff_summary.clone(),
+                "output": output,
+                "export": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/update — update a memory-backed manual/learned skill.
+pub async fn handle_api_skills_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<UserSkillUpdateBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let status = match body.status.as_deref() {
+        Some(raw) => match parse_skill_status_strict(raw) {
+            Some(status) => Some(status),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid skill status; expected active, candidate, or deprecated"
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let request = crate::skills::UserSkillUpdateRequest {
+        skill_ref: body.skill,
+        description: body.description,
+        body: body.body,
+        task_family: body.task_family,
+        tool_pattern: body.tool_pattern,
+        tags: body.tags,
+        status,
+    };
+
+    match crate::skills::update_user_skill(state.mem.as_ref(), &state.agent_id, request).await {
+        Ok(outcome) => {
+            let output = crate::skills::format_user_skill_update_outcome_text(&outcome);
+            Json(serde_json::json!({
+                "agent_id": outcome.agent_id,
+                "skill_id": outcome.skill_id,
+                "skill_name": outcome.skill_name,
+                "origin": outcome.origin.to_string(),
+                "previous_version": outcome.previous_version,
+                "new_version": outcome.new_version,
+                "previous_status": outcome.previous_status.to_string(),
+                "new_status": outcome.new_status.to_string(),
+                "rollback_skill_id": outcome.rollback_skill_id,
+                "apply_record_id": outcome.apply_record_id,
+                "output": output,
+                "update": outcome,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/candidates — list learned skill candidates owned by this agent.
+pub async fn handle_api_skills_candidates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let skills = match load_learned_skills_for_api(&state, limit).await {
+        Ok(skills) => skills,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+    let patch_candidates = match load_skill_patch_candidates_for_api(&state, limit).await {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "skills": skills
+            .iter()
+            .filter(|skill| skill.status == SkillStatus::Candidate)
+            .map(learned_skill_json)
+            .collect::<Vec<_>>(),
+        "patch_candidates": patch_candidates
+            .iter()
+            .map(skill_patch_candidate_json)
+            .collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// GET /api/skills/traces — list compact skill use traces owned by this agent.
+pub async fn handle_api_skills_traces(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(25).clamp(1, 500);
+    match load_skill_use_traces_for_api(&state, limit).await {
+        Ok(traces) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "traces": traces.iter().map(skill_use_trace_json).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/health — read-only skill catalog health and cleanup guidance.
+pub async fn handle_api_skills_health(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillHealthQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let trace_limit = query.trace_limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::skill_health_report_for_agent(
+        state.mem.as_ref(),
+        &state.agent_id,
+        limit,
+        trace_limit,
+    )
+    .await
+    {
+        Ok(report) => {
+            let cleanup_decisions =
+                synapse_domain::application::services::skill_health_service::skill_health_cleanup_decisions(&report);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "report": report,
+                "cleanup_decisions": cleanup_decisions,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/health/apply — apply eligible learned-skill cleanup status changes.
+pub async fn handle_api_skills_health_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillHealthApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let trace_limit = body.trace_limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::format_skill_health_cleanup_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        limit,
+        trace_limit,
+        true,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "applied": true,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/diff — compact diff/review view for a patch candidate.
+pub async fn handle_api_skills_candidate_diff(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateDiffBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::format_skill_patch_candidate_diff_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        limit,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "candidate": body.candidate,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/test — run replay/eval checks for a patch candidate.
+pub async fn handle_api_skills_candidate_test(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateTestBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::replay::run_and_store_skill_patch_replay(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        state.runtime_tools_registry.as_ref(),
+        limit,
+    )
+    .await
+    {
+        Ok(report) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "report": report,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/candidates/apply — apply a tested patch candidate to its target skill.
+pub async fn handle_api_skills_candidate_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchCandidateApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::apply_skill_patch_candidate(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.candidate,
+        limit,
+    )
+    .await
+    {
+        Ok(outcome) => Json(serde_json::json!({
+            "agent_id": outcome.agent_id,
+            "candidate_id": outcome.candidate_id,
+            "target_skill_id": outcome.target_skill_id,
+            "skill_name": outcome.skill_name,
+            "previous_version": outcome.previous_version,
+            "new_version": outcome.new_version,
+            "rollback_skill_id": outcome.rollback_skill_id,
+            "apply_report": outcome.apply_report,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/versions — show applied patch/rollback records.
+pub async fn handle_api_skills_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillVersionsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    match crate::skills::format_skill_patch_versions_output(
+        state.mem.as_ref(),
+        &state.agent_id,
+        query.skill.as_deref(),
+        limit,
+    )
+    .await
+    {
+        Ok(output) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "skill": query.skill,
+            "output": output,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/rollback — roll back an applied patch using its saved snapshot.
+pub async fn handle_api_skills_rollback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillPatchRollbackBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    match crate::skills::rollback_skill_patch(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &body.rollback,
+        limit,
+    )
+    .await
+    {
+        Ok(outcome) => Json(serde_json::json!({
+            "agent_id": outcome.agent_id,
+            "rollback_ref": outcome.rollback_ref,
+            "apply_record_id": outcome.apply_record_id,
+            "candidate_id": outcome.candidate_id,
+            "target_skill_id": outcome.target_skill_id,
+            "skill_name": outcome.skill_name,
+            "from_version": outcome.from_version,
+            "restored_from_version": outcome.restored_from_version,
+            "new_version": outcome.new_version,
+            "rollback_skill_id": outcome.rollback_skill_id,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/autopromote — evaluate generated patch auto-promotion policy, dry-run.
+pub async fn handle_api_skills_autopromote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let config = state.config.lock().clone();
+    let policy =
+        crate::skills::skill_auto_promotion_policy_from_config(&config.skills.auto_promotion);
+    match crate::skills::run_skill_patch_auto_promotion(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &policy,
+        limit,
+        false,
+    )
+    .await
+    {
+        Ok(run) => {
+            let output = crate::skills::format_skill_auto_promotion_run_text(&run);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "applied": false,
+                "output": output,
+                "run": run,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/autopromote/apply — apply eligible generated patches if policy is enabled.
+pub async fn handle_api_skills_autopromote_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillAutoPromotionApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let config = state.config.lock().clone();
+    let policy =
+        crate::skills::skill_auto_promotion_policy_from_config(&config.skills.auto_promotion);
+    match crate::skills::run_skill_patch_auto_promotion(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &policy,
+        limit,
+        true,
+    )
+    .await
+    {
+        Ok(run) => {
+            let output = crate::skills::format_skill_auto_promotion_run_text(&run);
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "applied": true,
+                "output": output,
+                "run": run,
+            }))
+            .into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/skills/review — deterministic learned skill review, dry-run.
+pub async fn handle_api_skills_review(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillListQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    match build_skill_review_decisions_for_api(&state, limit).await {
+        Ok(decisions) => Json(serde_json::json!({
+            "agent_id": state.agent_id,
+            "applied": false,
+            "decisions": decisions,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/review/apply — apply deterministic learned skill review decisions.
+pub async fn handle_api_skills_review_apply(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillReviewApplyBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = body.limit.unwrap_or(100).clamp(1, 500);
+    let decisions = match build_skill_review_decisions_for_api(&state, limit).await {
+        Ok(decisions) => decisions,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error})),
+            )
+                .into_response();
+        }
+    };
+
+    let applied = match crate::skills::apply_skill_review_decisions(
+        state.mem.as_ref(),
+        &state.agent_id,
+        &decisions,
+    )
+    .await
+    {
+        Ok(applied) => applied,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "applied": true,
+        "applied_decisions": applied,
+        "decision_count": decisions.len(),
+    }))
+    .into_response()
+}
+
+/// POST /api/skills/status — set a learned skill status using body { skill, status }.
+pub async fn handle_api_skills_status_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillStatusBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let Some(status) = parse_skill_status_strict(&body.status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid skill status; expected active, candidate, or deprecated"
+            })),
+        )
+            .into_response();
+    };
+
+    match update_learned_skill_status_for_api(&state, &body.skill, status).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_skill_ref_body_status(
+    state: AppState,
+    headers: HeaderMap,
+    body: SkillRefBody,
+    target_status: SkillStatus,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match update_learned_skill_status_for_api(&state, &body.skill, target_status).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/skills/promote — mark a learned skill active.
+pub async fn handle_api_skills_promote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Active).await
+}
+
+/// POST /api/skills/demote — mark a learned skill candidate.
+pub async fn handle_api_skills_demote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Candidate).await
+}
+
+/// POST /api/skills/reject — mark a learned skill deprecated.
+pub async fn handle_api_skills_reject(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<SkillRefBody>,
+) -> impl IntoResponse {
+    update_skill_ref_body_status(state, headers, body, SkillStatus::Deprecated).await
+}
+
 fn skill_review_action_name(
     action: &synapse_domain::application::services::skill_review_service::SkillReviewAction,
 ) -> &'static str {
@@ -2536,54 +4922,53 @@ pub async fn handle_api_channel_capabilities(
         }
     };
 
-    let channels = [
-        "telegram",
-        "discord",
-        "slack",
-        "matrix",
-        "signal",
-        "email",
-        "mattermost",
-        "webhook",
-    ];
     let mut result = serde_json::Map::new();
-    for name in &channels {
-        let caps = registry.capabilities(name);
-        if !caps.is_empty() {
-            let cap_names: Vec<&str> = caps
-                .iter()
-                .map(|c| match c {
-                    synapse_domain::domain::channel::ChannelCapability::SendText => "SendText",
-                    synapse_domain::domain::channel::ChannelCapability::ReceiveText => {
-                        "ReceiveText"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::Threads => "Threads",
-                    synapse_domain::domain::channel::ChannelCapability::Reactions => "Reactions",
-                    synapse_domain::domain::channel::ChannelCapability::Typing => "Typing",
-                    synapse_domain::domain::channel::ChannelCapability::Attachments => {
-                        "Attachments"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::RichFormatting => {
-                        "RichFormatting"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::EditMessage => {
-                        "EditMessage"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::RuntimeCommands => {
-                        "RuntimeCommands"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::InterruptOnNewMessage => {
-                        "InterruptOnNewMessage"
-                    }
-                    synapse_domain::domain::channel::ChannelCapability::ToolContextDisplay => {
-                        "ToolContextDisplay"
-                    }
-                })
-                .collect();
-            result.insert((*name).to_string(), serde_json::json!(cap_names));
-        }
+    for profile in registry.capability_profiles() {
+        result.insert(
+            profile.channel,
+            serde_json::json!({
+                "available": profile.capabilities.iter().map(channel_capability_name).collect::<Vec<_>>(),
+                "planned": profile.planned_capabilities.iter().map(channel_capability_name).collect::<Vec<_>>(),
+            }),
+        );
     }
     Json(serde_json::Value::Object(result)).into_response()
+}
+
+fn channel_capability_name(
+    capability: &synapse_domain::domain::channel::ChannelCapability,
+) -> &'static str {
+    match capability {
+        synapse_domain::domain::channel::ChannelCapability::SendText => "SendText",
+        synapse_domain::domain::channel::ChannelCapability::ReceiveText => "ReceiveText",
+        synapse_domain::domain::channel::ChannelCapability::Threads => "Threads",
+        synapse_domain::domain::channel::ChannelCapability::Reactions => "Reactions",
+        synapse_domain::domain::channel::ChannelCapability::Typing => "Typing",
+        synapse_domain::domain::channel::ChannelCapability::Attachments => "Attachments",
+        synapse_domain::domain::channel::ChannelCapability::RichFormatting => "RichFormatting",
+        synapse_domain::domain::channel::ChannelCapability::EditMessage => "EditMessage",
+        synapse_domain::domain::channel::ChannelCapability::RuntimeCommands => "RuntimeCommands",
+        synapse_domain::domain::channel::ChannelCapability::InterruptOnNewMessage => {
+            "InterruptOnNewMessage"
+        }
+        synapse_domain::domain::channel::ChannelCapability::ToolContextDisplay => {
+            "ToolContextDisplay"
+        }
+        synapse_domain::domain::channel::ChannelCapability::AudioAttachments => "AudioAttachments",
+        synapse_domain::domain::channel::ChannelCapability::NativeVoiceNotes => "NativeVoiceNotes",
+        synapse_domain::domain::channel::ChannelCapability::OggOpusVoiceNotes => {
+            "OggOpusVoiceNotes"
+        }
+        synapse_domain::domain::channel::ChannelCapability::NativeVoiceMetadata => {
+            "NativeVoiceMetadata"
+        }
+        synapse_domain::domain::channel::ChannelCapability::RealtimeAudioCall => {
+            "RealtimeAudioCall"
+        }
+        synapse_domain::domain::channel::ChannelCapability::RealtimeVideoCall => {
+            "RealtimeVideoCall"
+        }
+    }
 }
 
 /// POST /api/channels/deliver — deliver a message to a channel via OutboundIntent.
@@ -3455,7 +5840,7 @@ pub async fn handle_api_agent_chat_media_upload_proxy(
                         StatusCode::BAD_REQUEST,
                         format!("Invalid media upload text field: {error}"),
                     )
-                    .into_response()
+                        .into_response()
                 }
             };
             form = form.text(field_name, text);
@@ -3561,23 +5946,6 @@ fn route_alias_provider_model_matches(
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
-fn embedding_route_identity_matches(
-    incoming: &synapse_domain::config::schema::EmbeddingRouteConfig,
-    current: &synapse_domain::config::schema::EmbeddingRouteConfig,
-) -> bool {
-    normalize_route_field(&incoming.hint) == normalize_route_field(&current.hint)
-        && normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
-        && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
-}
-
-fn embedding_route_provider_model_matches(
-    incoming: &synapse_domain::config::schema::EmbeddingRouteConfig,
-    current: &synapse_domain::config::schema::EmbeddingRouteConfig,
-) -> bool {
-    normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
-        && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
-}
-
 fn restore_route_alias_api_keys(
     incoming: &mut [synapse_domain::config::schema::ModelRouteConfig],
     current: &[synapse_domain::config::schema::ModelRouteConfig],
@@ -3621,50 +5989,6 @@ fn restore_route_alias_api_keys(
     }
 }
 
-fn restore_embedding_route_api_keys(
-    incoming: &mut [synapse_domain::config::schema::EmbeddingRouteConfig],
-    current: &[synapse_domain::config::schema::EmbeddingRouteConfig],
-) {
-    let mut used_current = vec![false; current.len()];
-    for incoming_route in incoming {
-        if !incoming_route
-            .api_key
-            .as_deref()
-            .is_some_and(is_masked_secret)
-        {
-            continue;
-        }
-
-        let exact_match_idx = current
-            .iter()
-            .enumerate()
-            .find(|(idx, current_route)| {
-                !used_current[*idx]
-                    && embedding_route_identity_matches(incoming_route, current_route)
-            })
-            .map(|(idx, _)| idx);
-
-        let match_idx = exact_match_idx.or_else(|| {
-            current
-                .iter()
-                .enumerate()
-                .find(|(idx, current_route)| {
-                    !used_current[*idx]
-                        && embedding_route_provider_model_matches(incoming_route, current_route)
-                })
-                .map(|(idx, _)| idx)
-        });
-
-        if let Some(idx) = match_idx {
-            used_current[idx] = true;
-            incoming_route.api_key = current[idx].api_key.clone();
-        } else {
-            // Never persist UI placeholders to disk when no safe restore target exists.
-            incoming_route.api_key = None;
-        }
-    }
-}
-
 fn mask_sensitive_fields(
     config: &synapse_domain::config::schema::Config,
 ) -> synapse_domain::config::schema::Config {
@@ -3689,9 +6013,6 @@ fn mask_sensitive_fields(
     }
     mask_optional_secret(&mut masked.agents_ipc.broker_token);
     for route in &mut masked.route_aliases {
-        mask_optional_secret(&mut route.api_key);
-    }
-    for route in &mut masked.embedding_routes {
         mask_optional_secret(&mut route.api_key);
     }
 
@@ -3814,7 +6135,6 @@ fn restore_masked_sensitive_fields(
         }
     }
     restore_route_alias_api_keys(&mut incoming.route_aliases, &current.route_aliases);
-    restore_embedding_route_api_keys(&mut incoming.embedding_routes, &current.embedding_routes);
 
     if let (Some(incoming_ch), Some(current_ch)) = (
         incoming.channels_config.telegram.as_mut(),
@@ -4012,16 +6332,6 @@ mod tests {
             capability: None,
             profile: Default::default(),
         }];
-        cfg.embedding_routes = vec![synapse_domain::config::schema::EmbeddingRouteConfig {
-            hint: "semantic".to_string(),
-            provider: "openai".to_string(),
-            model: "text-embedding-3-small".to_string(),
-            dimensions: Some(1536),
-            api_key: Some("route-embed-key".to_string()),
-            capability: None,
-            profile: Default::default(),
-        }];
-
         let masked = mask_sensitive_fields(&cfg);
         let toml = toml::to_string_pretty(&masked).expect("masked config should serialize");
         let parsed: synapse_domain::config::schema::Config =
@@ -4075,13 +6385,6 @@ mod tests {
         assert_eq!(
             parsed
                 .route_aliases
-                .first()
-                .and_then(|v| v.api_key.as_deref()),
-            Some(MASKED_SECRET)
-        );
-        assert_eq!(
-            parsed
-                .embedding_routes
                 .first()
                 .and_then(|v| v.api_key.as_deref()),
             Some(MASKED_SECRET)
@@ -4158,27 +6461,6 @@ mod tests {
                 profile: Default::default(),
             },
         ];
-        current.embedding_routes = vec![
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "semantic".to_string(),
-                provider: "openai".to_string(),
-                model: "text-embedding-3-small".to_string(),
-                dimensions: Some(1536),
-                api_key: Some("route-embed-key-1".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "archive".to_string(),
-                provider: "custom:https://emb.example.com/v1".to_string(),
-                model: "bge-m3".to_string(),
-                dimensions: Some(1024),
-                api_key: Some("route-embed-key-2".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-        ];
-
         let mut incoming = mask_sensitive_fields(&current);
         incoming.default_model = Some("gpt-4.1-mini".to_string());
         // Simulate UI changing only one key and keeping the first masked.
@@ -4202,7 +6484,6 @@ mod tests {
             email.password = MASKED_SECRET.to_string();
         }
         incoming.route_aliases[1].api_key = Some("route-model-key-2-new".to_string());
-        incoming.embedding_routes[1].api_key = Some("route-embed-key-2-new".to_string());
 
         let hydrated = hydrate_config_for_save(incoming, &current);
 
@@ -4275,14 +6556,6 @@ mod tests {
             Some("route-model-key-2-new")
         );
         assert_eq!(
-            hydrated.embedding_routes[0].api_key.as_deref(),
-            Some("route-embed-key-1")
-        );
-        assert_eq!(
-            hydrated.embedding_routes[1].api_key.as_deref(),
-            Some("route-embed-key-2-new")
-        );
-        assert_eq!(
             hydrated
                 .channels_config
                 .email
@@ -4313,30 +6586,8 @@ mod tests {
                 profile: Default::default(),
             },
         ];
-        current.embedding_routes = vec![
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "semantic".to_string(),
-                provider: "openai".to_string(),
-                model: "text-embedding-3-small".to_string(),
-                dimensions: Some(1536),
-                api_key: Some("route-embed-key-1".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-            synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "archive".to_string(),
-                provider: "custom:https://emb.example.com/v1".to_string(),
-                model: "bge-m3".to_string(),
-                dimensions: Some(1024),
-                api_key: Some("route-embed-key-2".to_string()),
-                capability: None,
-                profile: Default::default(),
-            },
-        ];
-
         let mut incoming = mask_sensitive_fields(&current);
         incoming.route_aliases.swap(0, 1);
-        incoming.embedding_routes.swap(0, 1);
         incoming
             .route_aliases
             .push(synapse_domain::config::schema::ModelRouteConfig {
@@ -4347,18 +6598,6 @@ mod tests {
                 capability: None,
                 profile: Default::default(),
             });
-        incoming
-            .embedding_routes
-            .push(synapse_domain::config::schema::EmbeddingRouteConfig {
-                hint: "new-embed".to_string(),
-                provider: "custom:https://emb2.example.com/v1".to_string(),
-                model: "bge-small".to_string(),
-                dimensions: Some(768),
-                api_key: Some(MASKED_SECRET.to_string()),
-                capability: None,
-                profile: Default::default(),
-            });
-
         let hydrated = hydrate_config_for_save(incoming, &current);
 
         assert_eq!(
@@ -4370,21 +6609,8 @@ mod tests {
             Some("route-model-key-1")
         );
         assert_eq!(hydrated.route_aliases[2].api_key, None);
-        assert_eq!(
-            hydrated.embedding_routes[0].api_key.as_deref(),
-            Some("route-embed-key-2")
-        );
-        assert_eq!(
-            hydrated.embedding_routes[1].api_key.as_deref(),
-            Some("route-embed-key-1")
-        );
-        assert_eq!(hydrated.embedding_routes[2].api_key, None);
         assert!(hydrated
             .route_aliases
-            .iter()
-            .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
-        assert!(hydrated
-            .embedding_routes
             .iter()
             .all(|route| route.api_key.as_deref() != Some(MASKED_SECRET)));
     }

@@ -1,4 +1,5 @@
 use crate::agent::dispatcher::ToolDispatcher;
+use sha2::{Digest, Sha256};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::provider_context_budget::{
@@ -14,6 +15,7 @@ const COMPACT_TOOL_RESULT_MAX_CHARS: usize = 320;
 const PROVIDER_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
 const PROVIDER_TOOL_CALL_ARGS_MAX_CHARS: usize = 900;
 const PROVIDER_TOOL_RESULT_MAX_CHARS: usize = 1_200;
+const PROVIDER_SKILL_READ_RESULT_MAX_CHARS: usize = 9_000;
 const PROVIDER_CONTEXT_RELEVANT_TAIL_MIN_MESSAGES: usize = 2;
 const PROVIDER_CONTEXT_PROTECT_FIRST_CHAT_MESSAGES: usize = 2;
 const PROVIDER_CONTEXT_QUERY_MIN_TERM_CHARS: usize = 4;
@@ -704,10 +706,7 @@ fn sanitize_message_for_provider(message: &ConversationMessage) -> ConversationM
                 .iter()
                 .map(|result| ToolResultMessage {
                     tool_call_id: result.tool_call_id.clone(),
-                    content: truncate_with_head_tail(
-                        &result.content,
-                        PROVIDER_TOOL_RESULT_MAX_CHARS,
-                    ),
+                    content: sanitize_tool_result_content(&result.content),
                 })
                 .collect(),
         ),
@@ -752,7 +751,7 @@ fn summarize_completed_turn_work(messages: &[ConversationMessage]) -> Option<Str
                     lines.push(format!(
                         "- tool_result {}: {}",
                         result.tool_call_id,
-                        truncate_chars(result.content.trim(), COMPACT_TOOL_RESULT_MAX_CHARS)
+                        compact_completed_tool_result_content(&result.content)
                     ));
                     has_content = true;
                 }
@@ -762,6 +761,71 @@ fn summarize_completed_turn_work(messages: &[ConversationMessage]) -> Option<Str
     }
 
     has_content.then(|| format!("{}\n", lines.join("\n")))
+}
+
+fn sanitize_tool_result_content(content: &str) -> String {
+    if is_activated_skill_result(content) {
+        return truncate_with_head_tail(content, PROVIDER_SKILL_READ_RESULT_MAX_CHARS);
+    }
+    truncate_with_head_tail(content, PROVIDER_TOOL_RESULT_MAX_CHARS)
+}
+
+fn compact_completed_tool_result_content(content: &str) -> String {
+    if let Some(receipt) = activated_skill_receipt(content) {
+        receipt
+    } else {
+        truncate_chars(content.trim(), COMPACT_TOOL_RESULT_MAX_CHARS)
+    }
+}
+
+fn is_activated_skill_result(content: &str) -> bool {
+    content.trim_start().starts_with("<activated_skill")
+}
+
+fn activated_skill_receipt(content: &str) -> Option<String> {
+    if !is_activated_skill_result(content) {
+        return None;
+    }
+    let id = xmlish_attr(content, "id").unwrap_or_else(|| "unknown".to_string());
+    let name = xmlish_attr(content, "name").unwrap_or_else(|| "unknown".to_string());
+    let source = xmlish_attr(content, "source").unwrap_or_else(|| "unknown".to_string());
+    let reason = xmlish_attr(content, "reason").unwrap_or_else(|| "unknown".to_string());
+    let already_loaded =
+        xmlish_attr(content, "already_loaded").unwrap_or_else(|| "false".to_string());
+    let body_hash = activated_skill_body_hash(content);
+    Some(format!(
+        "<activated_skill_receipt id=\"{}\" name=\"{}\" source=\"{}\" reason=\"{}\" already_loaded=\"{}\" body_sha256=\"{}\" content=\"omitted_after_activation\"/>",
+        xml_escape_attr(&id),
+        xml_escape_attr(&name),
+        xml_escape_attr(&source),
+        xml_escape_attr(&reason),
+        xml_escape_attr(&already_loaded),
+        body_hash,
+    ))
+}
+
+fn activated_skill_body_hash(content: &str) -> String {
+    let body = content
+        .split_once("<instructions>")
+        .and_then(|(_, rest)| rest.split_once("</instructions>").map(|(body, _)| body))
+        .unwrap_or(content);
+    let digest = Sha256::digest(body.as_bytes());
+    hex::encode(digest)
+}
+
+fn xmlish_attr(content: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let (_, rest) = content.split_once(&needle)?;
+    let (value, _) = rest.split_once('"')?;
+    Some(value.to_string())
+}
+
+fn xml_escape_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn summarize_tool_call(call: &ToolCall) -> String {
@@ -946,6 +1010,56 @@ mod tests {
             }
             _ => panic!("expected raw tool results"),
         }
+    }
+
+    #[test]
+    fn completed_skill_read_cycle_keeps_receipt_not_body() {
+        let skill_body = "<activated_skill\n  id=\"skill-a\"\n  name=\"Release Audit\"\n  source=\"learned\"\n  reason=\"explicit\"\n  already_loaded=\"false\"\n  truncated=\"false\"\n>\n  <instructions>SECRET FULL SKILL BODY SHOULD NOT STAY IN OLD CONTEXT</instructions>\n</activated_skill>";
+        let history = vec![
+            ConversationMessage::Chat(ChatMessage::system("bootstrap")),
+            ConversationMessage::Chat(ChatMessage::user("use skill then continue")),
+            tool_call("call-1", "skill_read"),
+            tool_result("call-1", skill_body),
+            tool_call("call-2", "file_read"),
+            tool_result("call-2", "file output"),
+            tool_call("call-3", "glob_search"),
+            tool_result("call-3", "glob output"),
+        ];
+
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
+        let rendered = snapshot
+            .messages
+            .iter()
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("<activated_skill_receipt"));
+        assert!(rendered.contains("id=\"skill-a\""));
+        assert!(rendered.contains("body_sha256="));
+        assert!(!rendered.contains("SECRET FULL SKILL BODY SHOULD NOT STAY"));
+    }
+
+    #[test]
+    fn latest_skill_read_cycle_keeps_body_available() {
+        let skill_body = "<activated_skill\n  id=\"skill-b\"\n  name=\"Live Skill\"\n  source=\"manual\"\n  reason=\"explicit\"\n  already_loaded=\"false\"\n  truncated=\"false\"\n>\n  <instructions>FULL BODY FOR IMMEDIATE NEXT MODEL CALL</instructions>\n</activated_skill>";
+        let history = vec![
+            ConversationMessage::Chat(ChatMessage::system("bootstrap")),
+            ConversationMessage::Chat(ChatMessage::user("use skill now")),
+            tool_call("call-1", "skill_read"),
+            tool_result("call-1", skill_body),
+        ];
+
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
+        let rendered = snapshot
+            .messages
+            .iter()
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("FULL BODY FOR IMMEDIATE NEXT MODEL CALL"));
+        assert!(!rendered.contains("<activated_skill_receipt"));
     }
 
     #[test]

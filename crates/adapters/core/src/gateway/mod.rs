@@ -335,8 +335,6 @@ pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub provider: Arc<dyn Provider>,
     pub model: String,
-    /// Model for session summarization (falls back to `model` if None).
-    pub summary_model: Option<String>,
     pub temperature: f64,
     pub mem: Arc<dyn UnifiedMemoryPort>,
     pub auto_save: bool,
@@ -519,14 +517,6 @@ pub async fn run_gateway(
         .clone()
         .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
         .context("no default provider configured and model catalog has no default preset")?;
-    let provider: Arc<dyn Provider> =
-        Arc::from(synapse_providers::create_resilient_provider_with_options(
-            default_provider.as_str(),
-            config.api_key.as_deref(),
-            config.api_url.as_deref(),
-            &config.reliability,
-            &synapse_providers::provider_runtime_options_from_config(&config),
-        )?);
     let model = config
         .default_model
         .clone()
@@ -537,20 +527,28 @@ pub async fn run_gateway(
         .with_context(|| {
             format!("no default model configured for provider '{default_provider}'")
         })?;
-    let summary_model = config.summary_model.clone();
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
+    let provider: Arc<dyn Provider> =
+        Arc::from(synapse_providers::create_routed_provider_with_options(
+            default_provider.as_str(),
+            config.api_key.as_deref(),
+            config.api_url.as_deref(),
+            &config.reliability,
+            &router_routes,
+            &model,
+            &synapse_providers::provider_runtime_options_from_config(&config),
+        )?);
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
         Some(m) => m,
         None => {
-            synapse_memory::create_memory(
-                &config.memory,
-                &config.workspace_dir,
-                &resolved_agent_id,
-                config.api_key.as_deref(),
-            )
-            .await?
-            .memory
+            synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                .await?
+                .memory
         }
     };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -971,7 +969,7 @@ pub async fn run_gateway(
             agent_runner: Some(agent_runner.clone()),
             cron_db: shared_surreal.clone(),
             conversation_context: Some(shared_conversation_context.clone()),
-                conversation_store: runtime_conversation_store.clone(),
+            conversation_store: runtime_conversation_store.clone(),
             channel_registry: Some(Arc::clone(&channel_registry)),
             standing_order_store: None,
             user_profile_store: Some(Arc::clone(&user_profile_store)),
@@ -995,7 +993,6 @@ pub async fn run_gateway(
         config: config_state,
         provider: Arc::clone(&provider),
         model: model.clone(),
-        summary_model: summary_model.clone(),
         temperature,
         mem: Arc::new(
             crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
@@ -1552,10 +1549,6 @@ pub async fn run_gateway(
             get(api::handle_api_agent_heartbeat_runs_proxy),
         )
         .route(
-            "/api/agents/{agent_id}/summary-model",
-            put(api::handle_api_agent_summary_model_proxy),
-        )
-        .route(
             "/api/agents/{agent_id}/cron",
             get(api::handle_api_agent_cron_list_proxy),
         )
@@ -1584,9 +1577,60 @@ pub async fn run_gateway(
             post(api::handle_api_agent_chat_media_upload_proxy),
         )
         .route("/api/status", get(api::handle_api_status))
+        .route("/api/voice/status", get(api::handle_api_voice_status))
+        .route("/api/voice/doctor", get(api::handle_api_voice_doctor))
+        .route(
+            "/api/voice/mode",
+            get(api::handle_api_voice_mode_get)
+                .post(api::handle_api_voice_mode_post)
+                .delete(api::handle_api_voice_mode_delete),
+        )
+        .route("/api/voice/profiles", get(api::handle_api_voice_profiles))
+        .route("/api/voice/voices", get(api::handle_api_voice_voices))
+        .route(
+            "/api/voice/calls/status",
+            get(api::handle_api_voice_call_status),
+        )
+        .route(
+            "/api/voice/calls/sessions",
+            get(api::handle_api_voice_call_sessions),
+        )
+        .route(
+            "/api/voice/calls/sessions/{call_control_id}",
+            get(api::handle_api_voice_call_session_get),
+        )
+        .route(
+            "/api/voice/synthesize",
+            post(api::handle_api_voice_synthesize),
+        )
+        .route(
+            "/api/voice/transcribe",
+            post(api::handle_api_voice_transcribe),
+        )
+        .route(
+            "/api/voice/preferences",
+            get(api::handle_api_voice_preferences_get)
+                .post(api::handle_api_voice_preferences_post)
+                .delete(api::handle_api_voice_preferences_delete),
+        )
+        .route(
+            "/api/voice/calls/start",
+            post(api::handle_api_voice_call_start),
+        )
+        .route(
+            "/api/voice/calls/speak",
+            post(api::handle_api_voice_call_speak),
+        )
+        .route(
+            "/api/voice/calls/answer",
+            post(api::handle_api_voice_call_answer),
+        )
+        .route(
+            "/api/voice/calls/hangup",
+            post(api::handle_api_voice_call_hangup),
+        )
         .route("/api/heartbeat", get(api::handle_api_heartbeat))
         .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))
-        .route("/api/summary-model", put(api::handle_api_summary_model_put))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
         .route("/api/activity", get(api::handle_api_activity))
@@ -1658,6 +1702,58 @@ pub async fn run_gateway(
             "/api/memory/evals/learning",
             get(api::handle_api_memory_learning_evals),
         )
+        .route("/api/skills/learned", get(api::handle_api_skills_learned))
+        .route("/api/skills/authored", get(api::handle_api_skills_authored))
+        .route("/api/skills/create", post(api::handle_api_skills_create))
+        .route("/api/skills/update", post(api::handle_api_skills_update))
+        .route("/api/skills/export", post(api::handle_api_skills_export))
+        .route(
+            "/api/skills/candidates",
+            get(api::handle_api_skills_candidates),
+        )
+        .route("/api/skills/traces", get(api::handle_api_skills_traces))
+        .route("/api/skills/health", get(api::handle_api_skills_health))
+        .route(
+            "/api/skills/health/apply",
+            post(api::handle_api_skills_health_apply),
+        )
+        .route(
+            "/api/skills/candidates/diff",
+            post(api::handle_api_skills_candidate_diff),
+        )
+        .route(
+            "/api/skills/candidates/test",
+            post(api::handle_api_skills_candidate_test),
+        )
+        .route(
+            "/api/skills/candidates/apply",
+            post(api::handle_api_skills_candidate_apply),
+        )
+        .route("/api/skills/versions", get(api::handle_api_skills_versions))
+        .route(
+            "/api/skills/rollback",
+            post(api::handle_api_skills_rollback),
+        )
+        .route(
+            "/api/skills/autopromote",
+            get(api::handle_api_skills_autopromote),
+        )
+        .route(
+            "/api/skills/autopromote/apply",
+            post(api::handle_api_skills_autopromote_apply),
+        )
+        .route("/api/skills/review", get(api::handle_api_skills_review))
+        .route(
+            "/api/skills/review/apply",
+            post(api::handle_api_skills_review_apply),
+        )
+        .route(
+            "/api/skills/status",
+            post(api::handle_api_skills_status_update),
+        )
+        .route("/api/skills/promote", post(api::handle_api_skills_promote))
+        .route("/api/skills/demote", post(api::handle_api_skills_demote))
+        .route("/api/skills/reject", post(api::handle_api_skills_reject))
         .route(
             "/api/user-profiles",
             get(api::handle_api_user_profiles_list),

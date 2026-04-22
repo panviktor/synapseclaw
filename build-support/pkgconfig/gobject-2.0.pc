@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=/usr/lib/x86_64-linux-gnu
+includedir=/usr/include
+
+Name: gobject-2.0
+Description: Minimal gobject runtime metadata for LiveKit/WebRTC linking
+Version: 2.80.0
+Requires: glib-2.0
+Libs: ${libdir}/libgobject-2.0.so.0
+Cflags:

@@ -8,6 +8,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolArgumentTransform, ToolContract};
 
 /// Web fetch tool: fetches a web page and converts HTML to plain text for LLM consumption.
 ///
@@ -103,6 +104,7 @@ impl Tool for WebFetchTool {
             "properties": {
                 "url": {
                     "type": "string",
+                    "format": "uri",
                     "description": "The HTTP or HTTPS URL to fetch"
                 }
             },
@@ -112,6 +114,12 @@ impl Tool for WebFetchTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role())
+            .with_arguments(vec![ToolArgumentPolicy::replayable("url")
+                .with_transform(ToolArgumentTransform::UrlOriginPath)])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -588,6 +596,14 @@ mod tests {
         let tool = test_tool(vec!["example.com"]);
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["url"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert_eq!(contract.arguments.len(), 1);
+        assert_eq!(contract.arguments[0].name, "url");
+        assert_eq!(
+            contract.arguments[0].transform,
+            Some(ToolArgumentTransform::UrlOriginPath)
+        );
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v.as_str() == Some("url")));
     }

@@ -10,6 +10,7 @@ pub use synapse_domain::ports::tool::{Tool, ToolResult, ToolSpec};
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
 
     struct DummyTool;
 
@@ -30,6 +31,10 @@ mod tests {
                     "value": { "type": "string" }
                 }
             })
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
         }
 
         async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

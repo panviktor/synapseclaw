@@ -174,11 +174,14 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         }
     }
 
-    if matches!(pressure_state, ContextPressureState::Critical) {
+    let recoverable_overflow = matches!(pressure_state, ContextPressureState::OverflowRisk)
+        && condensation_plan.is_some_and(in_turn_compaction_can_recover);
+    if matches!(pressure_state, ContextPressureState::Critical) || recoverable_overflow {
         requires_compaction = true;
     }
 
     let action = if (matches!(pressure_state, ContextPressureState::OverflowRisk)
+        && !requires_compaction
         || required_lane_unsatisfied
         || tool_support_unsatisfied)
         && route_override.is_none()
@@ -213,6 +216,13 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         condensation_plan,
         requires_compaction,
     }
+}
+
+fn in_turn_compaction_can_recover(plan: ProviderContextCondensationPlan) -> bool {
+    matches!(
+        plan.mode,
+        ProviderContextCondensationMode::Summarize | ProviderContextCondensationMode::Trim
+    )
 }
 
 fn derive_recommended_action(
@@ -395,8 +405,14 @@ fn current_candidate_supports_lane(
     provider_capabilities: &ProviderCapabilities,
 ) -> bool {
     match lane {
-        CapabilityLane::Reasoning | CapabilityLane::CheapReasoning => true,
+        CapabilityLane::Reasoning
+        | CapabilityLane::CheapReasoning
+        | CapabilityLane::Compaction
+        | CapabilityLane::WebExtraction
+        | CapabilityLane::ToolValidator => true,
         CapabilityLane::Embedding
+        | CapabilityLane::SpeechTranscription
+        | CapabilityLane::SpeechSynthesis
         | CapabilityLane::ImageGeneration
         | CapabilityLane::AudioGeneration
         | CapabilityLane::VideoGeneration
@@ -435,6 +451,8 @@ fn lane_is_specialized(lane: CapabilityLane) -> bool {
     matches!(
         lane,
         CapabilityLane::Embedding
+            | CapabilityLane::SpeechTranscription
+            | CapabilityLane::SpeechSynthesis
             | CapabilityLane::ImageGeneration
             | CapabilityLane::AudioGeneration
             | CapabilityLane::VideoGeneration
@@ -475,6 +493,8 @@ fn current_candidate_explicitly_lacks_tool_support(
         current_lane,
         Some(
             CapabilityLane::Embedding
+                | CapabilityLane::SpeechTranscription
+                | CapabilityLane::SpeechSynthesis
                 | CapabilityLane::ImageGeneration
                 | CapabilityLane::AudioGeneration
                 | CapabilityLane::VideoGeneration
@@ -712,6 +732,48 @@ mod tests {
         assert_eq!(
             decision.recommended_action,
             Some(AdmissionRepairHint::StartFreshHandoff)
+        );
+    }
+
+    #[test]
+    fn oversized_prior_chat_requests_compaction_before_handoff() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "hello",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "deepseek",
+            current_model: "deepseek-chat",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(6_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
+                max_output_tokens: Some(256),
+                features: vec![],
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 24_000,
+                prior_chat_messages: 12,
+                current_turn_messages: 1,
+                prior_chat_chars: 18_000,
+                current_turn_chars: 400,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.pressure_state,
+            ContextPressureState::OverflowRisk
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Compact);
+        assert!(decision.requires_compaction);
+        assert_eq!(
+            decision.recommended_action,
+            Some(AdmissionRepairHint::CompactSession)
         );
     }
 

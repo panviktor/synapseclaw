@@ -10,6 +10,7 @@ use tokio::time::Duration;
 
 use crate::gateway::nodes::{NodeInvocation, NodeRegistry};
 use crate::tools::traits::{Tool, ToolResult};
+use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason, ToolRuntimeRole};
 
 /// Default timeout for node invocations (30 seconds).
 const NODE_INVOKE_TIMEOUT_SECS: u64 = 30;
@@ -71,6 +72,14 @@ impl Tool for NodeTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         self.parameters.clone()
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::ProviderNative)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

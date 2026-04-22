@@ -12,6 +12,7 @@ const Tools = lazy(() => import('./pages/Tools'));
 const Cron = lazy(() => import('./pages/Cron'));
 const Integrations = lazy(() => import('./pages/Integrations'));
 const Memory = lazy(() => import('./pages/Memory'));
+const Skills = lazy(() => import('./pages/Skills'));
 const Config = lazy(() => import('./pages/Config'));
 const Cost = lazy(() => import('./pages/Cost'));
 const Logs = lazy(() => import('./pages/Logs'));
@@ -217,6 +218,7 @@ function AppContent() {
             <Route path="/cron" element={<Cron />} />
             <Route path="/integrations" element={<Integrations />} />
             <Route path="/memory" element={<Memory />} />
+            <Route path="/skills" element={<Skills />} />
             <Route path="/config" element={<Config />} />
             <Route path="/cost" element={<Cost />} />
             <Route path="/logs" element={<Logs />} />

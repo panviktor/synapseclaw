@@ -39,7 +39,7 @@ impl LoopDetector {
         Self {
             history: Vec::new(),
             max_repeats: 3,
-            max_total: 30,
+            max_total: 60,
         }
     }
 
@@ -133,6 +133,12 @@ mod tests {
             success: true,
         });
         assert_eq!(action, LoopAction::Continue);
+    }
+
+    #[test]
+    fn default_total_limit_allows_bounded_inventory_turns() {
+        let d = LoopDetector::new();
+        assert!(d.max_total >= 48);
     }
 
     #[test]

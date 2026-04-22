@@ -1,19 +1,93 @@
 //! Multi-provider Text-to-Speech (TTS) subsystem.
 //!
-//! Supports OpenAI, ElevenLabs, Google Cloud TTS, and Edge TTS (free, subprocess-based).
+//! Supports OpenAI, Groq Orpheus, ElevenLabs, Google Cloud, Edge, MiniMax, Mistral Voxtral, and xAI.
 //! Provider selection is driven by [`TtsConfig`] in `config.toml`.
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use synapse_domain::config::schema::TtsConfig;
+use synapse_domain::config::schema::{
+    GroqTtsConfig, MiniMaxTtsConfig, MistralTtsConfig, TtsConfig, XaiTtsConfig,
+};
 
 /// Maximum text length before synthesis is rejected (default: 4096 chars).
 const DEFAULT_MAX_TEXT_LENGTH: usize = 4096;
 
 /// Default HTTP request timeout for TTS API calls.
 const TTS_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn tts_http_error_message(provider: &str, status: reqwest::StatusCode, message: &str) -> String {
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        return format!("{provider} TTS API error ({status}): authentication failed");
+    }
+    format!("{provider} TTS API error ({status}): {message}")
+}
+
+fn normalize_wav_chunk_sizes(bytes: &mut [u8]) -> bool {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return false;
+    }
+
+    let Ok(riff_size) = u32::try_from(bytes.len().saturating_sub(8)) else {
+        return false;
+    };
+    bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+    let normalized = true;
+    let mut offset = 12usize;
+    while offset + 8 <= bytes.len() {
+        let chunk_id = &bytes[offset..offset + 4];
+        let chunk_size = u32::from_le_bytes(
+            bytes[offset + 4..offset + 8]
+                .try_into()
+                .expect("slice length checked"),
+        );
+        let data_start = offset + 8;
+
+        if chunk_id == b"data" {
+            let Ok(actual_size) = u32::try_from(bytes.len().saturating_sub(data_start)) else {
+                return false;
+            };
+            bytes[offset + 4..offset + 8].copy_from_slice(&actual_size.to_le_bytes());
+            return true;
+        }
+
+        let chunk_size = chunk_size as usize;
+        let padded_size = chunk_size + (chunk_size % 2);
+        let Some(next_offset) = data_start.checked_add(padded_size) else {
+            return normalized;
+        };
+        if next_offset <= offset || next_offset > bytes.len() {
+            return normalized;
+        }
+        offset = next_offset;
+    }
+
+    normalized
+}
+
+fn catalog_voices(provider: &str, model: &str) -> Vec<String> {
+    synapse_domain::config::model_catalog::tts_voice_catalog(provider, model)
+        .map(|catalog| catalog.voices)
+        .unwrap_or_default()
+}
+
+fn catalog_voices_with_configured(provider: &str, model: &str, configured: &str) -> Vec<String> {
+    let mut voices = catalog_voices(provider, model);
+    let configured = configured.trim();
+    if !configured.is_empty()
+        && !voices
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(configured))
+    {
+        voices.push(configured.to_string());
+    }
+    voices
+}
 
 // ── TtsProvider trait ────────────────────────────────────────────
 
@@ -44,8 +118,7 @@ pub struct OpenAiTtsProvider {
 }
 
 impl OpenAiTtsProvider {
-    /// Create a new OpenAI TTS provider from config, resolving the API key
-    /// from config or `OPENAI_API_KEY` env var.
+    /// Create a new OpenAI TTS provider from a lane-resolved config.
     pub fn new(config: &synapse_domain::config::schema::OpenAiTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
@@ -53,13 +126,7 @@ impl OpenAiTtsProvider {
             .map(str::trim)
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
-            .or_else(|| {
-                std::env::var("OPENAI_API_KEY")
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            })
-            .context("Missing OpenAI TTS API key: set [tts.openai].api_key or OPENAI_API_KEY")?;
+            .context("Missing OpenAI TTS API key from resolved speech_synthesis lane")?;
 
         Ok(Self {
             api_key,
@@ -106,7 +173,7 @@ impl TtsProvider for OpenAiTtsProvider {
             let msg = error_body["error"]["message"]
                 .as_str()
                 .unwrap_or("unknown error");
-            bail!("OpenAI TTS API error ({}): {}", status, msg);
+            bail!(tts_http_error_message("OpenAI", status, msg));
         }
 
         let bytes = resp
@@ -117,10 +184,7 @@ impl TtsProvider for OpenAiTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        catalog_voices("openai", &self.model)
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -128,6 +192,90 @@ impl TtsProvider for OpenAiTtsProvider {
             .iter()
             .map(|s| (*s).to_string())
             .collect()
+    }
+}
+
+// ── Groq Orpheus TTS ────────────────────────────────────────────────
+
+/// Groq Orpheus TTS provider (`POST /openai/v1/audio/speech`).
+pub struct GroqTtsProvider {
+    api_key: String,
+    model: String,
+    response_format: String,
+    client: reqwest::Client,
+}
+
+impl GroqTtsProvider {
+    /// Create a new Groq TTS provider from a lane-resolved config.
+    pub fn new(config: &GroqTtsConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing Groq TTS API key from resolved speech_synthesis lane")?;
+
+        Ok(Self {
+            api_key,
+            model: config.model.clone(),
+            response_format: config.response_format.clone(),
+            client: synapse_providers::proxy::build_runtime_proxy_client("tts.groq"),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for GroqTtsProvider {
+    fn name(&self) -> &str {
+        "groq"
+    }
+
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": text,
+            "voice": voice,
+            "response_format": self.response_format,
+        });
+
+        let resp = self
+            .client
+            .post("https://api.groq.com/openai/v1/audio/speech")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send Groq TTS request")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let error_body: serde_json::Value = resp
+                .json()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"error": "unknown"}));
+            let msg = error_body["error"]["message"]
+                .as_str()
+                .or_else(|| error_body["message"].as_str())
+                .unwrap_or("unknown error");
+            bail!(tts_http_error_message("Groq", status, msg));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read Groq TTS response body")?;
+        let mut audio = bytes.to_vec();
+        normalize_wav_chunk_sizes(&mut audio);
+        Ok(audio)
+    }
+
+    fn supported_voices(&self) -> Vec<String> {
+        catalog_voices("groq", &self.model)
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        ["wav"].iter().map(|s| (*s).to_string()).collect()
     }
 }
 
@@ -143,8 +291,7 @@ pub struct ElevenLabsTtsProvider {
 }
 
 impl ElevenLabsTtsProvider {
-    /// Create a new ElevenLabs TTS provider from config, resolving the API key
-    /// from config or `ELEVENLABS_API_KEY` env var.
+    /// Create a new ElevenLabs TTS provider from a lane-resolved config.
     pub fn new(config: &synapse_domain::config::schema::ElevenLabsTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
@@ -152,15 +299,7 @@ impl ElevenLabsTtsProvider {
             .map(str::trim)
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
-            .or_else(|| {
-                std::env::var("ELEVENLABS_API_KEY")
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            })
-            .context(
-                "Missing ElevenLabs API key: set [tts.elevenlabs].api_key or ELEVENLABS_API_KEY",
-            )?;
+            .context("Missing ElevenLabs API key from resolved speech_synthesis lane")?;
 
         Ok(Self {
             api_key,
@@ -228,7 +367,8 @@ impl TtsProvider for ElevenLabsTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // ElevenLabs voices are user-specific; return empty (dynamic lookup).
+        // ElevenLabs voices are account-specific; use provider API discovery
+        // before enabling validated one-shot voice overrides for this provider.
         Vec::new()
     }
 
@@ -250,8 +390,7 @@ pub struct GoogleTtsProvider {
 }
 
 impl GoogleTtsProvider {
-    /// Create a new Google Cloud TTS provider from config, resolving the API key
-    /// from config or `GOOGLE_TTS_API_KEY` env var.
+    /// Create a new Google Cloud TTS provider from a lane-resolved config.
     pub fn new(config: &synapse_domain::config::schema::GoogleTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
@@ -259,15 +398,7 @@ impl GoogleTtsProvider {
             .map(str::trim)
             .filter(|k| !k.is_empty())
             .map(ToOwned::to_owned)
-            .or_else(|| {
-                std::env::var("GOOGLE_TTS_API_KEY")
-                    .ok()
-                    .map(|v| v.trim().to_string())
-                    .filter(|v| !v.is_empty())
-            })
-            .context(
-                "Missing Google TTS API key: set [tts.google].api_key or GOOGLE_TTS_API_KEY",
-            )?;
+            .context("Missing Google TTS API key from resolved speech_synthesis lane")?;
 
         Ok(Self {
             api_key,
@@ -333,16 +464,7 @@ impl TtsProvider for GoogleTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // Google voices vary by language; return common English defaults.
-        [
-            "en-US-Standard-A",
-            "en-US-Standard-B",
-            "en-US-Standard-C",
-            "en-US-Standard-D",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        catalog_voices("google", "cloud-text-to-speech")
     }
 
     fn supported_formats(&self) -> Vec<String> {
@@ -434,20 +556,322 @@ impl TtsProvider for EdgeTtsProvider {
     }
 
     fn supported_voices(&self) -> Vec<String> {
-        // Edge TTS has many voices; return common defaults.
-        [
-            "en-US-AriaNeural",
-            "en-US-GuyNeural",
-            "en-US-JennyNeural",
-            "en-GB-SoniaNeural",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        catalog_voices("edge", "edge-tts")
     }
 
     fn supported_formats(&self) -> Vec<String> {
         vec!["mp3".to_string()]
+    }
+}
+
+// ── MiniMax TTS ─────────────────────────────────────────────────
+
+/// MiniMax TTS provider (`POST /v1/t2a_v2`).
+pub struct MiniMaxTtsProvider {
+    api_key: String,
+    base_url: String,
+    model: String,
+    voice_id: String,
+    speed: f64,
+    volume: f64,
+    pitch: i32,
+    sample_rate: u32,
+    bitrate: u32,
+    client: reqwest::Client,
+}
+
+impl MiniMaxTtsProvider {
+    pub fn new(config: &MiniMaxTtsConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing MiniMax TTS API key from resolved speech_synthesis lane")?;
+
+        Ok(Self {
+            api_key,
+            base_url: config.base_url.clone(),
+            model: config.model.clone(),
+            voice_id: config.voice_id.clone(),
+            speed: config.speed,
+            volume: config.volume,
+            pitch: config.pitch,
+            sample_rate: config.sample_rate,
+            bitrate: config.bitrate,
+            client: reqwest::Client::builder()
+                .timeout(TTS_HTTP_TIMEOUT)
+                .build()
+                .context("Failed to build HTTP client for MiniMax TTS")?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for MiniMaxTtsProvider {
+    fn name(&self) -> &str {
+        "minimax"
+    }
+
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
+        let voice_id = if voice.is_empty() {
+            self.voice_id.as_str()
+        } else {
+            voice
+        };
+        let body = serde_json::json!({
+            "model": self.model,
+            "text": text,
+            "stream": false,
+            "voice_setting": {
+                "voice_id": voice_id,
+                "speed": self.speed,
+                "vol": self.volume,
+                "pitch": self.pitch,
+            },
+            "audio_setting": {
+                "sample_rate": self.sample_rate,
+                "bitrate": self.bitrate,
+                "format": "mp3",
+                "channel": 1,
+            },
+        });
+
+        let resp = self
+            .client
+            .post(&self.base_url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send MiniMax TTS request")?;
+
+        let status = resp.status();
+        let value: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse MiniMax TTS response")?;
+
+        if !status.is_success() {
+            let msg = value["base_resp"]["status_msg"]
+                .as_str()
+                .or_else(|| value["error"]["message"].as_str())
+                .unwrap_or("unknown error");
+            bail!("MiniMax TTS API error ({}): {}", status, msg);
+        }
+
+        let code = value["base_resp"]["status_code"].as_i64().unwrap_or(0);
+        if code != 0 {
+            let msg = value["base_resp"]["status_msg"]
+                .as_str()
+                .unwrap_or("unknown error");
+            bail!("MiniMax TTS API error (code {}): {}", code, msg);
+        }
+
+        let hex_audio = value["data"]["audio"]
+            .as_str()
+            .context("MiniMax TTS response missing data.audio")?;
+        let bytes = hex::decode(hex_audio).context("Failed to decode MiniMax hex audio")?;
+        Ok(bytes)
+    }
+
+    fn supported_voices(&self) -> Vec<String> {
+        catalog_voices_with_configured("minimax", &self.model, &self.voice_id)
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        vec!["mp3".to_string()]
+    }
+}
+
+// ── Mistral Voxtral TTS ─────────────────────────────────────────
+
+/// Mistral Voxtral TTS provider.
+pub struct MistralTtsProvider {
+    api_key: String,
+    model: String,
+    voice_id: String,
+    response_format: String,
+    client: reqwest::Client,
+}
+
+impl MistralTtsProvider {
+    pub fn new(config: &MistralTtsConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing Mistral TTS API key from resolved speech_synthesis lane")?;
+
+        Ok(Self {
+            api_key,
+            model: config.model.clone(),
+            voice_id: config.voice_id.clone(),
+            response_format: config.response_format.clone(),
+            client: reqwest::Client::builder()
+                .timeout(TTS_HTTP_TIMEOUT)
+                .build()
+                .context("Failed to build HTTP client for Mistral TTS")?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for MistralTtsProvider {
+    fn name(&self) -> &str {
+        "mistral"
+    }
+
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
+        let voice_id = if voice.is_empty() {
+            self.voice_id.as_str()
+        } else {
+            voice
+        };
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": text,
+            "voice_id": voice_id,
+            "response_format": self.response_format,
+        });
+
+        let resp = self
+            .client
+            .post("https://api.mistral.ai/v1/audio/speech")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send Mistral TTS request")?;
+
+        let status = resp.status();
+        let value: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse Mistral TTS response")?;
+
+        if !status.is_success() {
+            let msg = value["error"]["message"]
+                .as_str()
+                .unwrap_or("unknown error");
+            bail!("Mistral TTS API error ({}): {}", status, msg);
+        }
+
+        let encoded = value["audio_data"]
+            .as_str()
+            .context("Mistral TTS response missing audio_data")?;
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+            .context("Failed to decode Mistral base64 audio")?;
+        Ok(bytes)
+    }
+
+    fn supported_voices(&self) -> Vec<String> {
+        catalog_voices_with_configured("mistral", &self.model, &self.voice_id)
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        ["mp3", "wav", "pcm", "flac", "opus"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+}
+
+// ── xAI TTS ─────────────────────────────────────────────────────
+
+/// xAI TTS provider (`POST /v1/tts`).
+pub struct XaiTtsProvider {
+    api_key: String,
+    language: String,
+    codec: String,
+    sample_rate: u32,
+    bitrate: u32,
+    client: reqwest::Client,
+}
+
+impl XaiTtsProvider {
+    pub fn new(config: &XaiTtsConfig) -> Result<Self> {
+        let api_key = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(ToOwned::to_owned)
+            .context("Missing xAI TTS API key from resolved speech_synthesis lane")?;
+
+        Ok(Self {
+            api_key,
+            language: config.language.clone(),
+            codec: config.codec.clone(),
+            sample_rate: config.sample_rate,
+            bitrate: config.bitrate,
+            client: reqwest::Client::builder()
+                .timeout(TTS_HTTP_TIMEOUT)
+                .build()
+                .context("Failed to build HTTP client for xAI TTS")?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl TtsProvider for XaiTtsProvider {
+    fn name(&self) -> &str {
+        "xai"
+    }
+
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Vec<u8>> {
+        let body = serde_json::json!({
+            "text": text,
+            "voice_id": voice,
+            "language": self.language,
+            "output_format": {
+                "codec": self.codec,
+                "sample_rate": self.sample_rate,
+                "bit_rate": self.bitrate,
+            },
+        });
+
+        let resp = self
+            .client
+            .post("https://api.x.ai/v1/tts")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send xAI TTS request")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let value: serde_json::Value = resp
+                .json()
+                .await
+                .unwrap_or_else(|_| serde_json::json!({"error": "unknown"}));
+            let msg = value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .unwrap_or("unknown error");
+            bail!("xAI TTS API error ({}): {}", status, msg);
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .context("Failed to read xAI TTS response body")?;
+        Ok(bytes.to_vec())
+    }
+
+    fn supported_voices(&self) -> Vec<String> {
+        catalog_voices("xai", "tts")
+    }
+
+    fn supported_formats(&self) -> Vec<String> {
+        ["mp3", "wav", "pcm", "mulaw", "alaw"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
     }
 }
 
@@ -473,6 +897,17 @@ impl TtsManager {
                 }
                 Err(e) => {
                     tracing::warn!("Skipping OpenAI TTS provider: {e}");
+                }
+            }
+        }
+
+        if let Some(ref groq_cfg) = config.groq {
+            match GroqTtsProvider::new(groq_cfg) {
+                Ok(p) => {
+                    providers.insert("groq".to_string(), Box::new(p));
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping Groq TTS provider: {e}");
                 }
             }
         }
@@ -510,6 +945,39 @@ impl TtsManager {
             }
         }
 
+        if let Some(ref minimax_cfg) = config.minimax {
+            match MiniMaxTtsProvider::new(minimax_cfg) {
+                Ok(p) => {
+                    providers.insert("minimax".to_string(), Box::new(p));
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping MiniMax TTS provider: {e}");
+                }
+            }
+        }
+
+        if let Some(ref mistral_cfg) = config.mistral {
+            match MistralTtsProvider::new(mistral_cfg) {
+                Ok(p) => {
+                    providers.insert("mistral".to_string(), Box::new(p));
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping Mistral TTS provider: {e}");
+                }
+            }
+        }
+
+        if let Some(ref xai_cfg) = config.xai {
+            match XaiTtsProvider::new(xai_cfg) {
+                Ok(p) => {
+                    providers.insert("xai".to_string(), Box::new(p));
+                }
+                Err(e) => {
+                    tracing::warn!("Skipping xAI TTS provider: {e}");
+                }
+            }
+        }
+
         let max_text_length = if config.max_text_length == 0 {
             DEFAULT_MAX_TEXT_LENGTH
         } else {
@@ -540,6 +1008,11 @@ impl TtsManager {
         if text.is_empty() {
             bail!("TTS text must not be empty");
         }
+        if voice.trim().is_empty() {
+            bail!(
+                "TTS voice must not be empty; inspect the provider voice catalog before synthesis"
+            );
+        }
         let char_count = text.chars().count();
         if char_count > self.max_text_length {
             bail!(
@@ -558,6 +1031,19 @@ impl TtsManager {
         })?;
 
         tts.synthesize(text, voice).await
+    }
+
+    /// Return the configured default provider name.
+    pub fn default_provider(&self) -> &str {
+        &self.default_provider
+    }
+
+    /// Return supported voice IDs for a configured provider.
+    pub fn supported_voices(&self, provider: &str) -> Result<Vec<String>> {
+        self.providers
+            .get(provider)
+            .map(|tts| tts.supported_voices())
+            .with_context(|| format!("TTS provider '{provider}' is not configured"))
     }
 
     /// List names of all initialized providers.
@@ -639,6 +1125,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tts_rejects_empty_voice() {
+        let mut config = default_tts_config();
+        config.default_provider = "edge".to_string();
+        config.edge = Some(synapse_domain::config::schema::EdgeTtsConfig {
+            binary_path: "edge-tts".into(),
+        });
+
+        let manager = TtsManager::new(&config).unwrap();
+        let err = manager
+            .synthesize_with_provider("hello", "edge", "")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("voice must not be empty"),
+            "expected empty-voice error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn tts_rejects_unknown_provider() {
         let config = default_tts_config();
         let manager = TtsManager::new(&config).unwrap();
@@ -657,13 +1162,17 @@ mod tests {
         let config = TtsConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.default_provider, "openai");
-        assert_eq!(config.default_voice, "alloy");
+        assert_eq!(config.default_voice, "");
         assert_eq!(config.default_format, "mp3");
         assert_eq!(config.max_text_length, DEFAULT_MAX_TEXT_LENGTH);
         assert!(config.openai.is_none());
+        assert!(config.groq.is_none());
         assert!(config.elevenlabs.is_none());
         assert!(config.google.is_none());
         assert!(config.edge.is_none());
+        assert!(config.minimax.is_none());
+        assert!(config.mistral.is_none());
+        assert!(config.xai.is_none());
     }
 
     #[test]
@@ -672,5 +1181,90 @@ mod tests {
         config.max_text_length = 0;
         let manager = TtsManager::new(&config).unwrap();
         assert_eq!(manager.max_text_length, DEFAULT_MAX_TEXT_LENGTH);
+    }
+
+    #[test]
+    fn tts_manager_registers_voice_parity_providers() {
+        let mut config = default_tts_config();
+        config.groq = Some(synapse_domain::config::schema::GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        });
+        config.minimax = Some(synapse_domain::config::schema::MiniMaxTtsConfig {
+            api_key: Some("minimax-key".into()),
+            base_url: "https://api.minimax.io/v1/t2a_v2".into(),
+            model: "speech-2.8-hd".into(),
+            voice_id: "English_Graceful_Lady".into(),
+            speed: 1.0,
+            volume: 1.0,
+            pitch: 0,
+            sample_rate: 32_000,
+            bitrate: 128_000,
+        });
+        config.mistral = Some(synapse_domain::config::schema::MistralTtsConfig {
+            api_key: Some("mistral-key".into()),
+            model: "voxtral-mini-tts-2603".into(),
+            voice_id: "voice-id".into(),
+            response_format: "mp3".into(),
+        });
+        config.xai = Some(synapse_domain::config::schema::XaiTtsConfig {
+            api_key: Some("xai-key".into()),
+            language: "auto".into(),
+            codec: "mp3".into(),
+            sample_rate: 24_000,
+            bitrate: 128_000,
+        });
+
+        let manager = TtsManager::new(&config).unwrap();
+        assert_eq!(
+            manager.available_providers(),
+            vec!["groq", "minimax", "mistral", "xai"]
+        );
+    }
+
+    #[test]
+    fn groq_tts_provider_metadata_matches_orpheus_contract() {
+        let provider = GroqTtsProvider::new(&GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        })
+        .unwrap();
+
+        assert_eq!(provider.name(), "groq");
+        assert!(provider.supported_voices().contains(&"troy".to_string()));
+        assert_eq!(provider.supported_formats(), vec!["wav"]);
+    }
+
+    #[test]
+    fn tts_manager_exposes_supported_voices_from_provider() {
+        let mut config = default_tts_config();
+        config.default_provider = "groq".into();
+        config.groq = Some(GroqTtsConfig {
+            api_key: Some("groq-key".into()),
+            model: "canopylabs/orpheus-v1-english".into(),
+            response_format: "wav".into(),
+        });
+
+        let manager = TtsManager::new(&config).unwrap();
+        assert_eq!(manager.default_provider(), "groq");
+        assert!(manager
+            .supported_voices("groq")
+            .unwrap()
+            .contains(&"hannah".to_string()));
+    }
+
+    #[test]
+    fn normalizes_streaming_wav_placeholder_sizes() {
+        let mut wav = vec![
+            b'R', b'I', b'F', b'F', 0xff, 0xff, 0xff, 0xff, b'W', b'A', b'V', b'E', b'f', b'm',
+            b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xbb, 0, 0, 0, 0x77, 1, 0, 2, 0, 16, 0,
+            b'd', b'a', b't', b'a', 0xff, 0xff, 0xff, 0xff, 1, 2, 3, 4,
+        ];
+
+        assert!(normalize_wav_chunk_sizes(&mut wav));
+        assert_eq!(u32::from_le_bytes(wav[4..8].try_into().unwrap()), 40);
+        assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 4);
     }
 }

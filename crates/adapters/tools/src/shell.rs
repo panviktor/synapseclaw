@@ -10,6 +10,9 @@ use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::ports::runtime::RuntimeAdapter;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Maximum shell command execution time before kill.
 const SHELL_TIMEOUT_SECS: u64 = 60;
@@ -282,7 +285,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace directory"
+        "Execute a shell command in the workspace directory. Keep commands simple and shell-policy friendly: avoid redirection (`>`, `<`, `2>/dev/null`), subshells, `set -o pipefail`, background jobs, and `tee`. Use short pipelines of allowed commands or split discovery into separate tool calls."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -291,7 +294,7 @@ impl Tool for ShellTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute. Do not use redirection (`>`, `<`, `2>/dev/null`), subshells, `set -o pipefail`, background jobs, or `tee`; retry blocked discovery commands by removing redirection and splitting pipelines."
                 },
                 "approved": {
                     "type": "boolean",
@@ -304,7 +307,18 @@ impl Tool for ShellTool {
     }
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
+        Some(ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::FreeFormCommand,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("command"),
+            ToolArgumentPolicy::blocked("approved"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

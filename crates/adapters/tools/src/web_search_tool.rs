@@ -5,7 +5,9 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 struct SearchHit {
@@ -557,8 +559,16 @@ impl Tool for WebSearchTool {
         })
     }
 
-    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::ExternalLookup)
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::PendingPrivacyPolicy,
+        )
+        .with_arguments(vec![ToolArgumentPolicy::sensitive("query").user_private()])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

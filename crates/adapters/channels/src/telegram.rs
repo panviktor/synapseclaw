@@ -9,9 +9,13 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use synapse_domain::application::services::media_artifact_delivery::{
+    artifact_delivery_uri, media_delivery_decision, MediaDeliveryPolicyInput,
+};
 use synapse_domain::config::schema::{Config, StreamMode};
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
-use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::domain::channel::{
+    ChannelCapability, InboundMediaAttachment, InboundMediaKind,
+};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use synapse_infra::config_io::ConfigIO;
 use synapse_security::pairing::PairingGuard;
@@ -144,6 +148,8 @@ enum TelegramAttachmentKind {
 struct TelegramAttachment {
     kind: TelegramAttachmentKind,
     target: String,
+    label: Option<String>,
+    mime_type: Option<String>,
 }
 
 impl TelegramAttachmentKind {
@@ -163,8 +169,34 @@ fn telegram_attachment_kind_for_artifact(kind: MediaArtifactKind) -> TelegramAtt
     match kind {
         MediaArtifactKind::Image => TelegramAttachmentKind::Image,
         MediaArtifactKind::Audio | MediaArtifactKind::Music => TelegramAttachmentKind::Audio,
+        MediaArtifactKind::Voice => TelegramAttachmentKind::Voice,
         MediaArtifactKind::Video => TelegramAttachmentKind::Video,
     }
+}
+
+fn telegram_delivery_kind(
+    attachment: &TelegramAttachment,
+    mime_type: Option<&str>,
+    file_name: Option<&str>,
+) -> TelegramAttachmentKind {
+    if attachment.kind != TelegramAttachmentKind::Voice {
+        return attachment.kind;
+    }
+
+    let decision = media_delivery_decision(MediaDeliveryPolicyInput {
+        channel: "telegram",
+        capabilities: &[
+            ChannelCapability::Attachments,
+            ChannelCapability::AudioAttachments,
+            ChannelCapability::NativeVoiceNotes,
+        ],
+        artifact_kind: MediaArtifactKind::Voice,
+        mime_type: mime_type.or(attachment.mime_type.as_deref()),
+        file_name: file_name.or(attachment.label.as_deref()),
+        provider_format: None,
+        normalizer_available: false,
+    });
+    telegram_attachment_kind_for_artifact(decision.recommended_kind)
 }
 
 fn telegram_attachment_fallback_file_name(kind: TelegramAttachmentKind) -> &'static str {
@@ -186,6 +218,8 @@ fn telegram_media_artifact_attachments(
             Ok(TelegramAttachment {
                 kind: telegram_attachment_kind_for_artifact(artifact.kind),
                 target: artifact_delivery_uri("telegram", artifact)?.to_string(),
+                label: artifact.label.clone(),
+                mime_type: artifact.mime_type.clone(),
             })
         })
         .collect()
@@ -299,6 +333,8 @@ fn parse_path_only_attachment(message: &str) -> Option<TelegramAttachment> {
     Some(TelegramAttachment {
         kind,
         target: candidate.to_string(),
+        label: None,
+        mime_type: None,
     })
 }
 
@@ -350,6 +386,8 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<TelegramAttachment>) 
             Some(TelegramAttachment {
                 kind,
                 target: target.to_string(),
+                label: None,
+                mime_type: None,
             })
         });
 
@@ -1825,7 +1863,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         let target = attachment.target.trim();
 
         if is_http_url(target) {
-            match attachment.kind {
+            let kind =
+                telegram_delivery_kind(attachment, attachment.mime_type.as_deref(), Some(target));
+            match kind {
                 TelegramAttachmentKind::Image => {
                     self.send_photo_by_url(chat_id, thread_id, target, None)
                         .await
@@ -1856,16 +1896,21 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             let upload = resolve_outbound_media_uri(
                 &client,
                 target,
-                None,
-                None,
+                attachment.label.as_deref(),
+                attachment.mime_type.as_deref(),
                 telegram_attachment_fallback_file_name(attachment.kind),
             )
             .await?;
+            let kind = telegram_delivery_kind(
+                attachment,
+                Some(upload.mime_type.as_str()),
+                Some(upload.file_name.as_str()),
+            );
             return self
                 .send_attachment_bytes(
                     chat_id,
                     thread_id,
-                    attachment.kind,
+                    kind,
                     upload.bytes,
                     &upload.file_name,
                     None,
@@ -1888,14 +1933,21 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             target
         };
 
-        let path_buf = local_media_path(target)
-            .unwrap_or_else(|| std::path::PathBuf::from(target));
+        let path_buf = local_media_path(target).unwrap_or_else(|| std::path::PathBuf::from(target));
         let path = path_buf.as_path();
         if !path.exists() {
             anyhow::bail!("Telegram attachment path not found: {target}");
         }
 
-        match attachment.kind {
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        let guessed_mime = mime_guess::from_path(path).first_raw();
+        let kind = telegram_delivery_kind(
+            attachment,
+            attachment.mime_type.as_deref().or(guessed_mime),
+            file_name,
+        );
+
+        match kind {
             TelegramAttachmentKind::Image => self.send_photo(chat_id, thread_id, path, None).await,
             TelegramAttachmentKind::Document => {
                 self.send_document(chat_id, thread_id, path, None).await
@@ -2640,7 +2692,9 @@ impl Channel for TelegramChannel {
         };
 
         let (text_without_markers, mut attachments) = parse_attachment_markers(content);
-        attachments.extend(telegram_media_artifact_attachments(&message.media_artifacts)?);
+        attachments.extend(telegram_media_artifact_attachments(
+            &message.media_artifacts,
+        )?);
 
         if !attachments.is_empty() {
             if !text_without_markers.is_empty() {
@@ -3242,6 +3296,36 @@ mod tests {
         assert_eq!(
             infer_attachment_kind_from_target("https://example.com/files/specs.pdf?download=1"),
             Some(TelegramAttachmentKind::Document)
+        );
+    }
+
+    #[test]
+    fn telegram_voice_delivery_degrades_wav_payload_to_audio() {
+        let attachment = TelegramAttachment {
+            kind: TelegramAttachmentKind::Voice,
+            target: "/tmp/voice.wav".into(),
+            label: Some("voice.wav".into()),
+            mime_type: Some("audio/wav".into()),
+        };
+
+        assert_eq!(
+            telegram_delivery_kind(&attachment, attachment.mime_type.as_deref(), None),
+            TelegramAttachmentKind::Audio
+        );
+    }
+
+    #[test]
+    fn telegram_voice_delivery_keeps_ogg_opus_payload_as_voice() {
+        let attachment = TelegramAttachment {
+            kind: TelegramAttachmentKind::Voice,
+            target: "/tmp/voice.ogg".into(),
+            label: Some("voice.ogg".into()),
+            mime_type: Some("audio/ogg; codecs=opus".into()),
+        };
+
+        assert_eq!(
+            telegram_delivery_kind(&attachment, attachment.mime_type.as_deref(), None),
+            TelegramAttachmentKind::Voice
         );
     }
 
@@ -4252,8 +4336,8 @@ mod tests {
         }
 
         // 1. Load pre-recorded fixture (TTS-generated "hello", ~7 KB MP3)
-        let fixture_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.mp3");
+        let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/fixtures/hello.mp3");
         let audio_data = std::fs::read(&fixture_path)
             .unwrap_or_else(|e| panic!("Failed to read fixture {}: {e}", fixture_path.display()));
         assert!(
@@ -4265,6 +4349,7 @@ mod tests {
         // 2. Call transcribe_audio() — real Groq Whisper API
         let config = synapse_domain::config::schema::TranscriptionConfig {
             enabled: true,
+            api_key: std::env::var("GROQ_API_KEY").ok(),
             ..Default::default()
         };
         let transcript: String =

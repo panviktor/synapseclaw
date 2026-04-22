@@ -61,13 +61,9 @@ pub async fn run_with_shared_memory(
         tracing::info!(backend = shared.name(), "Memory: using shared instance");
         (shared, None)
     } else {
-        let mem_backend = synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &resolved_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await?;
+        let mem_backend =
+            synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id)
+                .await?;
         let surreal = mem_backend.surreal;
         tracing::info!(backend = mem_backend.memory.name(), "Memory initialized");
         (mem_backend.memory, surreal)
@@ -548,8 +544,37 @@ pub async fn run_with_shared_memory(
                 "/help" => {
                     println!("Available commands:");
                     println!("  /help        Show this help message");
+                    println!("  /compact     Compact conversation context softly");
                     println!("  /clear /new  Clear conversation history");
                     println!("  /quit /exit  Exit interactive mode\n");
+                    continue;
+                }
+                "/compact" => {
+                    let manual_keep_messages =
+                        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS
+                            .saturating_mul(2)
+                            .max(18);
+                    let resolved_agent_id = super::resolve_agent_id(&config);
+                    let compacted = auto_compact_history(
+                        &mut history,
+                        provider.as_ref(),
+                        mem.as_ref(),
+                        &resolved_agent_id,
+                        model_name,
+                        manual_keep_messages,
+                        usize::MAX / 4,
+                        &config.compression,
+                    )
+                    .await
+                    .unwrap_or(false);
+                    if compacted {
+                        println!("Conversation context compacted.\n");
+                        if let Some(path) = session_state_file.as_deref() {
+                            save_interactive_session_history(path, &history)?;
+                        }
+                    } else {
+                        println!("Conversation context is already compact enough.\n");
+                    }
                     continue;
                 }
                 "/clear" | "/new" => {
@@ -688,6 +713,8 @@ pub async fn run_with_shared_memory(
             if let Ok(compacted) = auto_compact_history(
                 &mut history,
                 provider.as_ref(),
+                mem.as_ref(),
+                &resolved_agent_id,
                 model_name,
                 config.agent.max_history_messages,
                 config.agent.max_context_tokens,
@@ -738,13 +765,8 @@ pub async fn process_message(
         &config.workspace_dir,
     ));
     let resolved_agent_id = resolve_agent_id(&config);
-    let mem_backend_pm = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &resolved_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await?;
+    let mem_backend_pm =
+        synapse_memory::create_memory(&config, &config.workspace_dir, &resolved_agent_id).await?;
     let mem: Arc<dyn UnifiedMemoryPort> = mem_backend_pm.memory;
     let surreal_handle_pm = mem_backend_pm.surreal;
 

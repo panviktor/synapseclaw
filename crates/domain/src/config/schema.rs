@@ -77,26 +77,14 @@ pub struct Config {
     /// Default model routed through the selected provider (e.g. `"provider/model-id"`).
     #[serde(alias = "model")]
     pub default_model: Option<String>,
-    /// Model used for session summarization (cheaper than primary). Falls back to `default_model`.
-    /// Can be a plain model name (uses default provider) or configured via `[summary]` section.
-    #[serde(default)]
-    pub summary_model: Option<String>,
     /// Context compression policy (`[compression]`), Hermes-style defaults.
     #[serde(default)]
     pub compression: ContextCompressionConfig,
     /// Optional route/lane-specific compression policy overrides.
     #[serde(default)]
     pub compression_overrides: Vec<ContextCompressionRouteOverrideConfig>,
-    /// Explicit summary model configuration with its own provider.
-    /// When set, overrides `summary_model` string. Allows using a different provider
-    /// for summaries while keeping a different default provider.
-    ///
-    /// ```toml
-    /// [summary]
-    /// provider = "summary-provider"
-    /// model = "summary-model-id"
-    /// temperature = 0.3
-    /// ```
+    /// Summary generation tuning. The model route itself is resolved through
+    /// `[[model_lanes]]` with `lane = "compaction"`.
     #[serde(default)]
     pub summary: SummaryConfig,
     /// Optional named provider profiles keyed by id (Codex app-server compatible layout).
@@ -203,10 +191,6 @@ pub struct Config {
     /// Explicit `model_lanes` entries override the preset lane-by-lane.
     #[serde(default, alias = "preset")]
     pub model_preset: Option<String>,
-
-    /// Embedding routing rules — route `hint:<name>` to specific provider+model combos.
-    #[serde(default)]
-    pub embedding_routes: Vec<EmbeddingRouteConfig>,
 
     /// Automatic query classification — maps user messages to model hints.
     #[serde(default)]
@@ -328,7 +312,7 @@ pub struct Config {
     #[serde(default)]
     pub hooks: HooksConfig,
 
-    /// Voice transcription configuration (Whisper API via Groq).
+    /// Voice transcription configuration for channel audio input.
     #[serde(default)]
     pub transcription: TranscriptionConfig,
 
@@ -615,25 +599,28 @@ fn default_deepgram_stt_model() -> String {
     "nova-2".into()
 }
 
+fn default_deepgram_flux_model() -> String {
+    "flux-general-multi".into()
+}
+
+fn default_mistral_stt_model() -> String {
+    "voxtral-mini-latest".into()
+}
+
 fn default_google_stt_language_code() -> String {
     "en-US".into()
 }
 
 /// Voice transcription configuration with multi-provider support.
-///
-/// The top-level `api_url`, `model`, and `api_key` fields remain for backward
-/// compatibility with existing Groq-based configurations.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TranscriptionConfig {
     /// Enable voice transcription for channels that support it.
     #[serde(default)]
     pub enabled: bool,
-    /// Default STT provider: "groq", "openai", "deepgram", "assemblyai", "google".
+    /// Default STT provider selected by the `speech_transcription` lane.
     #[serde(default = "default_transcription_provider")]
     pub default_provider: String,
-    /// API key used for transcription requests (Groq provider).
-    ///
-    /// If unset, runtime falls back to `GROQ_API_KEY` for backward compatibility.
+    /// API key used for Groq transcription requests after lane resolution.
     #[serde(default)]
     pub api_key: Option<String>,
     /// Whisper API endpoint URL (Groq provider).
@@ -665,6 +652,9 @@ pub struct TranscriptionConfig {
     /// Google Cloud Speech-to-Text provider configuration.
     #[serde(default)]
     pub google: Option<GoogleSttConfig>,
+    /// Mistral Voxtral transcription provider configuration.
+    #[serde(default)]
+    pub mistral: Option<MistralSttConfig>,
 }
 
 impl Default for TranscriptionConfig {
@@ -682,6 +672,7 @@ impl Default for TranscriptionConfig {
             deepgram: None,
             assemblyai: None,
             google: None,
+            mistral: None,
         }
     }
 }
@@ -800,7 +791,7 @@ fn default_tts_provider() -> String {
 }
 
 fn default_tts_voice() -> String {
-    "alloy".into()
+    String::new()
 }
 
 fn default_tts_format() -> String {
@@ -817,6 +808,14 @@ fn default_openai_tts_model() -> String {
 
 fn default_openai_tts_speed() -> f64 {
     1.0
+}
+
+fn default_groq_tts_model() -> String {
+    "canopylabs/orpheus-v1-english".into()
+}
+
+fn default_groq_tts_response_format() -> String {
+    "wav".into()
 }
 
 fn default_elevenlabs_model_id() -> String {
@@ -839,13 +838,73 @@ fn default_edge_tts_binary_path() -> String {
     "edge-tts".into()
 }
 
+fn default_minimax_tts_model() -> String {
+    "speech-2.8-hd".into()
+}
+
+fn default_minimax_tts_base_url() -> String {
+    "https://api.minimax.io/v1/t2a_v2".into()
+}
+
+fn default_minimax_tts_voice_id() -> String {
+    String::new()
+}
+
+fn default_minimax_tts_speed() -> f64 {
+    1.0
+}
+
+fn default_minimax_tts_volume() -> f64 {
+    1.0
+}
+
+fn default_minimax_tts_pitch() -> i32 {
+    0
+}
+
+fn default_minimax_tts_sample_rate() -> u32 {
+    32_000
+}
+
+fn default_minimax_tts_bitrate() -> u32 {
+    128_000
+}
+
+fn default_mistral_tts_model() -> String {
+    "voxtral-mini-tts-2603".into()
+}
+
+fn default_mistral_tts_voice_id() -> String {
+    String::new()
+}
+
+fn default_mistral_tts_response_format() -> String {
+    "mp3".into()
+}
+
+fn default_xai_tts_language() -> String {
+    "auto".into()
+}
+
+fn default_xai_tts_codec() -> String {
+    "mp3".into()
+}
+
+fn default_xai_tts_sample_rate() -> u32 {
+    24_000
+}
+
+fn default_xai_tts_bitrate() -> u32 {
+    128_000
+}
+
 /// Text-to-Speech configuration (`[tts]`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TtsConfig {
     /// Enable TTS synthesis.
     #[serde(default)]
     pub enabled: bool,
-    /// Default TTS provider (`"openai"`, `"elevenlabs"`, `"google"`, `"edge"`).
+    /// Default TTS provider selected by the `speech_synthesis` lane.
     #[serde(default = "default_tts_provider")]
     pub default_provider: String,
     /// Default voice ID passed to the selected provider.
@@ -860,6 +919,9 @@ pub struct TtsConfig {
     /// OpenAI TTS provider configuration (`[tts.openai]`).
     #[serde(default)]
     pub openai: Option<OpenAiTtsConfig>,
+    /// Groq Orpheus TTS provider configuration (`[tts.groq]`).
+    #[serde(default)]
+    pub groq: Option<GroqTtsConfig>,
     /// ElevenLabs TTS provider configuration (`[tts.elevenlabs]`).
     #[serde(default)]
     pub elevenlabs: Option<ElevenLabsTtsConfig>,
@@ -869,6 +931,15 @@ pub struct TtsConfig {
     /// Edge TTS provider configuration (`[tts.edge]`).
     #[serde(default)]
     pub edge: Option<EdgeTtsConfig>,
+    /// MiniMax TTS provider configuration (`[tts.minimax]`).
+    #[serde(default)]
+    pub minimax: Option<MiniMaxTtsConfig>,
+    /// Mistral Voxtral TTS provider configuration (`[tts.mistral]`).
+    #[serde(default)]
+    pub mistral: Option<MistralTtsConfig>,
+    /// xAI TTS provider configuration (`[tts.xai]`).
+    #[serde(default)]
+    pub xai: Option<XaiTtsConfig>,
 }
 
 impl Default for TtsConfig {
@@ -880,9 +951,13 @@ impl Default for TtsConfig {
             default_format: default_tts_format(),
             max_text_length: default_tts_max_text_length(),
             openai: None,
+            groq: None,
             elevenlabs: None,
             google: None,
             edge: None,
+            minimax: None,
+            mistral: None,
+            xai: None,
         }
     }
 }
@@ -899,6 +974,20 @@ pub struct OpenAiTtsConfig {
     /// Playback speed multiplier (default `1.0`).
     #[serde(default = "default_openai_tts_speed")]
     pub speed: f64,
+}
+
+/// Groq Orpheus TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GroqTtsConfig {
+    /// API key for Groq TTS.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Model name (default `"canopylabs/orpheus-v1-english"`).
+    #[serde(default = "default_groq_tts_model")]
+    pub model: String,
+    /// Response audio format. Groq Orpheus currently supports `"wav"`.
+    #[serde(default = "default_groq_tts_response_format")]
+    pub response_format: String,
 }
 
 /// ElevenLabs TTS provider configuration.
@@ -935,6 +1024,75 @@ pub struct EdgeTtsConfig {
     /// Path to the `edge-tts` binary (default `"edge-tts"`).
     #[serde(default = "default_edge_tts_binary_path")]
     pub binary_path: String,
+}
+
+/// MiniMax TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MiniMaxTtsConfig {
+    /// MiniMax API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// MiniMax T2A endpoint.
+    #[serde(default = "default_minimax_tts_base_url")]
+    pub base_url: String,
+    /// MiniMax speech model.
+    #[serde(default = "default_minimax_tts_model")]
+    pub model: String,
+    /// MiniMax voice id.
+    #[serde(default = "default_minimax_tts_voice_id")]
+    pub voice_id: String,
+    /// Playback speed.
+    #[serde(default = "default_minimax_tts_speed")]
+    pub speed: f64,
+    /// Output volume.
+    #[serde(default = "default_minimax_tts_volume")]
+    pub volume: f64,
+    /// Pitch shift.
+    #[serde(default = "default_minimax_tts_pitch")]
+    pub pitch: i32,
+    /// Output sample rate.
+    #[serde(default = "default_minimax_tts_sample_rate")]
+    pub sample_rate: u32,
+    /// Output bitrate.
+    #[serde(default = "default_minimax_tts_bitrate")]
+    pub bitrate: u32,
+}
+
+/// Mistral Voxtral TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MistralTtsConfig {
+    /// Mistral API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Voxtral TTS model.
+    #[serde(default = "default_mistral_tts_model")]
+    pub model: String,
+    /// Saved Mistral voice id.
+    #[serde(default = "default_mistral_tts_voice_id")]
+    pub voice_id: String,
+    /// Response audio format.
+    #[serde(default = "default_mistral_tts_response_format")]
+    pub response_format: String,
+}
+
+/// xAI TTS provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct XaiTtsConfig {
+    /// xAI API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Output language or `auto`.
+    #[serde(default = "default_xai_tts_language")]
+    pub language: String,
+    /// Output codec.
+    #[serde(default = "default_xai_tts_codec")]
+    pub codec: String,
+    /// Output sample rate.
+    #[serde(default = "default_xai_tts_sample_rate")]
+    pub sample_rate: u32,
+    /// MP3 bitrate.
+    #[serde(default = "default_xai_tts_bitrate")]
+    pub bitrate: u32,
 }
 
 /// Determines when a `ToolFilterGroup` is active.
@@ -1002,6 +1160,35 @@ pub struct DeepgramSttConfig {
     /// Deepgram model name (default: "nova-2").
     #[serde(default = "default_deepgram_stt_model")]
     pub model: String,
+    /// Optional language hint passed to Deepgram (`multi`, `en`, `ru`, ...).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Optional Flux realtime turn-detection configuration for live voice calls.
+    #[serde(default)]
+    pub flux: Option<DeepgramFluxConfig>,
+}
+
+/// Deepgram Flux realtime voice-agent configuration (`[transcription.deepgram.flux]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DeepgramFluxConfig {
+    /// Flux model name (default: "flux-general-multi").
+    #[serde(default = "default_deepgram_flux_model")]
+    pub model: String,
+    /// Optional repeated language hints for multilingual Flux.
+    #[serde(default)]
+    pub language_hints: Vec<String>,
+    /// Optional end-of-turn confidence threshold.
+    #[serde(default)]
+    pub eot_threshold: Option<f32>,
+    /// Optional eager end-of-turn confidence threshold.
+    #[serde(default)]
+    pub eager_eot_threshold: Option<f32>,
+    /// Optional silence timeout in milliseconds.
+    #[serde(default)]
+    pub eot_timeout_ms: Option<u32>,
+    /// Optional keyterm prompting.
+    #[serde(default)]
+    pub keyterms: Vec<String>,
 }
 
 /// AssemblyAI STT provider configuration (`[transcription.assemblyai]`).
@@ -1021,6 +1208,17 @@ pub struct GoogleSttConfig {
     /// BCP-47 language code (default: "en-US").
     #[serde(default = "default_google_stt_language_code")]
     pub language_code: String,
+}
+
+/// Mistral Voxtral STT provider configuration (`[transcription.mistral]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MistralSttConfig {
+    /// Mistral API key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Voxtral transcription model.
+    #[serde(default = "default_mistral_stt_model")]
+    pub model: String,
 }
 
 /// Agent orchestration configuration (`[agent]` section).
@@ -1062,6 +1260,41 @@ pub struct AgentConfig {
     /// Requires a plan that supports prompt caching; disable for OAuth/free-tier tokens.
     #[serde(default)]
     pub prompt_caching: bool,
+    /// Live voice-call policy overrides (`[agent.live_calls]` section).
+    #[serde(default)]
+    pub live_calls: AgentLiveCallConfig,
+}
+
+/// Live voice-call policy (`[agent.live_calls]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentLiveCallConfig {
+    /// Optional provider override used only for live voice turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional model override used only for live voice turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Maximum tool-call loop turns per live voice message. Default: `2`.
+    #[serde(default = "default_agent_live_call_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+    /// Maximum spoken response length in characters. Default: `220`.
+    #[serde(default = "default_agent_live_call_max_spoken_chars")]
+    pub max_spoken_chars: usize,
+    /// Maximum spoken response length in sentences. Default: `2`.
+    #[serde(default = "default_agent_live_call_max_spoken_sentences")]
+    pub max_spoken_sentences: usize,
+    /// Extra tools excluded during live voice turns. Default keeps heavy memory/shell tools out.
+    #[serde(default = "default_agent_live_call_excluded_tools")]
+    pub excluded_tools: Vec<String>,
+    /// Dynamic user-profile fact key used for preferred response locale. Default: `response_locale`.
+    #[serde(default = "default_agent_live_call_profile_locale_key")]
+    pub profile_locale_key: String,
+    /// Fallback locale when neither current context nor profile gives one. Default: `en`.
+    #[serde(default = "default_agent_live_call_fallback_locale")]
+    pub fallback_locale: String,
+    /// Locale-specific default greetings keyed by normalized locale tag.
+    #[serde(default = "default_agent_live_call_greetings")]
+    pub greetings: HashMap<String, String>,
 }
 
 /// Provider-history compression policy (`[compression]` section).
@@ -1279,6 +1512,57 @@ fn default_agent_tool_dispatcher() -> String {
     "auto".into()
 }
 
+fn default_agent_live_call_max_tool_iterations() -> usize {
+    2
+}
+
+fn default_agent_live_call_max_spoken_chars() -> usize {
+    220
+}
+
+fn default_agent_live_call_max_spoken_sentences() -> usize {
+    2
+}
+
+fn default_agent_live_call_excluded_tools() -> Vec<String> {
+    vec![
+        "memory_recall".into(),
+        "session_search".into(),
+        "shell".into(),
+    ]
+}
+
+fn default_agent_live_call_profile_locale_key() -> String {
+    "response_locale".into()
+}
+
+fn default_agent_live_call_fallback_locale() -> String {
+    "en".into()
+}
+
+fn default_agent_live_call_greetings() -> HashMap<String, String> {
+    HashMap::from([
+        ("en".into(), "Hello. I'm here.".into()),
+        ("ru".into(), "Привет. Я на связи.".into()),
+    ])
+}
+
+impl Default for AgentLiveCallConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            max_tool_iterations: default_agent_live_call_max_tool_iterations(),
+            max_spoken_chars: default_agent_live_call_max_spoken_chars(),
+            max_spoken_sentences: default_agent_live_call_max_spoken_sentences(),
+            excluded_tools: default_agent_live_call_excluded_tools(),
+            profile_locale_key: default_agent_live_call_profile_locale_key(),
+            fallback_locale: default_agent_live_call_fallback_locale(),
+            greetings: default_agent_live_call_greetings(),
+        }
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -1291,6 +1575,7 @@ impl Default for AgentConfig {
             tool_call_dedup_exempt: Vec::new(),
             tool_filter_groups: Vec::new(),
             prompt_caching: false,
+            live_calls: AgentLiveCallConfig::default(),
         }
     }
 }
@@ -1300,9 +1585,9 @@ impl Default for AgentConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SkillsPromptInjectionMode {
     /// Inline full skill instructions and tool metadata into the system prompt.
-    #[default]
     Full,
     /// Inline only compact skill metadata (name/description/location) and load details on demand.
+    #[default]
     Compact,
 }
 
@@ -1315,7 +1600,7 @@ pub fn parse_skills_prompt_injection_mode(raw: &str) -> Option<SkillsPromptInjec
 }
 
 /// Skills loading configuration (`[skills]` section).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SkillsConfig {
     /// Enable loading and syncing the community open-skills repository.
     /// Default: `false` (opt-in).
@@ -1329,6 +1614,70 @@ pub struct SkillsConfig {
     /// `full` preserves legacy behavior. `compact` keeps context small and loads skills on demand.
     #[serde(default)]
     pub prompt_injection_mode: SkillsPromptInjectionMode,
+    /// One-time transitional import for workspace `skills/*/SKILL.*` packages.
+    /// Imported packages are stored as memory-backed skills and moved under `skills/ported/`.
+    #[serde(default = "default_port_workspace_packages_on_start")]
+    pub port_workspace_packages_on_start: bool,
+    /// Deterministic auto-promotion gates for generated skill patches.
+    /// Enabled by default; explicit apply commands still remain operator-triggered.
+    #[serde(default)]
+    pub auto_promotion: SkillsAutoPromotionConfig,
+}
+
+fn default_port_workspace_packages_on_start() -> bool {
+    true
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            open_skills_enabled: false,
+            open_skills_dir: None,
+            prompt_injection_mode: SkillsPromptInjectionMode::default(),
+            port_workspace_packages_on_start: default_port_workspace_packages_on_start(),
+            auto_promotion: SkillsAutoPromotionConfig::default(),
+        }
+    }
+}
+
+/// Auto-promotion policy for generated skill patches (`[skills.auto_promotion]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SkillsAutoPromotionConfig {
+    /// Allow explicit auto-promotion apply commands to write approved patch candidates.
+    #[serde(default = "default_skills_auto_promotion_enabled")]
+    pub enabled: bool,
+    /// Required clean live uses of the target skill before auto-promotion can apply.
+    #[serde(default = "default_skills_auto_promotion_min_successful_live_traces")]
+    pub min_successful_live_traces: usize,
+    /// Number of most recent live traces to inspect for the target skill.
+    #[serde(default = "default_skills_auto_promotion_trace_window_limit")]
+    pub trace_window_limit: usize,
+    /// Maximum recent failed/repaired traces tolerated in the inspected window.
+    #[serde(default)]
+    pub max_recent_blocking_traces: usize,
+}
+
+fn default_skills_auto_promotion_enabled() -> bool {
+    true
+}
+
+fn default_skills_auto_promotion_min_successful_live_traces() -> usize {
+    2
+}
+
+fn default_skills_auto_promotion_trace_window_limit() -> usize {
+    12
+}
+
+impl Default for SkillsAutoPromotionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_skills_auto_promotion_enabled(),
+            min_successful_live_traces: default_skills_auto_promotion_min_successful_live_traces(),
+            trace_window_limit: default_skills_auto_promotion_trace_window_limit(),
+            max_recent_blocking_traces: 0,
+        }
+    }
 }
 
 /// Multimodal (image) handling configuration (`[multimodal]` section).
@@ -3422,17 +3771,6 @@ pub struct MemoryConfig {
     /// Auto-save user conversation input to memory.
     pub auto_save: bool,
 
-    // ── Embeddings ────────────────────────────────────────────
-    /// Embedding provider: "none" | "openai" | "custom:URL"
-    #[serde(default = "default_embedding_provider")]
-    pub embedding_provider: String,
-    /// Embedding model name (e.g. "text-embedding-3-small")
-    #[serde(default = "default_embedding_model")]
-    pub embedding_model: String,
-    /// Embedding vector dimensions
-    #[serde(default = "default_embedding_dims")]
-    pub embedding_dimensions: usize,
-
     // ── Search tuning ─────────────────────────────────────────
     /// Weight for vector similarity in hybrid search (0.0–1.0)
     #[serde(default = "default_vector_weight")]
@@ -3464,15 +3802,6 @@ pub struct MemoryConfig {
     pub prompt_budget: PromptBudgetConfig,
 }
 
-fn default_embedding_provider() -> String {
-    "none".into()
-}
-fn default_embedding_model() -> String {
-    "text-embedding-3-small".into()
-}
-fn default_embedding_dims() -> usize {
-    1536
-}
 fn default_vector_weight() -> f64 {
     0.7
 }
@@ -3498,9 +3827,6 @@ impl Default for MemoryConfig {
         Self {
             backend: "surrealdb".into(),
             auto_save: true,
-            embedding_provider: default_embedding_provider(),
-            embedding_model: default_embedding_model(),
-            embedding_dimensions: default_embedding_dims(),
             vector_weight: default_vector_weight(),
             keyword_weight: default_keyword_weight(),
             min_relevance_score: default_min_relevance_score(),
@@ -4116,34 +4442,16 @@ impl Default for SchedulerConfig {
 
 // ── Model routing ────────────────────────────────────────────────
 
-/// Explicit summary model configuration (`[summary]` section).
+/// Summary generation tuning (`[summary]` section).
 ///
-/// When `provider` is set, the summary path creates its own provider instance
-/// instead of reusing the default. This allows using a cheaper/smaller route for summaries
-/// while the default provider is DashScope.
-///
-/// ```toml
-/// [summary]
-/// provider = "summary-provider"
-/// model = "summary-model-id"
-/// temperature = 0.3
-/// api_key_env = "SUMMARY_PROVIDER_API_KEY"
-/// ```
+/// Model/provider selection is intentionally not represented here. Compaction
+/// and rolling summary generation use the unified auxiliary lane resolver with
+/// `[[model_lanes]] lane = "compaction"`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SummaryConfig {
-    /// Provider name for summaries. When empty, uses default provider.
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// Model name for summaries. When empty, falls back to `summary_model` or `default_model`.
-    #[serde(default)]
-    pub model: Option<String>,
     /// Temperature for summary generation. Default: 0.3.
     #[serde(default = "default_summary_temperature")]
     pub temperature: f64,
-    /// Environment variable name to read API key from (e.g. "ANTHROPIC_API_KEY").
-    /// When set, reads the key from this env var instead of config.api_key.
-    #[serde(default)]
-    pub api_key_env: Option<String>,
 }
 
 fn default_summary_temperature() -> f64 {
@@ -4153,10 +4461,7 @@ fn default_summary_temperature() -> f64 {
 impl Default for SummaryConfig {
     fn default() -> Self {
         Self {
-            provider: None,
-            model: None,
             temperature: default_summary_temperature(),
-            api_key_env: None,
         }
     }
 }
@@ -4167,7 +4472,12 @@ impl Default for SummaryConfig {
 pub enum CapabilityLane {
     Reasoning,
     CheapReasoning,
+    Compaction,
     Embedding,
+    WebExtraction,
+    ToolValidator,
+    SpeechTranscription,
+    SpeechSynthesis,
     ImageGeneration,
     AudioGeneration,
     VideoGeneration,
@@ -4176,10 +4486,15 @@ pub enum CapabilityLane {
 }
 
 impl CapabilityLane {
-    pub const ALL: [CapabilityLane; 8] = [
+    pub const ALL: [CapabilityLane; 13] = [
         CapabilityLane::Reasoning,
         CapabilityLane::CheapReasoning,
+        CapabilityLane::Compaction,
         CapabilityLane::Embedding,
+        CapabilityLane::WebExtraction,
+        CapabilityLane::ToolValidator,
+        CapabilityLane::SpeechTranscription,
+        CapabilityLane::SpeechSynthesis,
         CapabilityLane::ImageGeneration,
         CapabilityLane::AudioGeneration,
         CapabilityLane::VideoGeneration,
@@ -4191,7 +4506,12 @@ impl CapabilityLane {
         match self {
             CapabilityLane::Reasoning => "reasoning",
             CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Compaction => "compaction",
             CapabilityLane::Embedding => "embedding",
+            CapabilityLane::WebExtraction => "web_extraction",
+            CapabilityLane::ToolValidator => "tool_validator",
+            CapabilityLane::SpeechTranscription => "speech_transcription",
+            CapabilityLane::SpeechSynthesis => "speech_synthesis",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",
@@ -4223,6 +4543,8 @@ pub enum ModelFeature {
     AudioGeneration,
     VideoGeneration,
     MusicGeneration,
+    SpeechTranscription,
+    SpeechSynthesis,
     Embedding,
     MultimodalUnderstanding,
     ServerContinuation,
@@ -4305,42 +4627,6 @@ pub struct ModelRouteConfig {
     pub provider: String,
     /// Model to use with that provider
     pub model: String,
-    /// Optional API key override for this route's provider
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Optional manual profile overrides for this route.
-    #[serde(default)]
-    pub profile: ModelCandidateProfileConfig,
-}
-
-// ── Embedding routing ───────────────────────────────────────────
-
-/// Route an embedding hint to a specific provider + model.
-///
-/// ```toml
-/// [[embedding_routes]]
-/// hint = "semantic"
-/// provider = "openai"
-/// model = "text-embedding-3-small"
-/// dimensions = 1536
-///
-/// [memory]
-/// embedding_model = "hint:semantic"
-/// ```
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EmbeddingRouteConfig {
-    /// Route hint name (e.g. "semantic", "archive", "faq")
-    pub hint: String,
-    /// Optional capability lane resolved by runtime/domain services.
-    #[serde(default)]
-    pub capability: Option<CapabilityLane>,
-    /// Embedding provider (`none`, `openai`, or `custom:<url>`)
-    pub provider: String,
-    /// Embedding model to use with that provider
-    pub model: String,
-    /// Optional embedding dimension override for this route
-    #[serde(default)]
-    pub dimensions: Option<usize>,
     /// Optional API key override for this route's provider
     #[serde(default)]
     pub api_key: Option<String>,
@@ -6306,7 +6592,6 @@ impl Default for Config {
                 .map(|(provider, _)| provider.to_string()),
             default_model: super::model_catalog::default_reasoning_seed()
                 .map(|(_, model)| model.to_string()),
-            summary_model: None,
             compression: ContextCompressionConfig::default(),
             compression_overrides: Vec::new(),
             summary: SummaryConfig::default(),
@@ -6330,7 +6615,6 @@ impl Default for Config {
             route_aliases: Vec::new(),
             model_lanes: Vec::new(),
             model_preset: None,
-            embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),
             channels_config: ChannelsConfig::default(),

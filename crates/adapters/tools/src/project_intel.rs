@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use synapse_domain::domain::tool_fact::{
     ProjectAction, ProjectFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 
 /// Project intelligence tool for consulting project management.
 ///
@@ -547,6 +548,40 @@ impl Tool for ProjectIntelTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values([
+                "status_report",
+                "risk_scan",
+                "draft_update",
+                "sprint_summary",
+                "effort_estimate",
+            ]),
+            ToolArgumentPolicy::sensitive("project_name").user_private(),
+            ToolArgumentPolicy::replayable("period").with_values(["week", "sprint", "month"]),
+            ToolArgumentPolicy::replayable("language").with_values(["en", "de", "fr", "it"]),
+            ToolArgumentPolicy::sensitive("git_log").user_private(),
+            ToolArgumentPolicy::sensitive("jira_summary").user_private(),
+            ToolArgumentPolicy::sensitive("notes").user_private(),
+            ToolArgumentPolicy::sensitive("deadlines").user_private(),
+            ToolArgumentPolicy::sensitive("velocity").user_private(),
+            ToolArgumentPolicy::sensitive("blockers").user_private(),
+            ToolArgumentPolicy::replayable("audience").with_values(["client", "internal"]),
+            ToolArgumentPolicy::replayable("tone").with_values(["formal", "casual"]),
+            ToolArgumentPolicy::sensitive("highlights").user_private(),
+            ToolArgumentPolicy::sensitive("concerns").user_private(),
+            ToolArgumentPolicy::sensitive("sprint_dates").user_private(),
+            ToolArgumentPolicy::sensitive("completed").user_private(),
+            ToolArgumentPolicy::sensitive("in_progress").user_private(),
+            ToolArgumentPolicy::sensitive("blocked").user_private(),
+            ToolArgumentPolicy::sensitive("tasks").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

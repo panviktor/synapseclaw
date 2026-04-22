@@ -16,9 +16,9 @@ use crate::runtime::runtime_error_classification::classify_agent_runtime_error;
 use crate::runtime_adapter_contract::{
     execute_runtime_command_output, RuntimeCommandHost, RuntimeModelHelpSnapshot,
     RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
-    WebRuntimeAdapterContract,
+    RuntimeSessionCompactionTarget, WebRuntimeAdapterContract,
 };
-use crate::runtime_routes::WorkspaceModelProfileCatalog;
+use crate::runtime_routes::{RuntimeCapabilityDoctorInput, WorkspaceModelProfileCatalog};
 use crate::runtime_tool_notifications::RuntimeToolNotification;
 use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
 use synapse_domain::application::services::assistant_output_presentation::PresentedOutput;
@@ -235,7 +235,30 @@ fn default_web_route_selection(
         calibrations: Vec::new(),
         watchdog_alerts: Vec::new(),
         handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
     }
+}
+
+fn web_provider_capabilities_for_route(
+    state: &AppState,
+    config: &synapse_domain::config::schema::Config,
+    route: &RouteSelection,
+) -> synapse_domain::ports::provider::ProviderCapabilities {
+    let default_provider = default_web_provider(config);
+    if route
+        .provider
+        .eq_ignore_ascii_case(default_provider.as_str())
+    {
+        return state.provider.capabilities();
+    }
+    state
+        .provider_cache
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&route.provider)
+        .map(|provider| provider.capabilities())
+        .unwrap_or_default()
 }
 
 /// Query params for the proxy WebSocket.
@@ -660,10 +683,23 @@ async fn ensure_session(
         Err(_) => (None, 0, 0, 0, None, None, 0),
     };
 
+    let preservation_message =
+        crate::runtime_history_hygiene::precompress_session_hygiene_preservation_message(
+        &web_runtime_history,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
+        synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+    )
+    .await;
     if synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene(
         &mut web_runtime_history,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
     ) {
+        if let Some(message) = preservation_message {
+            web_runtime_history.push(message);
+        }
         tracing::info!(
             session_key = %session_key,
             "Compacted resumed web session before runtime execution"
@@ -880,7 +916,10 @@ async fn handle_channel_history(
         })
         .collect();
 
-    let summary = backend.load_summary(session_key).await.map(|summary| summary.summary);
+    let summary = backend
+        .load_summary(session_key)
+        .await
+        .map(|summary| summary.summary);
     let metadata = backend
         .list_sessions_with_metadata()
         .await
@@ -1227,6 +1266,7 @@ fn build_web_inbound_config(
             agent_id: state.agent_id.clone(),
             prompt_budget_config: config.memory.prompt_budget.clone(),
             presentation_mode: synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(true),
+            emit_compact_progress: true,
         },
     ))
 }
@@ -1674,6 +1714,213 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         })
     }
 
+    async fn capability_doctor_report(
+        &mut self,
+    ) -> anyhow::Result<
+        synapse_domain::application::services::capability_doctor::CapabilityDoctorReport,
+    > {
+        let route = current_web_route_selection(self.state, self.conversation_key)?;
+        let provider_capabilities =
+            web_provider_capabilities_for_route(self.state, self.config, &route);
+        let memory_backend_healthy = Some(self.state.mem.health_check().await);
+        let embedding_profile = self.state.mem.embedding_profile();
+        Ok(
+            crate::runtime_routes::build_runtime_capability_doctor_report(
+                RuntimeCapabilityDoctorInput {
+                    route: &route,
+                    config: self.config,
+                    provider_capabilities,
+                    provider_plan_denial: None,
+                    tool_registry_count: self.state.runtime_tools_registry.len(),
+                    memory_backend_name: Some(self.state.mem.name()),
+                    memory_backend_healthy,
+                    memory_backend_configured: true,
+                    embedding_profile: Some(&embedding_profile),
+                    channel_name: Some("web"),
+                    channel_available: Some(true),
+                },
+            ),
+        )
+    }
+
+    async fn skill_status_output(
+        &mut self,
+        view: synapse_domain::application::services::inbound_message_service::RuntimeSkillStatusView,
+    ) -> anyhow::Result<String> {
+        let available_tools = self
+            .state
+            .runtime_tools_registry
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        let mut available_tool_roles = self
+            .state
+            .runtime_tools_registry
+            .iter()
+            .filter_map(|tool| {
+                tool.runtime_role()
+                    .map(synapse_domain::ports::tool::tool_runtime_role_name)
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        available_tool_roles.sort();
+        available_tool_roles.dedup();
+        crate::skills::format_runtime_skill_status_view(
+            self.config,
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            available_tools,
+            available_tool_roles,
+            100,
+            view,
+        )
+        .await
+    }
+
+    async fn skill_tool_contracts_output(&mut self) -> anyhow::Result<String> {
+        Ok(crate::tools::format_tool_contract_inventory_report(
+            self.state.runtime_tools_registry.as_ref(),
+        ))
+    }
+
+    async fn skill_use_traces_output(&mut self) -> anyhow::Result<String> {
+        crate::skills::format_skill_use_traces_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            25,
+        )
+        .await
+    }
+
+    async fn skill_health_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        crate::skills::format_skill_health_cleanup_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            100,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn skill_patch_diff_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+        crate::skills::format_skill_patch_candidate_diff_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            candidate,
+            100,
+        )
+        .await
+    }
+
+    async fn apply_skill_patch_output(&mut self, candidate: &str) -> anyhow::Result<String> {
+        crate::skills::apply_skill_patch_candidate_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            candidate,
+            100,
+        )
+        .await
+    }
+
+    async fn skill_patch_versions_output(
+        &mut self,
+        skill_ref: Option<&str>,
+    ) -> anyhow::Result<String> {
+        crate::skills::format_skill_patch_versions_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            skill_ref,
+            50,
+        )
+        .await
+    }
+
+    async fn create_user_skill_output(
+        &mut self,
+        name: &str,
+        body: &str,
+        metadata: &synapse_domain::application::services::inbound_message_service::RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String> {
+        crate::skills::create_user_authored_skill_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            crate::skills::user_authored_skill_request_from_runtime_command(name, body, metadata),
+        )
+        .await
+    }
+
+    async fn update_user_skill_output(
+        &mut self,
+        skill_ref: &str,
+        body: &str,
+        metadata: &synapse_domain::application::services::inbound_message_service::RuntimeUserSkillCreateMetadata,
+    ) -> anyhow::Result<String> {
+        crate::skills::update_user_skill_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            crate::skills::UserSkillUpdateRequest {
+                skill_ref: skill_ref.to_string(),
+                description: None,
+                body: Some(body.to_string()),
+                task_family: metadata.task_family.clone(),
+                tool_pattern: (!metadata.tool_pattern.is_empty())
+                    .then_some(metadata.tool_pattern.clone()),
+                tags: (!metadata.tags.is_empty()).then_some(metadata.tags.clone()),
+                status: None,
+            },
+        )
+        .await
+    }
+
+    async fn rollback_skill_patch_output(&mut self, rollback_ref: &str) -> anyhow::Result<String> {
+        crate::skills::rollback_skill_patch_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            rollback_ref,
+            100,
+        )
+        .await
+    }
+
+    async fn skill_auto_promotion_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        let policy = crate::skills::skill_auto_promotion_policy_from_config(
+            &self.config.skills.auto_promotion,
+        );
+        crate::skills::format_skill_auto_promotion_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            &policy,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn skill_review_output(&mut self, apply: bool) -> anyhow::Result<String> {
+        crate::skills::format_learned_skill_review_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            100,
+            apply,
+        )
+        .await
+    }
+
+    async fn update_skill_status_output(
+        &mut self,
+        skill_ref: &str,
+        target_status: synapse_domain::domain::memory::SkillStatus,
+    ) -> anyhow::Result<String> {
+        crate::skills::update_learned_skill_status_output(
+            self.state.mem.as_ref(),
+            &self.state.agent_id,
+            skill_ref,
+            target_status,
+        )
+        .await
+    }
+
     async fn switch_provider(
         &mut self,
         request: RuntimeRouteMutationRequest,
@@ -1730,6 +1977,8 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
             },
             Some(&catalog),
         );
@@ -1762,6 +2011,33 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 compacted: outcome.compacted,
             })
         }
+    }
+
+    async fn session_compaction_target(
+        &mut self,
+    ) -> anyhow::Result<RuntimeSessionCompactionTarget> {
+        let route = current_web_route_selection(self.state, self.conversation_key)
+            .unwrap_or_else(|_| default_web_route_selection(self.state, self.config));
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+                self.config,
+                &route,
+                Some(&WorkspaceModelProfileCatalog::with_provider_endpoint(
+                    self.config.workspace_dir.clone(),
+                    Some(default_web_provider(self.config).as_str()),
+                    self.config.api_url.as_deref(),
+                )),
+            );
+        let history = web_history_port(self.state);
+        Ok(RuntimeSessionCompactionTarget {
+            history,
+            conversation_key: self.conversation_key.to_string(),
+            target_profile,
+            memory: Some(Arc::clone(&self.state.mem)),
+            run_recipe_store: Some(Arc::clone(&self.state.run_recipe_store)),
+            agent_id: self.state.agent_id.clone(),
+            surface: crate::runtime_history_hygiene::RuntimeCompactionSurface::Web,
+        })
     }
 
     async fn clear_session(&mut self) -> anyhow::Result<()> {
@@ -1824,7 +2100,7 @@ async fn apply_web_runtime_route(
     }
 
     let preflight =
-        resolve_web_runtime_route_switch_preflight(state, conversation_key, &target_profile);
+        resolve_web_runtime_route_switch_preflight(state, conversation_key, &target_profile).await;
     if preflight.preflight.status == RouteSwitchStatus::TooLarge {
         return Ok(WebRuntimeRouteApplyOutcome {
             compacted: preflight.compacted,
@@ -1866,7 +2142,7 @@ fn web_history_port(
     )
 }
 
-fn resolve_web_runtime_route_switch_preflight(
+async fn resolve_web_runtime_route_switch_preflight(
     state: &AppState,
     conversation_key: &str,
     target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
@@ -1877,7 +2153,11 @@ fn resolve_web_runtime_route_switch_preflight(
         conversation_key,
         target_profile,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
     )
+    .await
 }
 
 async fn web_route_effective_context_cache_stats(
@@ -1926,10 +2206,28 @@ async fn compact_web_session_after_context_limit(
     state: &AppState,
     session_key: &str,
 ) -> anyhow::Result<bool> {
-    Ok(web_history_port(state).compact_history(
+    let history = web_history_port(state);
+    let current_history = history.get_history(session_key);
+    let preservation_message =
+        crate::runtime_history_hygiene::precompress_session_hygiene_preservation_message(
+        &current_history,
+        synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        Some(state.mem.as_ref()),
+        Some(state.run_recipe_store.as_ref()),
+        &state.agent_id,
+        synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::ChannelSessionHygiene,
+    )
+    .await;
+    let compacted = history.compact_history(
         session_key,
         synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
-    ))
+    );
+    if compacted {
+        if let Some(message) = preservation_message {
+            history.append_turn(session_key, message);
+        }
+    }
+    Ok(compacted)
 }
 
 // ── RPC: chat.abort ─────────────────────────────────────────────────────────
@@ -1991,7 +2289,10 @@ async fn handle_sessions_list(
     // Also include channel sessions through the same backend port used by channels.
     if let Some(backend) = state.channel_session_backend.as_ref() {
         for session in backend.list_sessions_with_metadata().await {
-            let summary = backend.load_summary(&session.key).await.map(|summary| summary.summary);
+            let summary = backend
+                .load_summary(&session.key)
+                .await
+                .map(|summary| summary.summary);
             all_sessions.push(ConversationSession {
                 key: session.key.clone(),
                 kind: ConversationKind::Channel,

@@ -26,6 +26,7 @@ pub mod pipeline_executor;
 pub mod pipeline_observer;
 pub mod pipeline_store;
 pub mod provider;
+pub mod realtime_call;
 pub mod route_selection;
 pub mod run_recipe_store;
 pub mod run_store;

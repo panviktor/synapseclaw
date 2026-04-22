@@ -41,6 +41,8 @@ struct ModelCatalogData {
     route_aliases: Vec<ModelRouteConfig>,
     #[serde(default)]
     request_policies: Vec<ModelRequestPolicyCatalogEntry>,
+    #[serde(default)]
+    voice_catalogs: Vec<TtsVoiceCatalogEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,12 +105,27 @@ struct ModelRequestPolicyCatalogEntry {
     reasoning_effort_aliases: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct TtsVoiceCatalogEntry {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    voices: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelRequestPolicy {
     pub fixed_temperature: Option<f64>,
     pub reasoning_efforts: Vec<String>,
     pub default_reasoning_effort: Option<String>,
     pub reasoning_effort_aliases: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TtsVoiceCatalog {
+    pub provider: String,
+    pub model: String,
+    pub voices: Vec<String>,
 }
 
 impl ModelRequestPolicy {
@@ -289,6 +306,17 @@ fn merge_catalog_data(
             *existing = policy;
         } else {
             merged.request_policies.push(policy);
+        }
+    }
+
+    for catalog in override_data.voice_catalogs {
+        if let Some(existing) = merged.voice_catalogs.iter_mut().find(|item| {
+            item.provider.eq_ignore_ascii_case(&catalog.provider)
+                && item.model.eq_ignore_ascii_case(&catalog.model)
+        }) {
+            *existing = catalog;
+        } else {
+            merged.voice_catalogs.push(catalog);
         }
     }
 
@@ -557,6 +585,31 @@ pub fn model_request_policy(provider: &str, model: &str) -> Option<ModelRequestP
         })
 }
 
+pub fn tts_voice_catalog(provider: &str, model: &str) -> Option<TtsVoiceCatalog> {
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+
+    let normalized_model = model.rsplit('/').next().unwrap_or(model);
+
+    active_model_catalog()
+        .data
+        .voice_catalogs
+        .iter()
+        .find(|entry| {
+            entry.provider.eq_ignore_ascii_case(provider)
+                && (entry.model.eq_ignore_ascii_case(model)
+                    || entry.model.eq_ignore_ascii_case(normalized_model))
+        })
+        .map(|entry| TtsVoiceCatalog {
+            provider: entry.provider.clone(),
+            model: entry.model.clone(),
+            voices: entry.voices.clone(),
+        })
+}
+
 pub fn embedding_profile(
     provider: &str,
     model: &str,
@@ -669,7 +722,7 @@ fn hydrate_candidate_api_key(candidate: &mut ModelLaneCandidateConfig, api_key: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::CapabilityLane;
+    use crate::config::schema::{CapabilityLane, ModelFeature};
 
     #[test]
     fn bundled_catalog_exposes_known_presets() {
@@ -706,6 +759,9 @@ mod tests {
             .any(|lane| lane.lane == CapabilityLane::CheapReasoning));
         assert!(lanes
             .iter()
+            .any(|lane| lane.lane == CapabilityLane::Compaction));
+        assert!(lanes
+            .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
         assert!(lanes
             .iter()
@@ -719,6 +775,43 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
+    }
+
+    #[test]
+    fn bundled_catalog_exposes_speech_profiles() {
+        let whisper = model_profile("groq", "whisper-large-v3-turbo")
+            .expect("groq whisper profile should exist");
+        assert!(whisper
+            .features
+            .contains(&ModelFeature::SpeechTranscription));
+        let groq_tts = model_profile("groq", "canopylabs/orpheus-v1-english")
+            .expect("groq orpheus profile should exist");
+        assert!(groq_tts.features.contains(&ModelFeature::SpeechSynthesis));
+
+        let tts = model_profile("openai", "tts-1").expect("openai tts profile should exist");
+        assert!(tts.features.contains(&ModelFeature::SpeechSynthesis));
+
+        let mistral_stt = model_profile("mistral", "voxtral-mini-latest")
+            .expect("mistral voxtral stt profile should exist");
+        assert!(mistral_stt
+            .features
+            .contains(&ModelFeature::SpeechTranscription));
+
+        let minimax_tts =
+            model_profile("minimax", "speech-2.8-hd").expect("minimax speech profile should exist");
+        assert!(minimax_tts
+            .features
+            .contains(&ModelFeature::SpeechSynthesis));
+
+        let xai_tts = model_profile("xai", "tts").expect("xai tts profile should exist");
+        assert!(xai_tts.features.contains(&ModelFeature::SpeechSynthesis));
+
+        let groq_voices = tts_voice_catalog("groq", "canopylabs/orpheus-v1-english")
+            .expect("groq orpheus voice catalog should exist");
+        assert!(groq_voices.voices.iter().any(|voice| voice == "hannah"));
+
+        let xai_voices = tts_voice_catalog("xai", "tts").expect("xai voice catalog should exist");
+        assert!(xai_voices.voices.iter().any(|voice| voice == "eve"));
     }
 
     #[test]
@@ -1007,6 +1100,13 @@ mod tests {
                   "reasoning_efforts": ["low", "medium", "high"],
                   "reasoning_effort_aliases": { "minimal": "low", "xhigh": "high" }
                 }
+              ],
+              "voice_catalogs": [
+                {
+                  "provider": "groq",
+                  "model": "canopylabs/orpheus-v1-english",
+                  "voices": ["test-voice"]
+                }
               ]
             }"#,
         )
@@ -1051,6 +1151,14 @@ mod tests {
             .find(|policy| policy.provider == "openai-codex" && policy.model == "gpt-5.4")
             .expect("request policy should merge by provider/model key");
         assert_eq!(policy.default_reasoning_effort.as_deref(), Some("high"));
+        let voice_catalog = merged
+            .voice_catalogs
+            .iter()
+            .find(|catalog| {
+                catalog.provider == "groq" && catalog.model == "canopylabs/orpheus-v1-english"
+            })
+            .expect("voice catalog should merge by provider/model key");
+        assert_eq!(voice_catalog.voices, vec!["test-voice"]);
     }
 
     #[test]

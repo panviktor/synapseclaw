@@ -290,7 +290,8 @@ impl PromptSection for ChannelMediaSection {
             Messages from channels may contain media markers:\n\
             - `[Voice] <text>` — The user sent a voice/audio message that has already been transcribed to text. Respond to the transcribed content directly.\n\
             - `[IMAGE:<path>]` — An image attachment, processed by the vision pipeline.\n\
-            - `[Document: <name>] <path>` — A file attachment saved to the workspace."
+            - `[Document: <name>] <path>` — A file attachment saved to the workspace.\n\
+            Do not describe a plain text response as a voice note. If a voice delivery tool is registered and the user wants voice, use it."
             .into())
     }
 }
@@ -324,7 +325,31 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
     }
     if has_tool("message_send") {
         lines.push(
-            "- `message_send` uses `{ \"content\": \"...\" }` with omitted `target` for a resolved default, `\"current_conversation\"` to reply here, or `{ \"channel\": \"...\", \"recipient\": \"...\", \"thread_ref\": \"...\" }` for an explicit target."
+            "- `message_send` uses `{ \"content\": \"...\" }` with omitted `target` for a resolved default, `\"current_conversation\"` to reply here, or `{ \"channel\": \"...\", \"recipient\": \"...\", \"thread_ref\": \"...\" }` for an explicit target. Explicit targets must be objects, not JSON strings."
+                .to_string(),
+        );
+    }
+    if has_tool("voice_list") {
+        lines.push(
+            "- `voice_list` returns the configured voice provider, current default voice, and supported voice IDs. Use it when the user asks what voices are available or asks for a voice that you are unsure exists."
+                .to_string(),
+        );
+    }
+    if has_tool("voice_preference") {
+        lines.push(
+            "- `voice_preference` stores durable scoped voice settings: use `set` with `scope: \"global\"|\"channel\"|\"conversation\"` when the user asks to remember a voice or auto-TTS policy; use `get`, `clear`, or `list` to inspect or remove those settings."
+                .to_string(),
+        );
+    }
+    if has_tool("voice_call") {
+        lines.push(
+            "- `voice_call` controls a real external audio call. If the user explicitly asks you to call them, place a call, answer a ringing call, or hang up, use `voice_call` with `confirm: true` instead of only replying with text. For `start`, prefer `to: \"current_conversation\"` when calling back into the current call-capable chat, or omit `to` if the current conversation already resolves the target. For inbound or active call turns, answer the caller naturally and keep going; the runtime may deliver a normal assistant reply as spoken audio in the call. Do not claim that you cannot make or answer calls when `voice_call` is available; use `start`, `answer`, or `hangup` as appropriate."
+                .to_string(),
+        );
+    }
+    if has_tool("voice_reply") {
+        lines.push(
+            "- `voice_reply` uses `{ \"content\": \"...\", \"target\": \"current_conversation\" }` to send a real spoken voice note in the current chat. Use optional `voice` only with IDs returned by `voice_list`. Put only the spoken reply in `content`; do not say inside the audio that delivery already happened, do not simulate voice with plain text, and pass explicit targets as objects, not JSON strings."
                 .to_string(),
         );
     }
@@ -374,6 +399,7 @@ mod tests {
     use super::*;
     use crate::tools::traits::Tool;
     use async_trait::async_trait;
+    use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
 
     struct TestTool;
 
@@ -389,6 +415,10 @@ mod tests {
 
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
+        }
+
+        fn tool_contract(&self) -> ToolContract {
+            ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
         }
 
         async fn execute(

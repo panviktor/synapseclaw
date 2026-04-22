@@ -6,7 +6,7 @@ use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolExecution};
 
 const MAX_RESULTS: usize = 1000;
 const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MB
@@ -386,6 +386,24 @@ impl Tool for ContentSearchTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("pattern"),
+            ToolArgumentPolicy::workspace_local("path"),
+            ToolArgumentPolicy::replayable("output_mode").with_values([
+                "content",
+                "files_with_matches",
+                "count",
+            ]),
+            ToolArgumentPolicy::replayable("include"),
+            ToolArgumentPolicy::replayable("case_sensitive"),
+            ToolArgumentPolicy::replayable("context_before"),
+            ToolArgumentPolicy::replayable("context_after"),
+            ToolArgumentPolicy::replayable("multiline"),
+            ToolArgumentPolicy::replayable("max_results"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -797,6 +815,14 @@ mod tests {
         assert!(schema["properties"]["pattern"].is_object());
         assert!(schema["properties"]["path"].is_object());
         assert!(schema["properties"]["output_mode"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert!(contract.argument("pattern").unwrap().replayable);
+        assert!(contract
+            .argument("output_mode")
+            .unwrap()
+            .replayable_values
+            .contains(&"count".to_string()));
         assert!(schema["required"]
             .as_array()
             .unwrap()

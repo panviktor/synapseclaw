@@ -126,6 +126,20 @@ pub trait SkillMemoryPort: Send + Sync {
     async fn get_skill(&self, name: &str, agent_id: &AgentId)
         -> Result<Option<Skill>, MemoryError>;
 
+    /// Get skill by id, scoped to agent. Implementations should include
+    /// deprecated records so rollback snapshots remain addressable.
+    async fn get_skill_by_id(
+        &self,
+        skill_id: &MemoryId,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        Ok(self
+            .list_skills(agent_id, 512)
+            .await?
+            .into_iter()
+            .find(|skill| &skill.id == skill_id))
+    }
+
     /// List recent/active skills for an agent.
     async fn list_skills(
         &self,

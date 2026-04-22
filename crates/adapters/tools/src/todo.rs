@@ -10,6 +10,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_domain::{
     domain::dialogue_state::FocusEntity,
     domain::tool_fact::TypedToolFact,
@@ -307,6 +310,20 @@ impl Tool for TodoTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action")
+                    .with_values(["add", "list", "update", "complete", "remove", "clear"]),
+                ToolArgumentPolicy::sensitive("text").session_private(),
+                ToolArgumentPolicy::replayable("id"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

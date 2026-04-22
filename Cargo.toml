@@ -2,6 +2,9 @@
 members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools", "crates/adapters/onboard", "dev/gateway-chat-harness"]
 resolver = "2"
 
+[patch.crates-io]
+livekit = { path = "vendor/livekit-0.7.36" }
+
 [package]
 name = "synapseclaw"
 version = "0.1.0"
@@ -59,7 +62,7 @@ tokio = { version = "1.50", default-features = false, features = ["rt-multi-thre
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "blocking", "multipart", "stream", "socks"] }
 
 # Matrix client + E2EE decryption
-matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite", "experimental-widgets", "experimental-send-custom-to-device", "uniffi"] }
 
 # Serialization
 serde = { version = "1.0", default-features = false, features = ["derive"] }

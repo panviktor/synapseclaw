@@ -54,6 +54,7 @@ use synapse_domain::application::services::history_compaction as compaction;
 use synapse_domain::application::services::history_compaction::{
     estimate_history_tokens, DEFAULT_MAX_HISTORY_MESSAGES,
 };
+use synapse_domain::domain::memory::Skill as MemorySkill;
 
 /// Minimum interval between progress sends to avoid flooding the draft channel.
 pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
@@ -104,6 +105,69 @@ fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
     Some(format!("cli:{raw}"))
 }
 
+fn render_relevant_skill_cards(skills: &[MemorySkill]) -> String {
+    let active = skills
+        .iter()
+        .filter(|skill| !skill.name.trim().is_empty())
+        .collect::<Vec<_>>();
+    if active.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from(
+        "[Relevant skills]\n\
+         These skill candidates matched the current request. Keep context compact: call `skill_read` with `skill_id` before applying full instructions.\n",
+    );
+    for skill in active {
+        out.push_str("<skill_candidate>\n");
+        write_relevant_skill_field(&mut out, "skill_id", &skill.id, 160);
+        write_relevant_skill_field(&mut out, "name", &skill.name, 160);
+        write_relevant_skill_field(&mut out, "description", &skill.description, 320);
+        if let Some(task_family) = skill.task_family.as_deref() {
+            write_relevant_skill_field(&mut out, "task_family", task_family, 160);
+        }
+        if !skill.tool_pattern.is_empty() {
+            write_relevant_skill_field(&mut out, "tools", &skill.tool_pattern.join(", "), 240);
+        }
+        if !skill.tags.is_empty() {
+            write_relevant_skill_field(&mut out, "tags", &skill.tags.join(", "), 240);
+        }
+        write_relevant_skill_field(&mut out, "origin", &skill.origin.to_string(), 64);
+        write_relevant_skill_field(&mut out, "status", &skill.status.to_string(), 64);
+        let _ = writeln!(
+            out,
+            "<content>omitted; load on demand with skill_read</content>"
+        );
+        out.push_str("</skill_candidate>\n");
+    }
+    out.push('\n');
+    out
+}
+
+fn write_relevant_skill_field(out: &mut String, name: &str, value: &str, max_chars: usize) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let value = truncate_with_ellipsis(trimmed, max_chars);
+    let _ = writeln!(out, "<{name}>{}</{name}>", xml_escape_text(&value));
+}
+
+fn xml_escape_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Thin wrapper: delegates to domain `trim_history`.
 fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
     compaction::trim_history(history, max_history);
@@ -113,6 +177,8 @@ fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
 async fn auto_compact_history(
     history: &mut Vec<ChatMessage>,
     provider: &dyn Provider,
+    memory: &dyn UnifiedMemoryPort,
+    agent_id: &str,
     model: &str,
     max_history: usize,
     max_context_tokens: usize,
@@ -133,9 +199,32 @@ async fn auto_compact_history(
     ) else {
         return Ok(false);
     };
+    let message_indices = (start..compact_end).collect::<Vec<_>>();
 
-    let summarizer_user =
-        compaction::compaction_summarizer_prompt_with_policy(&transcript, None, &policy, None);
+    let handoff_report =
+        synapse_domain::application::services::memory_precompress_handoff::execute_memory_precompress_handoff(
+            Some(memory),
+            synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffInput {
+                agent_id,
+                reason: synapse_domain::application::services::memory_precompress_handoff::MemoryPreCompressHandoffReason::LiveAgentCompaction,
+                start_index: start,
+                end_index: compact_end,
+                transcript: &transcript,
+                messages: &history[start..compact_end],
+                message_indices: &message_indices,
+                recent_tool_repairs: &[],
+                run_recipe_store: None,
+                observed_at_unix: chrono::Utc::now().timestamp(),
+            },
+        )
+        .await;
+    let summarizer_user = compaction::compaction_summarizer_prompt_with_policy_and_hints(
+        &transcript,
+        None,
+        &policy,
+        None,
+        &handoff_report.preservation_hints,
+    );
 
     let summary_raw = match provider
         .chat_with_system(
@@ -308,13 +397,7 @@ async fn build_context(
     };
     if let Ok(skills) = mem.find_skills(&skill_query).await {
         tracing::info!(skills = skills.len(), "memory.context.skills");
-        for skill in &skills {
-            if !skill.content.trim().is_empty() {
-                let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
-                let _ = writeln!(context, "{}", skill.content.trim());
-                let _ = writeln!(context, "</skill>");
-            }
-        }
+        context.push_str(&render_relevant_skill_cards(&skills));
     }
 
     // ── Related entities (conditional: only if recall found relevant memories) ──

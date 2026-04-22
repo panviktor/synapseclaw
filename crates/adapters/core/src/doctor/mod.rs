@@ -2,7 +2,13 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::io::Write;
 use std::path::Path;
-use synapse_domain::config::schema::Config;
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane, AuxiliaryModelResolutionError,
+};
+use synapse_domain::application::services::capability_doctor::CapabilityDoctorSeverity;
+use synapse_domain::application::services::model_preset_resolution::resolve_effective_model_lanes;
+use synapse_domain::config::schema::{CapabilityLane, Config};
+use synapse_domain::ports::route_selection::RouteSelection;
 
 const DAEMON_STALE_SECONDS: i64 = 30;
 const SCHEDULER_STALE_SECONDS: i64 = 120;
@@ -80,12 +86,76 @@ pub fn diagnose(config: &Config) -> Vec<DiagResult> {
     let mut items: Vec<DiagItem> = Vec::new();
 
     check_config_semantics(config, &mut items);
+    check_runtime_capabilities(config, &mut items);
     check_workspace(config, &mut items);
     check_daemon_state(config, &mut items);
     check_environment(&mut items);
     check_cli_tools(&mut items);
 
     items.into_iter().map(DiagItem::into_result).collect()
+}
+
+fn check_runtime_capabilities(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "capability";
+    let provider = config.default_provider.clone().unwrap_or_default();
+    let model = config.default_model.clone().unwrap_or_default();
+    let route = RouteSelection {
+        provider: provider.clone(),
+        model,
+        lane: None,
+        candidate_index: None,
+        last_admission: None,
+        recent_admissions: Vec::new(),
+        last_tool_repair: None,
+        recent_tool_repairs: Vec::new(),
+        context_cache: None,
+        assumptions: Vec::new(),
+        calibrations: Vec::new(),
+        watchdog_alerts: Vec::new(),
+        handoff_artifacts: Vec::new(),
+        runtime_decision_traces: Vec::new(),
+        usage_ledger: Default::default(),
+    };
+    let provider_capabilities = if provider.trim().is_empty() {
+        Default::default()
+    } else {
+        synapse_providers::create_provider(provider.as_str(), config.api_key.as_deref())
+            .map(|provider| provider.capabilities())
+            .unwrap_or_default()
+    };
+    let report = crate::runtime_routes::build_runtime_capability_doctor_report(
+        crate::runtime_routes::RuntimeCapabilityDoctorInput {
+            route: &route,
+            config,
+            provider_capabilities,
+            provider_plan_denial: None,
+            tool_registry_count: 0,
+            memory_backend_name: None,
+            memory_backend_healthy: None,
+            memory_backend_configured: false,
+            embedding_profile: None,
+            channel_name: None,
+            channel_available: None,
+        },
+    );
+
+    for node in report.nodes {
+        let readiness = crate::runtime_routes::capability_doctor_readiness_name(node.readiness);
+        let subsystem = crate::runtime_routes::capability_doctor_subsystem_name(node.subsystem);
+        let message = if let Some(recommendation) = node.recommendation {
+            format!(
+                "{subsystem} {}: {readiness} ({recommendation})",
+                node.subject
+            )
+        } else {
+            format!("{subsystem} {}: {readiness}", node.subject)
+        };
+        match node.severity {
+            CapabilityDoctorSeverity::Ok => items.push(DiagItem::ok(cat, message)),
+            CapabilityDoctorSeverity::Warn => items.push(DiagItem::warn(cat, message)),
+            CapabilityDoctorSeverity::Error => items.push(DiagItem::error(cat, message)),
+        }
+    }
 }
 
 /// Run diagnostics and print human-readable report to stdout.
@@ -474,6 +544,9 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         items.push(DiagItem::warn(cat, "no default_model configured"));
     }
 
+    check_primary_reasoning_lane(config, items);
+    check_auxiliary_model_lanes(config, items);
+
     // Temperature range
     if config.default_temperature >= 0.0 && config.default_temperature <= 2.0 {
         items.push(DiagItem::ok(
@@ -523,58 +596,6 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         }
     }
 
-    // Embedding routes validation
-    for route in &config.embedding_routes {
-        if route.hint.trim().is_empty() {
-            items.push(DiagItem::warn(cat, "embedding route with empty hint"));
-        }
-        if let Some(reason) = embedding_provider_validation_error(&route.provider) {
-            items.push(DiagItem::warn(
-                cat,
-                format!(
-                    "embedding route \"{}\" uses invalid provider \"{}\": {}",
-                    route.hint, route.provider, reason
-                ),
-            ));
-        }
-        if route.model.trim().is_empty() {
-            items.push(DiagItem::warn(
-                cat,
-                format!("embedding route \"{}\" has empty model", route.hint),
-            ));
-        }
-        if route.dimensions.is_some_and(|value| value == 0) {
-            items.push(DiagItem::warn(
-                cat,
-                format!(
-                    "embedding route \"{}\" has invalid dimensions=0",
-                    route.hint
-                ),
-            ));
-        }
-    }
-
-    if let Some(hint) = config
-        .memory
-        .embedding_model
-        .strip_prefix("hint:")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if !config
-            .embedding_routes
-            .iter()
-            .any(|route| route.hint.trim() == hint)
-        {
-            items.push(DiagItem::warn(
-                cat,
-                format!(
-                    "memory.embedding_model uses hint \"{hint}\" but no matching [[embedding_routes]] entry exists"
-                ),
-            ));
-        }
-    }
-
     // Channel: at least one configured
     let cc = &config.channels_config;
     let has_channel = cc.channels().iter().any(|(_, ok)| *ok);
@@ -605,6 +626,154 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
     }
 }
 
+fn check_primary_reasoning_lane(config: &Config, items: &mut Vec<DiagItem>) {
+    let cat = "config";
+    let Some(lane) = resolve_effective_model_lanes(config)
+        .into_iter()
+        .find(|lane| lane.lane == CapabilityLane::Reasoning)
+    else {
+        return;
+    };
+    let Some(first) = lane.candidates.first() else {
+        items.push(DiagItem::warn(
+            cat,
+            "primary reasoning lane is configured without candidates",
+        ));
+        return;
+    };
+
+    let default_provider = config.default_provider.as_deref().unwrap_or("");
+    let default_model = config.default_model.as_deref().unwrap_or("");
+    let message = format!(
+        "primary reasoning lane: {}/{} selected (candidate #0 of {})",
+        first.provider,
+        first.model,
+        lane.candidates.len()
+    );
+
+    if first.provider == default_provider && first.model == default_model {
+        if lane.candidates.len() > 1 {
+            items.push(DiagItem::ok(
+                cat,
+                format!("{message}; failover candidates available"),
+            ));
+        } else {
+            items.push(DiagItem::ok(
+                cat,
+                format!("{message}; no failover candidate"),
+            ));
+        }
+    } else {
+        items.push(DiagItem::warn(
+            cat,
+            format!(
+                "{message}; first candidate does not match default_provider/default_model, so normal turns will not use this failover chain"
+            ),
+        ));
+    }
+}
+
+fn check_auxiliary_model_lanes(config: &Config, items: &mut Vec<DiagItem>) {
+    const CORE_LANES: [AuxiliaryLane; 2] = [AuxiliaryLane::Compaction, AuxiliaryLane::Embedding];
+    const OPTIONAL_LANES: [AuxiliaryLane; 10] = [
+        AuxiliaryLane::CheapReasoning,
+        AuxiliaryLane::WebExtraction,
+        AuxiliaryLane::ToolValidator,
+        AuxiliaryLane::MultimodalUnderstanding,
+        AuxiliaryLane::SpeechTranscription,
+        AuxiliaryLane::SpeechSynthesis,
+        AuxiliaryLane::ImageGeneration,
+        AuxiliaryLane::AudioGeneration,
+        AuxiliaryLane::VideoGeneration,
+        AuxiliaryLane::MusicGeneration,
+    ];
+
+    for lane in CORE_LANES {
+        check_auxiliary_model_lane(config, items, lane, true);
+    }
+    for lane in OPTIONAL_LANES {
+        check_auxiliary_model_lane(config, items, lane, false);
+    }
+}
+
+fn check_auxiliary_model_lane(
+    config: &Config,
+    items: &mut Vec<DiagItem>,
+    lane: AuxiliaryLane,
+    report_missing: bool,
+) {
+    let cat = "config";
+
+    match resolve_auxiliary_model(config, lane, None) {
+        Ok(resolution) => {
+            let selected = &resolution.selected;
+            let dimensions = selected
+                .dimensions
+                .map(|value| format!(", dimensions={value}"))
+                .unwrap_or_default();
+            let message = format!(
+                "auxiliary lane \"{}\": {}/{} selected (candidate #{} of {}{})",
+                lane.as_str(),
+                selected.provider,
+                selected.model,
+                resolution.selected_index,
+                resolution.candidates.len(),
+                dimensions
+            );
+
+            if lane == AuxiliaryLane::Embedding && selected.dimensions.unwrap_or_default() == 0 {
+                items.push(DiagItem::warn(
+                    cat,
+                    format!("{message}; embedding dimensions must be explicit"),
+                ));
+            } else {
+                items.push(DiagItem::ok(cat, message));
+            }
+        }
+        Err(AuxiliaryModelResolutionError::LaneNotConfigured { .. }) if !report_missing => {}
+        Err(AuxiliaryModelResolutionError::LaneNotConfigured { .. }) => {
+            items.push(DiagItem::warn(
+                cat,
+                format!(
+                    "auxiliary lane \"{}\" is not configured in [[model_lanes]]",
+                    lane.as_str()
+                ),
+            ));
+        }
+        Err(AuxiliaryModelResolutionError::NoSupportedCandidate { candidates, .. }) => {
+            let rejected = candidates
+                .iter()
+                .take(3)
+                .map(|candidate| {
+                    let reason = candidate
+                        .skip_reason
+                        .as_ref()
+                        .map(|reason| reason.as_str())
+                        .unwrap_or("not_selected");
+                    format!(
+                        "#{} {}/{}: {}",
+                        candidate.index, candidate.provider, candidate.model, reason
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            let suffix = if rejected.is_empty() {
+                String::new()
+            } else {
+                format!(" ({rejected})")
+            };
+            items.push(DiagItem::warn(
+                cat,
+                format!(
+                    "auxiliary lane \"{}\" has no supported candidate{}",
+                    lane.as_str(),
+                    suffix
+                ),
+            ));
+        }
+    }
+}
+
 fn provider_validation_error(name: &str) -> Option<String> {
     match synapse_providers::create_provider(name, None) {
         Ok(_) => None,
@@ -615,31 +784,6 @@ fn provider_validation_error(name: &str) -> Option<String> {
                 .unwrap_or("invalid provider")
                 .into(),
         ),
-    }
-}
-
-fn embedding_provider_validation_error(name: &str) -> Option<String> {
-    let normalized = name.trim();
-    if normalized.eq_ignore_ascii_case("none") || normalized.eq_ignore_ascii_case("openai") {
-        return None;
-    }
-
-    let Some(url) = normalized.strip_prefix("custom:") else {
-        return Some("supported values: none, openai, custom:<url>".into());
-    };
-
-    let url = url.trim();
-    if url.is_empty() {
-        return Some("custom provider requires a non-empty URL after 'custom:'".into());
-    }
-
-    match reqwest::Url::parse(url) {
-        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => None,
-        Ok(parsed) => Some(format!(
-            "custom provider URL must use http/https, got '{}'",
-            parsed.scheme()
-        )),
-        Err(err) => Some(format!("invalid custom provider URL: {err}")),
     }
 }
 
@@ -1072,6 +1216,121 @@ mod tests {
     }
 
     #[test]
+    fn config_validation_reports_auxiliary_lane_selection() {
+        let mut config = Config::default();
+        config.model_lanes = vec![
+            synapse_domain::config::schema::ModelLaneConfig {
+                lane: synapse_domain::config::schema::CapabilityLane::Compaction,
+                candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "qwen/qwen3.6-plus".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: Default::default(),
+                }],
+            },
+            synapse_domain::config::schema::ModelLaneConfig {
+                lane: synapse_domain::config::schema::CapabilityLane::Embedding,
+                candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "qwen/qwen3-embedding-8b".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: Some(4096),
+                    profile: Default::default(),
+                }],
+            },
+        ];
+
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"compaction\"")
+                && item.message.contains("qwen/qwen3.6-plus")
+        }));
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"embedding\"")
+                && item.message.contains("dimensions=4096")
+        }));
+    }
+
+    #[test]
+    fn config_validation_reports_primary_reasoning_failover_candidates() {
+        let mut config = Config::default();
+        config.default_provider = Some("openai-codex".into());
+        config.default_model = Some("gpt-5.4".into());
+        config.model_lanes = vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![
+                synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "openai-codex".into(),
+                    model: "gpt-5.4".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: Default::default(),
+                },
+                synapse_domain::config::schema::ModelLaneCandidateConfig {
+                    provider: "anthropic".into(),
+                    model: "claude-sonnet-4-6".into(),
+                    api_key: None,
+                    api_key_env: Some("ANTHROPIC_API_KEY".into()),
+                    dimensions: None,
+                    profile: Default::default(),
+                },
+            ],
+        }];
+
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("primary reasoning lane")
+                && item.message.contains("candidate #0 of 2")
+                && item.message.contains("failover candidates available")
+        }));
+    }
+
+    #[test]
+    fn config_validation_warns_when_core_auxiliary_lane_is_missing() {
+        let config = Config::default();
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Warn
+                && item
+                    .message
+                    .contains("auxiliary lane \"embedding\" is not configured")
+        }));
+    }
+
+    #[test]
+    fn config_validation_reports_optional_auxiliary_lanes_from_preset() {
+        let mut config = Config::default();
+        config.model_preset = Some("openrouter".into());
+        config.default_provider = Some("openrouter".into());
+        config.default_model = Some("anthropic/claude-sonnet-4-6".into());
+
+        let mut items = Vec::new();
+        check_config_semantics(&config, &mut items);
+
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"cheap_reasoning\"")
+        }));
+        assert!(items.iter().any(|item| {
+            item.severity == Severity::Ok
+                && item.message.contains("auxiliary lane \"image_generation\"")
+        }));
+    }
+
+    #[test]
     fn config_validation_warns_no_channels() {
         let config = Config::default();
         let mut items = Vec::new();
@@ -1136,66 +1395,6 @@ mod tests {
         let route_item = items
             .iter()
             .find(|i| i.message.contains("route alias") && i.message.contains("empty model"));
-        assert!(route_item.is_some());
-        assert_eq!(route_item.unwrap().severity, Severity::Warn);
-    }
-
-    #[test]
-    fn config_validation_warns_empty_embedding_route_model() {
-        let mut config = Config::default();
-        config.embedding_routes = vec![synapse_domain::config::schema::EmbeddingRouteConfig {
-            hint: "semantic".into(),
-            provider: "openai".into(),
-            model: String::new(),
-            dimensions: Some(1536),
-            api_key: None,
-            capability: None,
-            profile: Default::default(),
-        }];
-
-        let mut items = Vec::new();
-        check_config_semantics(&config, &mut items);
-        let route_item = items.iter().find(|item| {
-            item.message
-                .contains("embedding route \"semantic\" has empty model")
-        });
-        assert!(route_item.is_some());
-        assert_eq!(route_item.unwrap().severity, Severity::Warn);
-    }
-
-    #[test]
-    fn config_validation_warns_invalid_embedding_route_provider() {
-        let mut config = Config::default();
-        config.embedding_routes = vec![synapse_domain::config::schema::EmbeddingRouteConfig {
-            hint: "semantic".into(),
-            provider: "groq".into(),
-            model: "text-embedding-3-small".into(),
-            dimensions: None,
-            api_key: None,
-            capability: None,
-            profile: Default::default(),
-        }];
-
-        let mut items = Vec::new();
-        check_config_semantics(&config, &mut items);
-        let route_item = items
-            .iter()
-            .find(|item| item.message.contains("uses invalid provider \"groq\""));
-        assert!(route_item.is_some());
-        assert_eq!(route_item.unwrap().severity, Severity::Warn);
-    }
-
-    #[test]
-    fn config_validation_warns_missing_embedding_hint_target() {
-        let mut config = Config::default();
-        config.memory.embedding_model = "hint:semantic".into();
-
-        let mut items = Vec::new();
-        check_config_semantics(&config, &mut items);
-        let route_item = items.iter().find(|item| {
-            item.message
-                .contains("no matching [[embedding_routes]] entry exists")
-        });
         assert!(route_item.is_some());
         assert_eq!(route_item.unwrap().severity, Severity::Warn);
     }

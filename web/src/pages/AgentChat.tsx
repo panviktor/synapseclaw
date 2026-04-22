@@ -35,7 +35,6 @@ import { generateUUID } from '@/lib/uuid';
 import {
   getStatus,
   getAgentStatus,
-  putSummaryModel,
   getAgents,
   deleteChannelSession,
   getMemoryStats,
@@ -520,15 +519,6 @@ export default function AgentChat() {
     [setSearchParams],
   );
 
-  const handleSummaryModelChange = useCallback(async (model: string | null) => {
-    try {
-      const res = await putSummaryModel(model, activeAgent);
-      setStatus((prev) => prev ? { ...prev, summary_model: res.summary_model } : prev);
-    } catch {
-      // ignore
-    }
-  }, [activeAgent]);
-
   const handleClearHistory = useCallback(async () => {
     if (!wsRef.current?.connected || !activeSession) return;
     try {
@@ -774,7 +764,6 @@ export default function AgentChat() {
             handleDeleteSession(key);
           }
         }}
-        onSummaryModelChange={handleSummaryModelChange}
         onAgentChange={handleAgentChange}
       />
 

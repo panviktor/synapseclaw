@@ -147,13 +147,24 @@ impl ChannelConfig for EmailConfig {
 // ── ClawdTalk Channel ────────────────────────────────────────────
 
 /// Voice channel configuration (Telnyx SIP).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClawdTalkConfig {
     /// Telnyx API key
     pub api_key: String,
+    /// ClawdTalk outbound WebSocket endpoint for transcript/response bridging.
+    #[serde(default)]
+    pub websocket_url: Option<String>,
+    /// ClawdTalk REST API base URL for outbound calls and call lifecycle actions.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
+    /// Optional ClawdTalk/OpenClaw assistant identifier advertised on the WebSocket.
+    #[serde(default)]
+    pub assistant_id: Option<String>,
     /// Telnyx connection ID for SIP
+    #[serde(default)]
     pub connection_id: String,
     /// Phone number to call from (E.164 format)
+    #[serde(default)]
     pub from_number: String,
     /// Allowed destination numbers or patterns
     #[serde(default)]
@@ -161,6 +172,45 @@ pub struct ClawdTalkConfig {
     /// Webhook secret for signature verification
     #[serde(default)]
     pub webhook_secret: Option<String>,
+    /// Telnyx answering-machine detection mode. Set to null to omit the field.
+    #[serde(default = "default_clawdtalk_answering_machine_detection_mode")]
+    pub answering_machine_detection_mode: Option<String>,
+    /// Telnyx Call Control speak voice id.
+    #[serde(default = "default_clawdtalk_speak_voice")]
+    pub speak_voice: String,
+    /// Telnyx Call Control speak language.
+    #[serde(default = "default_clawdtalk_speak_language")]
+    pub speak_language: String,
+    /// Telnyx Call Control speak service level.
+    #[serde(default = "default_clawdtalk_service_level")]
+    pub speak_service_level: String,
+    /// Telnyx AI conversation voice id.
+    #[serde(default = "default_clawdtalk_ai_voice")]
+    pub ai_voice: String,
+    /// Telnyx AI conversation voice speed.
+    #[serde(default = "default_clawdtalk_ai_speed")]
+    pub ai_speed: f32,
+}
+
+impl Default for ClawdTalkConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            websocket_url: None,
+            api_base_url: None,
+            assistant_id: None,
+            connection_id: String::new(),
+            from_number: String::new(),
+            allowed_destinations: Vec::new(),
+            webhook_secret: None,
+            answering_machine_detection_mode: default_clawdtalk_answering_machine_detection_mode(),
+            speak_voice: default_clawdtalk_speak_voice(),
+            speak_language: default_clawdtalk_speak_language(),
+            speak_service_level: default_clawdtalk_service_level(),
+            ai_voice: default_clawdtalk_ai_voice(),
+            ai_speed: default_clawdtalk_ai_speed(),
+        }
+    }
 }
 
 impl ChannelConfig for ClawdTalkConfig {
@@ -170,4 +220,28 @@ impl ChannelConfig for ClawdTalkConfig {
     fn desc() -> &'static str {
         "Voice channel via Telnyx SIP"
     }
+}
+
+fn default_clawdtalk_answering_machine_detection_mode() -> Option<String> {
+    Some("premium".to_string())
+}
+
+fn default_clawdtalk_speak_voice() -> String {
+    "female".to_string()
+}
+
+fn default_clawdtalk_speak_language() -> String {
+    "en-US".to_string()
+}
+
+fn default_clawdtalk_service_level() -> String {
+    "premium".to_string()
+}
+
+fn default_clawdtalk_ai_voice() -> String {
+    "alloy".to_string()
+}
+
+fn default_clawdtalk_ai_speed() -> f32 {
+    1.0
 }

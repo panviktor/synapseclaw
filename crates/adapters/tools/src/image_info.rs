@@ -8,6 +8,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 
 /// Maximum file size we will read and base64-encode (5 MB).
 const MAX_IMAGE_BYTES: u64 = 5_242_880;
@@ -146,6 +147,17 @@ impl Tool for ImageInfoTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::workspace_local("path"),
+            ToolArgumentPolicy::replayable("include_base64"),
+        ])
     }
 
     fn extract_facts(

@@ -6,10 +6,11 @@
 
 use crate::application::services::epistemic_state;
 use crate::application::services::memory_quality_governor;
-use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
-use crate::domain::memory::{
-    Entity, MemoryCategory, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
+use crate::application::services::skill_governance_service::{
+    resolve_skill_states, SkillLoadRequest, SkillPromptBudget, SkillRuntimeCandidate,
 };
+use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
+use crate::domain::memory::{Entity, MemoryCategory, MemoryEntry, MemoryError, MemoryQuery, Skill};
 use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -656,9 +657,38 @@ pub async fn search_turn_hybrid(
     .map(|match_| match_.entry)
     .collect();
 
-    let mut skills = result.skills;
-    skills.retain(skill_is_runtime_active);
-    skills.sort_by(compare_skills_for_runtime);
+    let governance_request = SkillLoadRequest {
+        agent_id: agent_id.to_string(),
+        task_text: query_text.to_string(),
+        prompt_budget: SkillPromptBudget {
+            max_catalog_entries: options.skills_max_count,
+            max_preloaded_skills: options.skills_max_count.min(1),
+            max_skill_chars: options.skills_total_max_chars,
+        },
+        ..SkillLoadRequest::default()
+    };
+    let governance_report = resolve_skill_states(
+        &governance_request,
+        result
+            .skills
+            .iter()
+            .map(SkillRuntimeCandidate::from_memory_skill)
+            .collect(),
+    );
+    let loadable_skill_ids = governance_report
+        .decisions
+        .iter()
+        .filter(|decision| decision.loadable())
+        .map(|decision| decision.id.clone())
+        .collect::<HashSet<_>>();
+    let skills = result
+        .skills
+        .into_iter()
+        .filter(|skill| {
+            let candidate = SkillRuntimeCandidate::from_memory_skill(skill);
+            loadable_skill_ids.contains(&candidate.activation_id())
+        })
+        .collect::<Vec<_>>();
 
     let mut skill_chars = 0usize;
     for skill in skills {
@@ -693,26 +723,6 @@ pub async fn search_turn_hybrid(
     }
 
     Ok(matched)
-}
-
-fn skill_is_runtime_active(skill: &Skill) -> bool {
-    matches!(skill.status, SkillStatus::Active)
-}
-
-fn compare_skills_for_runtime(left: &Skill, right: &Skill) -> std::cmp::Ordering {
-    skill_origin_priority(&right.origin)
-        .cmp(&skill_origin_priority(&left.origin))
-        .then_with(|| right.success_count.cmp(&left.success_count))
-        .then_with(|| right.updated_at.cmp(&left.updated_at))
-        .then_with(|| left.name.cmp(&right.name))
-}
-
-fn skill_origin_priority(origin: &SkillOrigin) -> u8 {
-    match origin {
-        SkillOrigin::Manual => 3,
-        SkillOrigin::Imported => 2,
-        SkillOrigin::Learned => 1,
-    }
 }
 
 fn is_autosave_key(key: &str) -> bool {
@@ -1651,7 +1661,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hybrid_turn_search_prefers_manual_active_skills_and_skips_candidates() {
+    async fn hybrid_turn_search_prefers_manual_active_skills_and_shadows_candidates() {
         let memory = StubMemory {
             hybrid: HybridSearchResult {
                 episodes: vec![],
@@ -1736,9 +1746,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(hits.skills.len(), 2);
+        assert_eq!(hits.skills.len(), 1);
         assert_eq!(hits.skills[0].name, "manual-weather");
-        assert_eq!(hits.skills[1].name, "learned-weather");
         assert!(hits
             .skills
             .iter()

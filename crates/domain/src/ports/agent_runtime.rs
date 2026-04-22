@@ -7,7 +7,7 @@
 use crate::domain::message::ChatMessage;
 use crate::domain::tool_fact::TypedToolFact;
 use crate::domain::tool_repair::ToolRepairTrace;
-use crate::ports::provider::{MediaArtifact, ProviderCapabilities};
+use crate::ports::provider::{MediaArtifact, ProviderCapabilities, TokenUsage};
 use async_trait::async_trait;
 
 /// Result of an agent execution turn.
@@ -31,6 +31,8 @@ pub struct AgentTurnResult {
     pub tool_repairs: Vec<ToolRepairTrace>,
     /// Generated media artifacts returned by the provider during this turn.
     pub media_artifacts: Vec<MediaArtifact>,
+    /// Provider-reported token usage for this turn when available.
+    pub usage: Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

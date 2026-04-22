@@ -12,7 +12,9 @@ use synapse_domain::domain::tool_fact::{
 };
 use synapse_domain::domain::turn_defaults::TurnDefaultSource;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
-use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolResult,
+};
 use synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort;
 
 pub struct MessageSendTool {
@@ -73,8 +75,9 @@ impl MessageSendTool {
                         .to_string()
                 }),
             Some(serde_json::Value::String(_)) => Err(
-                "Invalid target. Use 'current_conversation', omit target for a resolved default, \
-                 or provide {channel, recipient}."
+                "Invalid target string. The only string target is 'current_conversation'. \
+                 For an explicit destination, pass target as an object, not a JSON-encoded string: \
+                 {\"target\":{\"channel\":\"matrix\",\"recipient\":\"...\"}}."
                     .into(),
             ),
             Some(obj) if obj.is_object() => Self::parse_explicit_target_object(obj),
@@ -102,7 +105,7 @@ impl MessageSendTool {
                 }),
             _ => Err(
                 "Invalid target. Use 'current_conversation', omit target for a resolved default, \
-                 or provide {channel, recipient}."
+                 or pass an explicit target object: {\"target\":{\"channel\":\"matrix\",\"recipient\":\"...\"}}."
                     .into(),
             ),
         }
@@ -133,7 +136,7 @@ impl Tool for MessageSendTool {
                     "description": "Message text to send"
                 },
                 "target": {
-                    "description": "Where to send. Use 'current_conversation' for here, omit target when a resolved runtime default already exists, or provide explicit target. Omitting target is preferred over file or shell discovery when the destination is already configured.",
+                    "description": "Where to send. Use 'current_conversation' for here, omit target when a resolved runtime default already exists, or provide explicit target as an object. Do not JSON-encode the explicit target object into a string. Omitting target is preferred over file or shell discovery when the destination is already configured.",
                     "oneOf": [
                         {
                             "type": "string",
@@ -158,6 +161,17 @@ impl Tool for MessageSendTool {
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("content").user_private(),
+            ToolArgumentPolicy::sensitive("target").user_private(),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -290,6 +304,12 @@ mod tests {
 
         fn capabilities(&self, _channel_name: &str) -> Vec<ChannelCapability> {
             vec![ChannelCapability::SendText, ChannelCapability::Threads]
+        }
+
+        fn capability_profiles(
+            &self,
+        ) -> Vec<synapse_domain::ports::channel_registry::ChannelCapabilityProfile> {
+            vec![self.capability_profile("matrix")]
         }
 
         async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {

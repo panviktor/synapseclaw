@@ -12,6 +12,7 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ToolFactPayload, TypedToolFact, WorkspaceAction, WorkspaceFact,
 };
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolRuntimeRole};
 use synapse_infra::workspace::WorkspaceManager;
 use tokio::sync::RwLock;
 
@@ -53,6 +54,17 @@ impl Tool for WorkspaceTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role()).with_arguments(vec![
+            ToolArgumentPolicy::replayable("action").with_values(["list", "info"]),
+            ToolArgumentPolicy::replayable("name"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -381,6 +393,25 @@ mod tests {
         let result = tool.execute(json!({"action": "destroy"})).await.unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("unknown workspace action"));
+    }
+
+    #[test]
+    fn workspace_schema_marks_read_actions_as_replayable() {
+        let tmp = TempDir::new().unwrap();
+        let tool = test_tool(&tmp);
+        let schema = tool.parameters_schema();
+
+        assert!(schema["properties"]["action"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert_eq!(
+            contract.argument("action").unwrap().replayable_values,
+            vec!["list".to_string(), "info".to_string()]
+        );
+        assert_eq!(
+            tool.runtime_role(),
+            Some(ToolRuntimeRole::RuntimeStateInspection)
+        );
     }
 
     #[tokio::test]

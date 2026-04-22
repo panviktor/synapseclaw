@@ -192,6 +192,20 @@ impl SkillMemoryPort for InstrumentedMemory {
         );
         r
     }
+    async fn get_skill_by_id(
+        &self,
+        skill_id: &MemoryId,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.get_skill_by_id(skill_id, agent_id).await;
+        log_op(
+            "get_skill_by_id",
+            t,
+            r.as_ref().map(|o| usize::from(o.is_some())).unwrap_or(0),
+        );
+        r
+    }
     async fn list_skills(
         &self,
         agent_id: &AgentId,

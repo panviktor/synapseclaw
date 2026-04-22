@@ -9,6 +9,9 @@ use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::domain::util::MaybeSet;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_infra::config_io::ConfigIO;
 use synapse_providers::proxy::ProxyConfigExt;
 use synapse_providers::proxy::{runtime_proxy_config, set_runtime_proxy_config};
@@ -398,6 +401,25 @@ impl Tool for ProxyConfigTool {
                 }
             }
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action"),
+                ToolArgumentPolicy::replayable("enabled"),
+                ToolArgumentPolicy::replayable("scope"),
+                ToolArgumentPolicy::sensitive("http_proxy").user_private(),
+                ToolArgumentPolicy::sensitive("https_proxy").user_private(),
+                ToolArgumentPolicy::sensitive("all_proxy").user_private(),
+                ToolArgumentPolicy::sensitive("no_proxy").user_private(),
+                ToolArgumentPolicy::sensitive("services").user_private(),
+                ToolArgumentPolicy::replayable("clear_env"),
+            ])
     }
 
     fn extract_facts(&self, _args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {

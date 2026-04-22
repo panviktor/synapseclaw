@@ -11,7 +11,10 @@ use synapse_domain::domain::standing_order::{StandingOrder, StandingOrderKind};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::standing_order_store::StandingOrderStorePort;
-use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolResult,
+    ToolRuntimeRole,
+};
 
 pub struct StandingOrderTool {
     context: Option<Arc<dyn ConversationContextPort>>,
@@ -239,6 +242,24 @@ impl Tool for StandingOrderTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action").with_values([
+                    "subscribe",
+                    "list",
+                    "cancel",
+                ]),
+                ToolArgumentPolicy::replayable("kind")
+                    .with_values(["restart_report", "heartbeat_report"]),
+                ToolArgumentPolicy::replayable("id"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

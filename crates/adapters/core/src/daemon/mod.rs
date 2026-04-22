@@ -228,28 +228,91 @@ pub async fn run(
     // components causes contention. Create the raw adapter here and pass it
     // to gateway, channels, and the consolidation worker.
     let daemon_agent_id = crate::agent::resolve_agent_id(&config);
-    let mem_backend = match synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &daemon_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!("Memory init failed in daemon: {e} — using noop memory");
-            let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
-            synapse_memory::MemoryBackend {
-                memory: noop.clone(),
-                dead_letter: noop,
-                surreal: None,
+    let mem_backend =
+        match synapse_memory::create_memory(&config, &config.workspace_dir, &daemon_agent_id).await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Memory init failed in daemon: {e} — using noop memory");
+                let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
+                synapse_memory::MemoryBackend {
+                    memory: noop.clone(),
+                    dead_letter: noop,
+                    surreal: None,
+                }
             }
-        }
-    };
+        };
     let shared_raw_mem = mem_backend.memory;
     let shared_dead_letter = mem_backend.dead_letter;
     let shared_surreal = mem_backend.surreal;
+
+    if config.skills.port_workspace_packages_on_start {
+        match crate::skills::port_workspace_skill_packages_to_memory(
+            shared_raw_mem.as_ref(),
+            &daemon_agent_id,
+            &config.workspace_dir,
+        )
+        .await
+        {
+            Ok(report)
+                if report.scanned > 0
+                    || report.imported > 0
+                    || report.skipped_existing > 0
+                    || report.moved > 0
+                    || report.failed > 0 =>
+            {
+                tracing::info!(
+                    scanned = report.scanned,
+                    imported = report.imported,
+                    skipped_existing = report.skipped_existing,
+                    moved = report.moved,
+                    failed = report.failed,
+                    "daemon ported workspace skill packages into memory"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "daemon failed to port workspace skill packages into memory"
+                );
+            }
+        }
+    }
+    match crate::skills::sync_file_backed_skill_index_to_memory(
+        shared_raw_mem.as_ref(),
+        &daemon_agent_id,
+        &config.workspace_dir,
+        &config,
+    )
+    .await
+    {
+        Ok(report)
+            if report.scanned > 0
+                || report.indexed > 0
+                || report.updated > 0
+                || report.skipped_existing > 0
+                || report.deprecated_stale > 0
+                || report.failed > 0 =>
+        {
+            tracing::info!(
+                scanned = report.scanned,
+                indexed = report.indexed,
+                updated = report.updated,
+                skipped_existing = report.skipped_existing,
+                deprecated_stale = report.deprecated_stale,
+                failed = report.failed,
+                "daemon synced file-backed skill semantic index"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "daemon failed to sync file-backed skill semantic index"
+            );
+        }
+    }
 
     // Replace AgentRunner with one that shares memory (avoids SurrealKV LOCK conflicts)
     let agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort> = {
@@ -469,12 +532,18 @@ pub async fn run(
             std::sync::Arc<dyn synapse_providers::traits::Provider>,
             String,
         )>;
+        let router_routes =
+            synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+                &config,
+            );
         let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-            match synapse_providers::create_resilient_provider_with_options(
+            match synapse_providers::create_routed_provider_with_options(
                 default_provider.as_str(),
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
+                &router_routes,
+                &consolidation_model,
                 &synapse_providers::provider_runtime_options_from_config(&config),
             ) {
                 Ok(p) => {

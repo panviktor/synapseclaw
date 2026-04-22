@@ -16,6 +16,7 @@ use crate::config::schema::{CapabilityLane, Config};
 use crate::domain::channel::{
     ChannelCapability, ConversationIdentity, InboundEnvelope, InboundMediaAttachment,
 };
+use crate::domain::memory::SkillStatus;
 
 // ── Runtime commands ─────────────────────────────────────────────
 
@@ -32,10 +33,70 @@ pub enum RuntimeCommand {
     SetProvider(String),
     /// Show current model.
     ShowModel,
+    /// Show runtime capability readiness graph.
+    ShowDoctor,
+    /// Show governed skill runtime status.
+    ShowSkills,
+    /// Show governed skill items that are blocked or unavailable.
+    ShowBlockedSkills,
+    /// Show governed skill candidates awaiting review.
+    ShowSkillCandidates,
+    /// Create a memory-backed user-authored skill from explicit command text.
+    CreateUserSkill {
+        name: String,
+        body: String,
+        metadata: RuntimeUserSkillCreateMetadata,
+    },
+    /// Update a memory-backed user-authored or learned skill from explicit command text.
+    UpdateUserSkill {
+        skill: String,
+        body: String,
+        metadata: RuntimeUserSkillCreateMetadata,
+    },
+    /// Show runtime tool replay contract inventory used by skill replay/eval.
+    ShowSkillTools,
+    /// Show compact skill use traces recorded after live/replay skill execution.
+    ShowSkillTraces,
+    /// Show or apply operator-approved skill catalog cleanup recommendations.
+    ShowSkillHealth { apply: bool },
+    /// Show a compact diff/review view for a generated skill patch candidate.
+    ShowSkillDiff(String),
+    /// Apply a generated skill patch candidate after replay/eval gates pass.
+    ApplySkillPatch(String),
+    /// Show applied patch/rollback version records for generated skill patches.
+    ShowSkillVersions(Option<String>),
+    /// Roll back a generated skill patch by apply record or rollback snapshot.
+    RollbackSkillPatch(String),
+    /// Evaluate or apply generated patch auto-promotion policy.
+    AutoPromoteSkills { apply: bool },
+    /// Review learned/generated skills without or with applying deterministic decisions.
+    ReviewSkills { apply: bool },
+    /// Promote a learned/generated skill to active.
+    PromoteSkill(String),
+    /// Move a learned/generated skill back to candidate status.
+    DemoteSkill(String),
+    /// Reject a learned/generated skill by marking it deprecated.
+    RejectSkill(String),
+    /// Compact the current conversation session without changing route.
+    CompactSession,
     /// Switch to a specific model.
     SetModel(String),
     /// Start a new conversation session.
     NewSession,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeUserSkillCreateMetadata {
+    pub task_family: Option<String>,
+    pub tool_pattern: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeSkillStatusView {
+    All,
+    Blocked,
+    Candidates,
 }
 
 /// Parse a runtime command from message content.
@@ -64,6 +125,10 @@ pub fn parse_runtime_command(content: &str, caps: &[ChannelCapability]) -> Optio
         .next()
         .unwrap_or(command_token)
         .to_ascii_lowercase();
+    let command_tail = trimmed
+        .strip_prefix(command_token)
+        .unwrap_or("")
+        .trim_start();
 
     match base_command.as_str() {
         "/models" => {
@@ -81,9 +146,182 @@ pub fn parse_runtime_command(content: &str, caps: &[ChannelCapability]) -> Optio
                 Some(RuntimeCommand::SetModel(model))
             }
         }
+        "/doctor" => Some(RuntimeCommand::ShowDoctor),
+        "/skills" => parse_skills_runtime_command(command_tail),
+        "/compact" => Some(RuntimeCommand::CompactSession),
         "/new" => Some(RuntimeCommand::NewSession),
         _ => None,
     }
+}
+
+fn parse_skills_runtime_command(raw_args: &str) -> Option<RuntimeCommand> {
+    let args = raw_args.split_whitespace().collect::<Vec<_>>();
+    let Some(subcommand) = args.first() else {
+        return Some(RuntimeCommand::ShowSkills);
+    };
+    let normalized = subcommand.trim().to_lowercase();
+    match normalized.as_str() {
+        "" | "status" | "list" => Some(RuntimeCommand::ShowSkills),
+        "blocked" | "blockers" => Some(RuntimeCommand::ShowBlockedSkills),
+        "candidate" | "candidates" | "queue" => Some(RuntimeCommand::ShowSkillCandidates),
+        "create" => parse_skill_create_command_raw(
+            raw_args.strip_prefix(subcommand).unwrap_or("").trim_start(),
+        ),
+        "update" | "edit" => parse_skill_update_command_raw(
+            raw_args.strip_prefix(subcommand).unwrap_or("").trim_start(),
+        ),
+        "tools" | "tool-contracts" | "replay-tools" => Some(RuntimeCommand::ShowSkillTools),
+        "trace" | "traces" | "use-traces" | "usage" => Some(RuntimeCommand::ShowSkillTraces),
+        "health" | "hygiene" | "cleanup" => Some(RuntimeCommand::ShowSkillHealth {
+            apply: args
+                .iter()
+                .skip(1)
+                .any(|arg| matches!(arg.trim().to_lowercase().as_str(), "--apply" | "apply")),
+        }),
+        "diff" => parse_skill_ref_command(&args, RuntimeCommand::ShowSkillDiff),
+        "apply" => parse_skill_ref_command(&args, RuntimeCommand::ApplySkillPatch),
+        "version" | "versions" | "history" => Some(RuntimeCommand::ShowSkillVersions(
+            parse_optional_skill_ref(&args),
+        )),
+        "rollback" | "revert" => parse_skill_ref_command(&args, RuntimeCommand::RollbackSkillPatch),
+        "autopromote" | "auto-promote" => Some(RuntimeCommand::AutoPromoteSkills {
+            apply: args
+                .iter()
+                .skip(1)
+                .any(|arg| matches!(arg.trim().to_lowercase().as_str(), "--apply" | "apply")),
+        }),
+        "review" => Some(RuntimeCommand::ReviewSkills {
+            apply: args
+                .iter()
+                .skip(1)
+                .any(|arg| matches!(arg.trim().to_lowercase().as_str(), "--apply" | "apply")),
+        }),
+        "promote" => parse_skill_ref_command(&args, RuntimeCommand::PromoteSkill),
+        "demote" => parse_skill_ref_command(&args, RuntimeCommand::DemoteSkill),
+        "reject" | "deprecate" => parse_skill_ref_command(&args, RuntimeCommand::RejectSkill),
+        _ => Some(RuntimeCommand::ShowSkills),
+    }
+}
+
+fn parse_skill_create_command_raw(raw_args: &str) -> Option<RuntimeCommand> {
+    let (name, body) = raw_args.split_once("::")?;
+    let (name, metadata) = parse_skill_create_header(name.trim())?;
+    let body = body.trim().to_string();
+    if name.is_empty() || body.is_empty() {
+        return None;
+    }
+    Some(RuntimeCommand::CreateUserSkill {
+        name,
+        body,
+        metadata,
+    })
+}
+
+fn parse_skill_update_command_raw(raw_args: &str) -> Option<RuntimeCommand> {
+    let (skill, body) = raw_args.split_once("::")?;
+    let (skill, metadata) = parse_skill_create_header(skill.trim())?;
+    let body = body.trim().to_string();
+    if skill.is_empty() || body.is_empty() {
+        return None;
+    }
+    Some(RuntimeCommand::UpdateUserSkill {
+        skill,
+        body,
+        metadata,
+    })
+}
+
+fn parse_skill_create_header(raw_header: &str) -> Option<(String, RuntimeUserSkillCreateMetadata)> {
+    let mut name_parts = Vec::new();
+    let mut metadata = RuntimeUserSkillCreateMetadata::default();
+    let mut args = raw_header.split_whitespace().peekable();
+    while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--task-family=") {
+            metadata.task_family = non_empty_trimmed(value);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--tools=") {
+            metadata
+                .tool_pattern
+                .extend(parse_skill_metadata_list(value));
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--tool-pattern=") {
+            metadata
+                .tool_pattern
+                .extend(parse_skill_metadata_list(value));
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--tags=") {
+            metadata.tags.extend(parse_skill_metadata_list(value));
+            continue;
+        }
+
+        match arg {
+            "--task-family" => {
+                metadata.task_family = non_empty_trimmed(args.next()?);
+            }
+            "--tools" | "--tool-pattern" => {
+                metadata
+                    .tool_pattern
+                    .extend(parse_skill_metadata_list(args.next()?));
+            }
+            "--tags" => {
+                metadata
+                    .tags
+                    .extend(parse_skill_metadata_list(args.next()?));
+            }
+            value if value.starts_with("--") => return None,
+            value => name_parts.push(value),
+        }
+    }
+    let name = name_parts.join(" ").trim().to_string();
+    (!name.is_empty()).then_some((name, metadata))
+}
+
+fn non_empty_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn parse_skill_metadata_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .flat_map(|part| part.split("->"))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn parse_skill_ref_command(
+    args: &[&str],
+    build: impl FnOnce(String) -> RuntimeCommand,
+) -> Option<RuntimeCommand> {
+    let skill_ref = args
+        .iter()
+        .skip(1)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if skill_ref.is_empty() {
+        return None;
+    }
+    Some(build(skill_ref))
+}
+
+fn parse_optional_skill_ref(args: &[&str]) -> Option<String> {
+    let skill_ref = args
+        .iter()
+        .skip(1)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    (!skill_ref.is_empty()).then_some(skill_ref)
 }
 
 // ── Conversation key ─────────────────────────────────────────────
@@ -306,6 +544,47 @@ pub enum CommandEffect {
     SwitchProvider { provider: String },
     /// Display current model info (no state change).
     ShowModel,
+    /// Display runtime capability readiness graph (no state change).
+    ShowDoctor,
+    /// Display governed skill runtime status (no state change).
+    ShowSkills { view: RuntimeSkillStatusView },
+    /// Create a memory-backed user-authored skill.
+    CreateUserSkill {
+        name: String,
+        body: String,
+        metadata: RuntimeUserSkillCreateMetadata,
+    },
+    /// Update a memory-backed user-authored or learned skill.
+    UpdateUserSkill {
+        skill: String,
+        body: String,
+        metadata: RuntimeUserSkillCreateMetadata,
+    },
+    /// Review learned/generated skill state (optionally applying decisions).
+    ReviewSkills { apply: bool },
+    /// Display runtime tool replay contract inventory (no state change).
+    ShowSkillTools,
+    /// Display compact skill use trace inventory (no state change).
+    ShowSkillTraces,
+    /// Display or apply skill catalog cleanup guidance.
+    ShowSkillHealth { apply: bool },
+    /// Display compact patch candidate diff (no state change).
+    ShowSkillDiff { candidate: String },
+    /// Apply generated skill patch candidate after replay/eval gates pass.
+    ApplySkillPatch { candidate: String },
+    /// Display generated skill patch version records.
+    ShowSkillVersions { skill: Option<String> },
+    /// Roll back generated skill patch from a saved rollback snapshot.
+    RollbackSkillPatch { rollback: String },
+    /// Evaluate or apply generated patch auto-promotion policy.
+    AutoPromoteSkills { apply: bool },
+    /// Update learned/generated skill lifecycle state.
+    UpdateSkillStatus { skill: String, status: SkillStatus },
+    /// Compact current conversation history without clearing route/session state.
+    CompactSession {
+        /// Adapter may fill this after execution for shared presentation.
+        compacted: bool,
+    },
     /// Switch to a specific model, optionally with inferred provider from routes.
     SwitchModel {
         model: String,
@@ -356,6 +635,68 @@ fn command_effect_with_alias_resolver(
             provider: raw.clone(),
         },
         RuntimeCommand::ShowModel => CommandEffect::ShowModel,
+        RuntimeCommand::ShowDoctor => CommandEffect::ShowDoctor,
+        RuntimeCommand::ShowSkills => CommandEffect::ShowSkills {
+            view: RuntimeSkillStatusView::All,
+        },
+        RuntimeCommand::ShowBlockedSkills => CommandEffect::ShowSkills {
+            view: RuntimeSkillStatusView::Blocked,
+        },
+        RuntimeCommand::ShowSkillCandidates => CommandEffect::ShowSkills {
+            view: RuntimeSkillStatusView::Candidates,
+        },
+        RuntimeCommand::CreateUserSkill {
+            name,
+            body,
+            metadata,
+        } => CommandEffect::CreateUserSkill {
+            name: name.clone(),
+            body: body.clone(),
+            metadata: metadata.clone(),
+        },
+        RuntimeCommand::UpdateUserSkill {
+            skill,
+            body,
+            metadata,
+        } => CommandEffect::UpdateUserSkill {
+            skill: skill.clone(),
+            body: body.clone(),
+            metadata: metadata.clone(),
+        },
+        RuntimeCommand::ShowSkillTools => CommandEffect::ShowSkillTools,
+        RuntimeCommand::ShowSkillTraces => CommandEffect::ShowSkillTraces,
+        RuntimeCommand::ShowSkillHealth { apply } => {
+            CommandEffect::ShowSkillHealth { apply: *apply }
+        }
+        RuntimeCommand::ShowSkillDiff(candidate) => CommandEffect::ShowSkillDiff {
+            candidate: candidate.clone(),
+        },
+        RuntimeCommand::ApplySkillPatch(candidate) => CommandEffect::ApplySkillPatch {
+            candidate: candidate.clone(),
+        },
+        RuntimeCommand::ShowSkillVersions(skill) => CommandEffect::ShowSkillVersions {
+            skill: skill.clone(),
+        },
+        RuntimeCommand::RollbackSkillPatch(rollback) => CommandEffect::RollbackSkillPatch {
+            rollback: rollback.clone(),
+        },
+        RuntimeCommand::AutoPromoteSkills { apply } => {
+            CommandEffect::AutoPromoteSkills { apply: *apply }
+        }
+        RuntimeCommand::ReviewSkills { apply } => CommandEffect::ReviewSkills { apply: *apply },
+        RuntimeCommand::PromoteSkill(skill) => CommandEffect::UpdateSkillStatus {
+            skill: skill.clone(),
+            status: SkillStatus::Active,
+        },
+        RuntimeCommand::DemoteSkill(skill) => CommandEffect::UpdateSkillStatus {
+            skill: skill.clone(),
+            status: SkillStatus::Candidate,
+        },
+        RuntimeCommand::RejectSkill(skill) => CommandEffect::UpdateSkillStatus {
+            skill: skill.clone(),
+            status: SkillStatus::Deprecated,
+        },
+        RuntimeCommand::CompactSession => CommandEffect::CompactSession { compacted: false },
         RuntimeCommand::SetModel(raw) => {
             let model = normalize_model_selector(raw);
             let matched =
@@ -523,6 +864,230 @@ mod tests {
     fn parse_model_set() {
         let cmd = parse_runtime_command("/model test-model", &caps_with_runtime());
         assert_eq!(cmd, Some(RuntimeCommand::SetModel("test-model".into())));
+    }
+
+    #[test]
+    fn parse_doctor_show() {
+        let cmd = parse_runtime_command("/doctor", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::ShowDoctor));
+    }
+
+    #[test]
+    fn parse_skills_status() {
+        let cmd = parse_runtime_command("/skills status", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::ShowSkills));
+    }
+
+    #[test]
+    fn parse_skills_blocked_and_candidates() {
+        assert_eq!(
+            parse_runtime_command("/skills blocked", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowBlockedSkills)
+        );
+        assert_eq!(
+            parse_runtime_command("/skills candidates", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillCandidates)
+        );
+    }
+
+    #[test]
+    fn parse_skills_tools() {
+        assert_eq!(
+            parse_runtime_command("/skills tools", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillTools)
+        );
+        assert_eq!(
+            parse_runtime_command("/skills replay-tools", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillTools)
+        );
+    }
+
+    #[test]
+    fn parse_skills_traces() {
+        assert_eq!(
+            parse_runtime_command("/skills traces", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillTraces)
+        );
+        assert_eq!(
+            parse_runtime_command("/skills usage", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillTraces)
+        );
+    }
+
+    #[test]
+    fn parse_skills_health() {
+        assert_eq!(
+            parse_runtime_command("/skills health", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillHealth { apply: false })
+        );
+        assert_eq!(
+            parse_runtime_command("/skills cleanup", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillHealth { apply: false })
+        );
+        assert_eq!(
+            parse_runtime_command("/skills health --apply", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillHealth { apply: true })
+        );
+    }
+
+    #[test]
+    fn parse_skills_diff_with_spaced_candidate_ref() {
+        assert_eq!(
+            parse_runtime_command("/skills diff patch Matrix Upgrade", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillDiff("patch Matrix Upgrade".into()))
+        );
+    }
+
+    #[test]
+    fn parse_skills_apply_with_spaced_candidate_ref() {
+        assert_eq!(
+            parse_runtime_command("/skills apply patch Matrix Upgrade", &caps_with_runtime()),
+            Some(RuntimeCommand::ApplySkillPatch(
+                "patch Matrix Upgrade".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_skills_versions_and_rollback_with_spaced_refs() {
+        assert_eq!(
+            parse_runtime_command("/skills versions Matrix Upgrade", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillVersions(Some(
+                "Matrix Upgrade".into()
+            )))
+        );
+        assert_eq!(
+            parse_runtime_command("/skills versions", &caps_with_runtime()),
+            Some(RuntimeCommand::ShowSkillVersions(None))
+        );
+        assert_eq!(
+            parse_runtime_command(
+                "/skills rollback apply Matrix Upgrade",
+                &caps_with_runtime()
+            ),
+            Some(RuntimeCommand::RollbackSkillPatch(
+                "apply Matrix Upgrade".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_skills_autopromote_apply() {
+        assert_eq!(
+            parse_runtime_command("/skills autopromote", &caps_with_runtime()),
+            Some(RuntimeCommand::AutoPromoteSkills { apply: false })
+        );
+        assert_eq!(
+            parse_runtime_command("/skills auto-promote --apply", &caps_with_runtime()),
+            Some(RuntimeCommand::AutoPromoteSkills { apply: true })
+        );
+    }
+
+    #[test]
+    fn parse_skills_review_apply() {
+        let cmd = parse_runtime_command("/skills review --apply", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::ReviewSkills { apply: true }));
+    }
+
+    #[test]
+    fn parse_skills_create_user_skill() {
+        let cmd = parse_runtime_command(
+            "/skills create Matrix release check :: Find local repo and compare tags",
+            &caps_with_runtime(),
+        );
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find local repo and compare tags".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_skills_create_user_skill_metadata() {
+        let cmd = parse_runtime_command(
+            "/skills create Matrix release check --task-family=release-audit --tools=repo_discovery,git_operations --tags=matrix,release :: Find local repo and compare tags",
+            &caps_with_runtime(),
+        );
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find local repo and compare tags".into(),
+                metadata: RuntimeUserSkillCreateMetadata {
+                    task_family: Some("release-audit".into()),
+                    tool_pattern: vec!["repo_discovery".into(), "git_operations".into()],
+                    tags: vec!["matrix".into(), "release".into()],
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parse_skills_create_preserves_markdown_body() {
+        let cmd = parse_runtime_command(
+            "/skills create Matrix release check :: # Matrix release check\n\n1. Find local repo.\n2. Compare tags.",
+            &caps_with_runtime(),
+        );
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "# Matrix release check\n\n1. Find local repo.\n2. Compare tags.".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_skills_update_user_skill() {
+        let cmd = parse_runtime_command(
+            "/skills update Matrix release check --task-family=release-audit --tools=repo_discovery,git_operations --tags=matrix :: Updated procedure",
+            &caps_with_runtime(),
+        );
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::UpdateUserSkill {
+                skill: "Matrix release check".into(),
+                body: "Updated procedure".into(),
+                metadata: RuntimeUserSkillCreateMetadata {
+                    task_family: Some("release-audit".into()),
+                    tool_pattern: vec!["repo_discovery".into(), "git_operations".into()],
+                    tags: vec!["matrix".into()],
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parse_skills_create_requires_explicit_body_delimiter() {
+        assert_eq!(
+            parse_runtime_command(
+                "/skills create Matrix release check Find local repo",
+                &caps_with_runtime()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_skills_status_update_with_spaced_name() {
+        let cmd = parse_runtime_command(
+            "/skills promote Matrix Upgrade Recipe",
+            &caps_with_runtime(),
+        );
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::PromoteSkill("Matrix Upgrade Recipe".into()))
+        );
+    }
+
+    #[test]
+    fn parse_compact_session() {
+        let cmd = parse_runtime_command("/compact", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::CompactSession));
     }
 
     #[test]
@@ -874,6 +1439,136 @@ mod tests {
     fn effect_show_model() {
         let cmd = RuntimeCommand::ShowModel;
         assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowModel);
+    }
+
+    #[test]
+    fn effect_show_doctor() {
+        let cmd = RuntimeCommand::ShowDoctor;
+        assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowDoctor);
+    }
+
+    #[test]
+    fn effect_show_skills_status_views() {
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkills),
+            CommandEffect::ShowSkills {
+                view: RuntimeSkillStatusView::All
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowBlockedSkills),
+            CommandEffect::ShowSkills {
+                view: RuntimeSkillStatusView::Blocked
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillCandidates),
+            CommandEffect::ShowSkills {
+                view: RuntimeSkillStatusView::Candidates
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillTools),
+            CommandEffect::ShowSkillTools
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillTraces),
+            CommandEffect::ShowSkillTraces
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillHealth { apply: true }),
+            CommandEffect::ShowSkillHealth { apply: true }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillDiff("patch-a".into())),
+            CommandEffect::ShowSkillDiff {
+                candidate: "patch-a".into()
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ApplySkillPatch("patch-a".into())),
+            CommandEffect::ApplySkillPatch {
+                candidate: "patch-a".into()
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ShowSkillVersions(Some("skill-a".into()))),
+            CommandEffect::ShowSkillVersions {
+                skill: Some("skill-a".into())
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::RollbackSkillPatch("apply-a".into())),
+            CommandEffect::RollbackSkillPatch {
+                rollback: "apply-a".into()
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::AutoPromoteSkills { apply: true }),
+            CommandEffect::AutoPromoteSkills { apply: true }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find local repo and compare tags".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            }),
+            CommandEffect::CreateUserSkill {
+                name: "Matrix release check".into(),
+                body: "Find local repo and compare tags".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::UpdateUserSkill {
+                skill: "Matrix release check".into(),
+                body: "Updated procedure".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            }),
+            CommandEffect::UpdateUserSkill {
+                skill: "Matrix release check".into(),
+                body: "Updated procedure".into(),
+                metadata: RuntimeUserSkillCreateMetadata::default(),
+            }
+        );
+    }
+
+    #[test]
+    fn effect_skills_review_and_status_updates() {
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::ReviewSkills { apply: true }),
+            CommandEffect::ReviewSkills { apply: true }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::PromoteSkill("skill-a".into())),
+            CommandEffect::UpdateSkillStatus {
+                skill: "skill-a".into(),
+                status: SkillStatus::Active
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::DemoteSkill("skill-a".into())),
+            CommandEffect::UpdateSkillStatus {
+                skill: "skill-a".into(),
+                status: SkillStatus::Candidate
+            }
+        );
+        assert_eq!(
+            command_effect_for_test(&RuntimeCommand::RejectSkill("skill-a".into())),
+            CommandEffect::UpdateSkillStatus {
+                skill: "skill-a".into(),
+                status: SkillStatus::Deprecated
+            }
+        );
+    }
+
+    #[test]
+    fn effect_compact_session() {
+        let cmd = RuntimeCommand::CompactSession;
+        assert_eq!(
+            command_effect_for_test(&cmd),
+            CommandEffect::CompactSession { compacted: false }
+        );
     }
 
     #[test]

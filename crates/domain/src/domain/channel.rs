@@ -74,6 +74,18 @@ pub enum ChannelCapability {
     InterruptOnNewMessage,
     /// Channel supports displaying tool call context in history.
     ToolContextDisplay,
+    /// Channel can deliver audio or voice media as a normal attachment.
+    AudioAttachments,
+    /// Channel has native voice-note semantics distinct from generic audio files.
+    NativeVoiceNotes,
+    /// Native voice-note delivery requires Ogg/Opus payloads.
+    OggOpusVoiceNotes,
+    /// Channel supports native voice-note metadata such as duration/waveform.
+    NativeVoiceMetadata,
+    /// Channel has a real-time audio call runtime.
+    RealtimeAudioCall,
+    /// Channel has a real-time video call runtime.
+    RealtimeVideoCall,
 }
 
 pub fn web_channel_capabilities() -> Vec<ChannelCapability> {
@@ -82,6 +94,7 @@ pub fn web_channel_capabilities() -> Vec<ChannelCapability> {
         ChannelCapability::ReceiveText,
         ChannelCapability::Threads,
         ChannelCapability::Attachments,
+        ChannelCapability::AudioAttachments,
         ChannelCapability::Typing,
         ChannelCapability::RuntimeCommands,
         ChannelCapability::ToolContextDisplay,
@@ -105,6 +118,8 @@ pub struct OutboundIntent {
     pub thread_ref: Option<String>,
     /// The content to deliver.
     pub content: RenderableContent,
+    /// Structured media attachments to deliver with, or instead of, text.
+    pub media_artifacts: Vec<MediaArtifact>,
     /// Capabilities required for full-fidelity delivery.
     pub required_capabilities: Vec<ChannelCapability>,
     /// Fallback behavior when capabilities are missing.
@@ -130,9 +145,15 @@ impl OutboundIntent {
             target_recipient: recipient.into(),
             thread_ref,
             content: RenderableContent::Text(text),
+            media_artifacts: Vec::new(),
             required_capabilities: vec![ChannelCapability::SendText],
             degradation_policy: DegradationPolicy::default(),
         }
+    }
+
+    pub fn with_media_artifacts(mut self, media_artifacts: Vec<MediaArtifact>) -> Self {
+        self.media_artifacts = media_artifacts;
+        self
     }
 }
 

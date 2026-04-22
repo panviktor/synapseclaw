@@ -49,14 +49,20 @@ impl RouteSwitchPreflightResolution {
     }
 
     pub fn should_attempt_compaction(&self) -> bool {
-        self.preflight.status == RouteSwitchStatus::CompactRecommended
-            && self.compaction_passes < self.max_compaction_passes
+        matches!(
+            self.preflight.status,
+            RouteSwitchStatus::CompactRecommended | RouteSwitchStatus::TooLarge
+        ) && self.compaction_passes < self.max_compaction_passes
     }
 
     pub fn record_compaction_pass(&mut self, preflight: RouteSwitchPreflight) {
         self.compacted = true;
         self.compaction_passes += 1;
         self.preflight = preflight;
+    }
+
+    pub fn record_compaction_attempt_without_change(&mut self) {
+        self.compaction_passes += 1;
     }
 
     pub fn into_preflight(self) -> RouteSwitchPreflight {
@@ -292,5 +298,22 @@ mod tests {
             resolution.compaction_passes,
             DEFAULT_ROUTE_SWITCH_COMPACTION_PASSES
         );
+    }
+
+    #[test]
+    fn preflight_resolution_attempts_compaction_for_too_large_history() {
+        let too_large = assess_route_switch_preflight(
+            300_000,
+            &ResolvedModelProfile {
+                context_window_tokens: Some(60_000),
+                context_window_source:
+                    crate::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+        );
+        let resolution = RouteSwitchPreflightResolution::new(too_large);
+
+        assert_eq!(resolution.preflight.status, RouteSwitchStatus::TooLarge);
+        assert!(resolution.should_attempt_compaction());
     }
 }

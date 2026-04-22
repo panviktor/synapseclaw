@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{ToolArgumentPolicy, ToolContract, ToolExecution};
 
 const MAX_RESULTS: usize = 1000;
 
@@ -212,6 +212,11 @@ impl Tool for GlobSearchTool {
         Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
     }
 
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::replayable(self.runtime_role())
+            .with_arguments(vec![ToolArgumentPolicy::workspace_local("pattern")])
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let pattern = args
             .get("pattern")
@@ -293,6 +298,9 @@ mod tests {
 
         let schema = tool.parameters_schema();
         assert!(schema["properties"]["pattern"].is_object());
+        let contract = tool.tool_contract();
+        assert!(contract.replayable);
+        assert!(contract.argument("pattern").unwrap().replayable);
         assert!(schema["required"]
             .as_array()
             .unwrap()

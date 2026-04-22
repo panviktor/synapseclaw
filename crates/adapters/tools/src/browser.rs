@@ -19,6 +19,10 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolArgumentTransform, ToolContract, ToolNonReplayableReason,
+    ToolRuntimeRole,
+};
 use tokio::process::Command;
 use tracing::debug;
 
@@ -1024,6 +1028,52 @@ impl Tool for BrowserTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::RuntimeActivation,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::replayable("action"),
+            ToolArgumentPolicy::replayable("url")
+                .with_transform(ToolArgumentTransform::UrlOriginPath),
+            ToolArgumentPolicy::sensitive("selector").user_private(),
+            ToolArgumentPolicy::sensitive("value").user_private(),
+            ToolArgumentPolicy::sensitive("text").user_private(),
+            ToolArgumentPolicy::sensitive("key").user_private(),
+            ToolArgumentPolicy::sensitive("x").user_private(),
+            ToolArgumentPolicy::sensitive("y").user_private(),
+            ToolArgumentPolicy::sensitive("from_x").user_private(),
+            ToolArgumentPolicy::sensitive("from_y").user_private(),
+            ToolArgumentPolicy::sensitive("to_x").user_private(),
+            ToolArgumentPolicy::sensitive("to_y").user_private(),
+            ToolArgumentPolicy::replayable("button").with_values(["left", "right", "middle"]),
+            ToolArgumentPolicy::replayable("direction")
+                .with_values(["up", "down", "left", "right"]),
+            ToolArgumentPolicy::replayable("pixels"),
+            ToolArgumentPolicy::replayable("interactive_only"),
+            ToolArgumentPolicy::replayable("compact"),
+            ToolArgumentPolicy::replayable("depth"),
+            ToolArgumentPolicy::replayable("full_page"),
+            ToolArgumentPolicy::workspace_local("path"),
+            ToolArgumentPolicy::replayable("ms"),
+            ToolArgumentPolicy::replayable("by").with_values([
+                "role",
+                "text",
+                "label",
+                "placeholder",
+                "testid",
+            ]),
+            ToolArgumentPolicy::replayable("find_action")
+                .with_values(["click", "fill", "text", "hover", "check"]),
+            ToolArgumentPolicy::sensitive("fill_value").user_private(),
+        ])
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

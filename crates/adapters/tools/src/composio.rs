@@ -22,6 +22,9 @@ use synapse_domain::domain::tool_fact::{
     ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact,
     ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 const COMPOSIO_API_BASE_V3: &str = "https://backend.composio.dev/api/v3";
 const COMPOSIO_API_BASE_V2: &str = "https://backend.composio.dev/api";
@@ -737,6 +740,25 @@ impl Tool for ComposioTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::ExternalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::ProviderNative)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action"),
+                ToolArgumentPolicy::sensitive("app").user_private(),
+                ToolArgumentPolicy::sensitive("action_name").user_private(),
+                ToolArgumentPolicy::sensitive("tool_slug").user_private(),
+                ToolArgumentPolicy::sensitive("params").user_private(),
+                ToolArgumentPolicy::sensitive("text").user_private(),
+                ToolArgumentPolicy::sensitive("entity_id").user_private(),
+                ToolArgumentPolicy::sensitive("auth_config_id").secret(),
+                ToolArgumentPolicy::sensitive("connected_account_id").secret(),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

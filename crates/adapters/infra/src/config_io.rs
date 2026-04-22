@@ -560,6 +560,23 @@ async fn resolve_config_path_for_save(config: &Config) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+fn removed_auxiliary_config_key_error(path: &str) -> Option<String> {
+    let replacement = "`[[model_lanes]]` with `lane = \"compaction\"` or `lane = \"embedding\"`";
+    match path {
+        "summary_model"
+        | "summary.provider"
+        | "summary.model"
+        | "summary.api_key_env"
+        | "embedding_routes"
+        | "memory.embedding_provider"
+        | "memory.embedding_model"
+        | "memory.embedding_dimensions" => Some(format!(
+            "removed auxiliary model config key `{path}` is no longer supported; use {replacement}"
+        )),
+        _ => None,
+    }
+}
+
 // ConfigIO trait defined here (adapter-owned) to satisfy orphan rule.
 #[async_trait::async_trait]
 pub trait ConfigIO {
@@ -632,6 +649,12 @@ impl ConfigIO for Config {
                 },
             )
             .context("Failed to deserialize config file")?;
+
+            for path in &ignored_paths {
+                if let Some(message) = removed_auxiliary_config_key_error(path) {
+                    anyhow::bail!("{message}");
+                }
+            }
 
             // Warn about each unknown config key
             for path in ignored_paths {
@@ -1116,19 +1139,6 @@ impl ConfigIO for Config {
             }
         }
 
-        // Embedding routes
-        for (i, route) in self.embedding_routes.iter().enumerate() {
-            if route.hint.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].hint must not be empty");
-            }
-            if route.provider.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].provider must not be empty");
-            }
-            if route.model.trim().is_empty() {
-                anyhow::bail!("embedding_routes[{i}].model must not be empty");
-            }
-        }
-
         for (profile_key, profile) in &self.model_providers {
             let profile_name = profile_key.trim();
             if profile_name.is_empty() {
@@ -1441,6 +1451,24 @@ impl ConfigIO for Config {
         if let Ok(model) = std::env::var("SYNAPSECLAW_MODEL").or_else(|_| std::env::var("MODEL")) {
             if !model.is_empty() {
                 self.default_model = Some(model);
+            }
+        }
+
+        if let Some(ref mut telegram) = self.channels_config.telegram {
+            if let Ok(token) = std::env::var("TELEGRAM_BOT_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    telegram.bot_token = token.to_string();
+                }
+            }
+        }
+
+        if let Some(ref mut matrix) = self.channels_config.matrix {
+            if let Ok(token) = std::env::var("MATRIX_ACCESS_TOKEN") {
+                let token = token.trim();
+                if !token.is_empty() {
+                    matrix.access_token = Some(token.to_string());
+                }
             }
         }
 
@@ -2250,5 +2278,92 @@ async fn sync_directory(path: &Path) -> Result<()> {
     {
         let _ = path;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigIO;
+    use super::removed_auxiliary_config_key_error;
+    use synapse_domain::config::schema::{Config, MatrixConfig, TelegramConfig};
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                std::env::set_var(self.key, old);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn removed_auxiliary_config_keys_are_rejected() {
+        for path in [
+            "summary_model",
+            "summary.provider",
+            "summary.model",
+            "summary.api_key_env",
+            "embedding_routes",
+            "memory.embedding_provider",
+            "memory.embedding_model",
+            "memory.embedding_dimensions",
+        ] {
+            assert!(
+                removed_auxiliary_config_key_error(path).is_some(),
+                "{path} should be rejected"
+            );
+        }
+        assert!(removed_auxiliary_config_key_error("summary.temperature").is_none());
+    }
+
+    #[test]
+    fn apply_env_overrides_rehydrates_telegram_and_matrix_channel_secrets() {
+        let _telegram = EnvVarGuard::set("TELEGRAM_BOT_TOKEN", "telegram-secret");
+        let _matrix = EnvVarGuard::set("MATRIX_ACCESS_TOKEN", "matrix-secret");
+
+        let mut config = Config::default();
+        config.channels_config.telegram = Some(TelegramConfig {
+            bot_token: String::new(),
+            allowed_users: vec!["*".into()],
+            stream_mode: Default::default(),
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        });
+        config.channels_config.matrix = Some(MatrixConfig {
+            homeserver: "https://matrix.example.com".into(),
+            access_token: None,
+            user_id: Some("@bot:example.com".into()),
+            device_id: None,
+            room_id: "!room:example.com".into(),
+            allowed_users: vec!["*".into()],
+            password: None,
+            max_media_download_mb: None,
+        });
+
+        config.apply_env_overrides();
+
+        assert_eq!(
+            config.channels_config.telegram.as_ref().unwrap().bot_token,
+            "telegram-secret"
+        );
+        assert_eq!(
+            config.channels_config.matrix.as_ref().unwrap().access_token.as_deref(),
+            Some("matrix-secret")
+        );
     }
 }

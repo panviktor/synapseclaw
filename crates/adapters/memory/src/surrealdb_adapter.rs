@@ -332,6 +332,43 @@ impl SurrealMemoryAdapter {
             }
         }
 
+        let mut skill_resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let skill_rows: Vec<serde_json::Value> = skill_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in skill_rows {
+            let id = json_str(&row, "id");
+            let Some(skill) = row_to_skill(&row) else {
+                continue;
+            };
+            let text = skill_embedding_document(&skill);
+            if text.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&text).await {
+                self.db
+                    .query(
+                        "UPDATE type::record('skill', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
         tracing::info!(profile = %profile_id, count = reindexed, "memory: embedding profile reindex complete");
         Ok(())
     }
@@ -351,6 +388,66 @@ impl SurrealMemoryAdapter {
                 tracing::warn!(%error, "memory: background embedding profile reindex failed");
             }
         });
+    }
+
+    async fn refresh_skill_embedding(
+        &self,
+        skill_id: &str,
+        agent_id: &str,
+    ) -> Result<(), MemoryError> {
+        let Some(profile_id) = self.active_embedding_profile_id() else {
+            return Ok(());
+        };
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE id = type::record('skill', $id)
+                 AND created_by = $agent
+                 LIMIT 1",
+            )
+            .bind(("id", skill_id.to_string()))
+            .bind(("agent", agent_id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let Some(skill) = rows.first().and_then(row_to_skill) else {
+            return Ok(());
+        };
+        let embedding = match self
+            .embedder
+            .embed_document(&skill_embedding_document(&skill))
+            .await
+        {
+            Ok(embedding) => embedding,
+            Err(error) => {
+                tracing::warn!(%skill_id, %error, "memory: skill embedding refresh failed");
+                self.db
+                    .query(
+                        "UPDATE type::record('skill', $id) SET
+                            embedding = NONE,
+                            embedding_profile_id = NONE",
+                    )
+                    .bind(("id", skill_id.to_string()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                return Ok(());
+            }
+        };
+        self.db
+            .query(
+                "UPDATE type::record('skill', $id) SET
+                    embedding = $embedding,
+                    embedding_profile_id = $profile",
+            )
+            .bind(("id", skill_id.to_string()))
+            .bind(("embedding", embedding))
+            .bind(("profile", profile_id))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     async fn apply_schema(&self) -> Result<(), MemoryError> {
@@ -743,7 +840,7 @@ fn row_to_fact(v: &serde_json::Value) -> Option<TemporalFact> {
 
 fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
     Some(Skill {
-        id: json_str(v, "id"),
+        id: json_record_id(v, "id"),
         name: json_str(v, "name"),
         description: json_str(v, "description"),
         content: json_str(v, "content"),
@@ -797,6 +894,158 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
     })
 }
 
+const SKILL_EMBEDDING_CONTENT_CHARS: usize = 1_200;
+
+fn skill_embedding_document(skill: &Skill) -> String {
+    let mut parts = Vec::new();
+    push_labeled_part(&mut parts, "name", &skill.name);
+    push_labeled_part(&mut parts, "description", &skill.description);
+    if let Some(task_family) = skill
+        .task_family
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        push_labeled_part(&mut parts, "task_family", task_family);
+    }
+    if !skill.lineage_task_families.is_empty() {
+        push_labeled_part(
+            &mut parts,
+            "lineage",
+            &skill.lineage_task_families.join(" "),
+        );
+    }
+    if !skill.tool_pattern.is_empty() {
+        push_labeled_part(&mut parts, "tools", &skill.tool_pattern.join(" "));
+    }
+    if !skill.tags.is_empty() {
+        push_labeled_part(&mut parts, "tags", &skill.tags.join(" "));
+    }
+    let excerpt = bounded_chars(&skill.content, SKILL_EMBEDDING_CONTENT_CHARS);
+    push_labeled_part(&mut parts, "procedure_excerpt", &excerpt);
+    parts.join("\n")
+}
+
+fn push_labeled_part(parts: &mut Vec<String>, label: &str, value: &str) {
+    let trimmed = value.trim();
+    if !trimmed.is_empty() {
+        parts.push(format!("{label}: {trimmed}"));
+    }
+}
+
+fn bounded_chars(value: &str, max_chars: usize) -> String {
+    let mut out = value.trim().chars().take(max_chars).collect::<String>();
+    if value.trim().chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
+}
+
+async fn skill_query_embedding(
+    adapter: &SurrealMemoryAdapter,
+    query: &MemoryQuery,
+) -> Option<Vec<f32>> {
+    if let Some(embedding) = query
+        .embedding
+        .as_ref()
+        .filter(|embedding| !embedding.is_empty())
+    {
+        return Some(embedding.clone());
+    }
+    if query.text.trim().is_empty() || adapter.embedder.dimensions() == 0 {
+        return None;
+    }
+    adapter.embedder.embed_query(&query.text).await.ok()
+}
+
+fn merge_skill_search_rows(
+    vector_rows: Vec<serde_json::Value>,
+    lexical_rows: Vec<serde_json::Value>,
+    limit: usize,
+) -> Vec<Skill> {
+    let mut seen = std::collections::HashSet::new();
+    let mut skills = Vec::new();
+    for row in vector_rows.into_iter().chain(lexical_rows) {
+        let id = json_str(&row, "id");
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(skill) = row_to_skill(&row) else {
+            continue;
+        };
+        skills.push(skill);
+        if skills.len() >= limit {
+            break;
+        }
+    }
+    skills
+}
+
+fn should_reindex_skill_embedding(update: &SkillUpdate) -> bool {
+    update.new_description.is_some()
+        || update.new_content.is_some()
+        || update.new_task_family.is_some()
+        || update.new_tool_pattern.is_some()
+        || update.new_lineage_task_families.is_some()
+        || update.new_tags.is_some()
+}
+
+#[cfg(test)]
+mod skill_semantic_search_tests {
+    use super::*;
+
+    fn test_skill(content: String) -> Skill {
+        Skill {
+            id: "skill:matrix".into(),
+            name: "Matrix Upgrade".into(),
+            description: "Upgrade a self-hosted Matrix server safely".into(),
+            content,
+            task_family: Some("matrix-upgrade".into()),
+            tool_pattern: vec!["repo_discovery".into(), "git_operations".into()],
+            lineage_task_families: vec!["release-audit".into()],
+            tags: vec!["ops".into(), "matrix".into()],
+            success_count: 3,
+            fail_count: 0,
+            version: 1,
+            origin: SkillOrigin::Learned,
+            status: SkillStatus::Active,
+            created_by: "agent".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn skill_embedding_document_uses_compact_card() {
+        let skill = test_skill(format!("{}tail-marker", "x".repeat(2_000)));
+        let document = skill_embedding_document(&skill);
+
+        assert!(document.contains("Matrix Upgrade"));
+        assert!(document.contains("matrix-upgrade"));
+        assert!(document.contains("repo_discovery"));
+        assert!(document.contains("release-audit"));
+        assert!(document.contains("ops matrix"));
+        assert!(!document.contains("tail-marker"));
+    }
+
+    #[test]
+    fn merge_skill_search_rows_preserves_vector_order_and_dedupes() {
+        let rows = merge_skill_search_rows(
+            vec![
+                serde_json::json!({"id": "skill:b", "name": "B"}),
+                serde_json::json!({"id": "skill:a", "name": "A"}),
+            ],
+            vec![
+                serde_json::json!({"id": "skill:a", "name": "A lexical"}),
+                serde_json::json!({"id": "skill:c", "name": "C"}),
+            ],
+            8,
+        );
+
+        let names = rows.into_iter().map(|skill| skill.name).collect::<Vec<_>>();
+        assert_eq!(names, vec!["B", "A", "C"]);
+    }
+}
+
 fn row_to_reflection(v: &serde_json::Value) -> Option<Reflection> {
     Some(Reflection {
         id: json_str(v, "id"),
@@ -827,6 +1076,35 @@ fn json_str(v: &serde_json::Value, key: &str) -> String {
                 .unwrap_or_else(|| val.to_string())
         })
         .unwrap_or_default()
+}
+
+fn json_record_id(v: &serde_json::Value, key: &str) -> String {
+    let Some(value) = v.get(key) else {
+        return String::new();
+    };
+    if let Some(raw) = value.as_str() {
+        return normalize_surreal_record_id(raw);
+    }
+    let Some(id_value) = value.get("id") else {
+        return value.to_string();
+    };
+    if let Some(raw) = id_value.as_str() {
+        return normalize_surreal_record_id(raw);
+    }
+    for key in ["String", "Number", "Uuid", "ULID"] {
+        if let Some(raw) = id_value.get(key).and_then(serde_json::Value::as_str) {
+            return normalize_surreal_record_id(raw);
+        }
+    }
+    id_value.to_string()
+}
+
+fn normalize_surreal_record_id(raw: &str) -> String {
+    raw.rsplit(':')
+        .next()
+        .unwrap_or(raw)
+        .trim_matches('`')
+        .to_string()
 }
 
 /// Helper macro: take Vec<serde_json::Value> from query response.
@@ -1501,10 +1779,30 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         } else {
             skill.id.clone()
         };
+        let (embedding, embedding_profile_id) =
+            if let Some(profile_id) = self.active_embedding_profile_id() {
+                match self
+                    .embedder
+                    .embed_document(&skill_embedding_document(&skill))
+                    .await
+                {
+                    Ok(embedding) => (Some(embedding), Some(profile_id)),
+                    Err(error) => {
+                        tracing::warn!(
+                            skill_id = %id,
+                            %error,
+                            "memory: skill embedding write skipped"
+                        );
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            };
 
         self.db
             .query(
-                "CREATE skill SET
+                "CREATE type::record('skill', $id) SET
                     name = $name,
                     description = $desc,
                     content = $content,
@@ -1517,10 +1815,13 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
                     version = $ver,
                     origin = $origin,
                     status = $status,
+                    embedding = $embedding,
+                    embedding_profile_id = $embedding_profile_id,
                     created_by = $agent,
                     created_at = time::now(),
                     updated_at = time::now()",
             )
+            .bind(("id", id.clone()))
             .bind(("name", skill.name))
             .bind(("desc", skill.description))
             .bind(("content", skill.content))
@@ -1533,6 +1834,8 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("ver", skill.version as i64))
             .bind(("origin", skill.origin.to_string()))
             .bind(("status", skill.status.to_string()))
+            .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .bind(("agent", skill.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -1541,7 +1844,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn find_skills(&self, query: &MemoryQuery) -> Result<Vec<Skill>, MemoryError> {
-        let mut resp = self
+        let mut lexical_resp = self
             .db
             .query(
                 "SELECT * FROM skill
@@ -1556,9 +1859,42 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("limit", query.limit))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let lexical_rows = take_json!(lexical_resp, 0);
 
-        let rows = take_json!(resp, 0);
-        Ok(rows.iter().filter_map(row_to_skill).collect())
+        let vector_rows = if let (Some(profile_id), Some(embedding)) = (
+            self.active_embedding_profile_id(),
+            skill_query_embedding(self, query).await,
+        ) {
+            let knn = vector_knn_operator(query.limit, 64);
+            let mut vector_resp = self
+                .db
+                .query(format!(
+                    "SELECT *,
+                        vector::similarity::cosine(embedding, $emb) AS vec_score
+                     FROM skill
+                     WHERE embedding {knn} $emb
+                     AND embedding_profile_id = $profile
+                     AND (status IS NONE OR status != 'deprecated')
+                     AND created_by = $agent
+                     ORDER BY vec_score DESC
+                     LIMIT $limit"
+                ))
+                .bind(("emb", embedding))
+                .bind(("profile", profile_id))
+                .bind(("agent", query.agent_id.clone()))
+                .bind(("limit", query.limit))
+                .await
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+            take_json!(vector_resp, 0)
+        } else {
+            Vec::new()
+        };
+
+        Ok(merge_skill_search_rows(
+            vector_rows,
+            lexical_rows,
+            query.limit,
+        ))
     }
 
     async fn update_skill(
@@ -1589,6 +1925,9 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if update.new_lineage_task_families.is_some() {
             parts.push("lineage_task_families = $lineage_task_families".to_string());
         }
+        if update.new_tags.is_some() {
+            parts.push("tags = $tags".to_string());
+        }
         if update.new_status.is_some() {
             parts.push("status = $status".to_string());
         }
@@ -1597,13 +1936,14 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             || update.new_task_family.is_some()
             || update.new_tool_pattern.is_some()
             || update.new_lineage_task_families.is_some()
+            || update.new_tags.is_some()
             || update.new_status.is_some()
         {
             parts.push("version += 1".to_string());
         }
 
         let q = format!(
-            "UPDATE skill SET {} WHERE id = $id AND created_by = $agent",
+            "UPDATE type::record('skill', $id) SET {} WHERE created_by = $agent",
             parts.join(", ")
         );
 
@@ -1627,6 +1967,9 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if let Some(ref lineage_task_families) = update.new_lineage_task_families {
             query = query.bind(("lineage_task_families", lineage_task_families.clone()));
         }
+        if let Some(ref tags) = update.new_tags {
+            query = query.bind(("tags", tags.clone()));
+        }
         if let Some(ref status) = update.new_status {
             query = query.bind(("status", status.to_string()));
         }
@@ -1634,6 +1977,9 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         query
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        if should_reindex_skill_embedding(&update) {
+            self.refresh_skill_embedding(skill_id, agent_id).await?;
+        }
         Ok(())
     }
 
@@ -1646,6 +1992,28 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .db
             .query("SELECT * FROM skill WHERE name = $name AND created_by = $agent LIMIT 1")
             .bind(("name", name.to_string()))
+            .bind(("agent", agent_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.first().and_then(row_to_skill))
+    }
+
+    async fn get_skill_by_id(
+        &self,
+        skill_id: &MemoryId,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE id = type::record('skill', $id)
+                 AND created_by = $agent
+                 LIMIT 1",
+            )
+            .bind(("id", skill_id.clone()))
             .bind(("agent", agent_id.clone()))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;

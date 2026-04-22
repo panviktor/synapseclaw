@@ -1,6 +1,12 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use synapse_domain::application::services::capability_doctor::{
+    build_capability_doctor_report, CapabilityDoctorAdapterStatus, CapabilityDoctorBackendStatus,
+    CapabilityDoctorChannelStatus, CapabilityDoctorInput, CapabilityDoctorProviderKeyStatus,
+    CapabilityDoctorReadiness, CapabilityDoctorReport, CapabilityDoctorSeverity,
+    CapabilityDoctorSubsystem,
+};
 use synapse_domain::application::services::model_capability_support::profile_supports_lane_confidently;
 use synapse_domain::application::services::model_lane_resolution::{
     model_lane_resolution_source_name, resolve_lane_candidates, resolve_route_selection_profile,
@@ -18,6 +24,10 @@ use synapse_domain::application::services::runtime_calibration::{
     runtime_calibration_action_name, runtime_calibration_comparison_name,
     runtime_calibration_decision_kind_name, RuntimeCalibrationRecord,
 };
+use synapse_domain::application::services::runtime_decision_trace::{
+    RuntimeDecisionTrace, RuntimeTraceRouteRef,
+};
+use synapse_domain::application::services::runtime_usage_insight_service::build_runtime_usage_insight_snapshot;
 use synapse_domain::application::services::runtime_trace_janitor::{
     append_runtime_watchdog_alerts, RuntimeHandoffArtifact,
 };
@@ -28,8 +38,10 @@ use synapse_domain::application::services::runtime_watchdog::{
 };
 use synapse_domain::application::services::session_handoff::session_handoff_reason_name;
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
+use synapse_domain::domain::memory::EmbeddingProfile;
 use synapse_domain::domain::tool_repair::{
-    tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
+    tool_argument_shape_kind_name, tool_failure_kind_name, tool_repair_action_name,
+    tool_repair_outcome_name, ToolRepairAction, ToolRepairTrace,
 };
 use synapse_domain::domain::turn_admission::{
     admission_repair_hint_name, context_pressure_state_name, turn_admission_action_name,
@@ -39,7 +51,9 @@ use synapse_domain::ports::model_profile_catalog::{
     CatalogModelProfile, CatalogModelProfileSource, ContextLimitProfileObservation,
     ModelProfileCatalogPort, ModelProfileObservation,
 };
+use synapse_domain::ports::provider::ProviderCapabilities;
 use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection};
+use synapse_domain::ports::tool::tool_runtime_role_name;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
@@ -479,7 +493,10 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
     let resolved_lanes = [
         CapabilityLane::Reasoning,
         CapabilityLane::CheapReasoning,
+        CapabilityLane::Compaction,
         CapabilityLane::Embedding,
+        CapabilityLane::WebExtraction,
+        CapabilityLane::ToolValidator,
         CapabilityLane::MultimodalUnderstanding,
         CapabilityLane::ImageGeneration,
         CapabilityLane::AudioGeneration,
@@ -607,6 +624,125 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
                 provider.name,
                 provider.aliases.join(", ")
             );
+        }
+    }
+    response
+}
+
+pub(crate) struct RuntimeCapabilityDoctorInput<'a> {
+    pub(crate) route: &'a RouteSelection,
+    pub(crate) config: &'a Config,
+    pub(crate) provider_capabilities: ProviderCapabilities,
+    pub(crate) provider_plan_denial: Option<&'a str>,
+    pub(crate) tool_registry_count: usize,
+    pub(crate) memory_backend_name: Option<&'a str>,
+    pub(crate) memory_backend_healthy: Option<bool>,
+    pub(crate) memory_backend_configured: bool,
+    pub(crate) embedding_profile: Option<&'a EmbeddingProfile>,
+    pub(crate) channel_name: Option<&'a str>,
+    pub(crate) channel_available: Option<bool>,
+}
+
+pub(crate) fn build_runtime_capability_doctor_report(
+    input: RuntimeCapabilityDoctorInput<'_>,
+) -> CapabilityDoctorReport {
+    let catalog = WorkspaceModelProfileCatalog::from_config(input.config);
+    let provider_adapter = provider_adapter_status(input.route.provider.as_str());
+    let provider_key = provider_key_status_for_route(
+        input.config,
+        input.route,
+        provider_is_local(input.route.provider.as_str()),
+        &catalog,
+    );
+
+    build_capability_doctor_report(CapabilityDoctorInput {
+        config: input.config,
+        route: input.route,
+        catalog: Some(&catalog),
+        provider_adapter,
+        provider_key,
+        provider_capabilities: input.provider_capabilities,
+        provider_plan_denial: input.provider_plan_denial,
+        tool_registry_count: input.tool_registry_count,
+        memory_backend: CapabilityDoctorBackendStatus {
+            configured: input.memory_backend_configured,
+            healthy: input.memory_backend_healthy,
+            name: input.memory_backend_name,
+        },
+        embedding_profile: input.embedding_profile,
+        channel_delivery: CapabilityDoctorChannelStatus {
+            surface: input.channel_name,
+            available: input.channel_available,
+        },
+        generated_at_unix: current_unix_seconds(),
+    })
+}
+
+pub(crate) fn build_capability_doctor_response(report: &CapabilityDoctorReport) -> String {
+    let mut response = String::new();
+    let _ = writeln!(response, "Capability doctor");
+    let _ = writeln!(
+        response,
+        "Route: `{}` / `{}` / lane=`{}`",
+        report.route.provider,
+        report.route.model,
+        report.route.lane.as_deref().unwrap_or("default")
+    );
+    let _ = writeln!(
+        response,
+        "Summary: ok=`{}` warn=`{}` error=`{}`",
+        report.summary.ok, report.summary.warn, report.summary.error
+    );
+    let _ = writeln!(
+        response,
+        "Profile: ctx=`{}` output=`{}` features=`{}`",
+        report
+            .model_profile
+            .context_window_tokens
+            .map(|tokens| tokens.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        report
+            .model_profile
+            .max_output_tokens
+            .map(|tokens| tokens.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        if report.model_profile.features.is_empty() {
+            "?".to_string()
+        } else {
+            report.model_profile.features.join("+")
+        }
+    );
+    let _ = writeln!(
+        response,
+        "Profile quality: ctx=`{}/{}/{}` output=`{}/{}/{}` features=`{}/{}/{}`",
+        report.model_profile.context_window_source,
+        report.model_profile.context_window_freshness,
+        report.model_profile.context_window_confidence,
+        report.model_profile.max_output_source,
+        report.model_profile.max_output_freshness,
+        report.model_profile.max_output_confidence,
+        report.model_profile.features_source,
+        report.model_profile.features_freshness,
+        report.model_profile.features_confidence,
+    );
+    if let Some(observed_at) = report.model_profile.observed_at_unix {
+        let _ = writeln!(response, "Profile observed_at_unix: `{observed_at}`");
+    }
+    response.push_str("\nReadiness graph:\n");
+    for node in &report.nodes {
+        let _ = writeln!(
+            response,
+            "- `{}` / `{}` / `{}`: `{}`",
+            capability_doctor_severity_name(node.severity),
+            capability_doctor_subsystem_name(node.subsystem),
+            node.subject,
+            capability_doctor_readiness_name(node.readiness)
+        );
+        if !node.evidence.is_empty() {
+            let _ = writeln!(response, "  evidence: {}", node.evidence.join("; "));
+        }
+        if let Some(recommendation) = node.recommendation.as_deref() {
+            let _ = writeln!(response, "  recommendation: {recommendation}");
         }
     }
     response
@@ -837,11 +973,71 @@ fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
 
 fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelection) {
     write_route_admission_diagnostics(response, current);
+    write_runtime_decision_trace_diagnostics(response, &current.runtime_decision_traces);
+    write_runtime_usage_diagnostics(response, current);
     write_tool_repair_diagnostics(response, current);
     write_runtime_assumptions(response, &current.assumptions);
     write_runtime_calibrations(response, &current.calibrations);
     write_runtime_handoff_artifacts(response, &current.handoff_artifacts);
     write_runtime_watchdog_digest(response, current);
+}
+
+fn write_runtime_usage_diagnostics(response: &mut String, current: &RouteSelection) {
+    let snapshot = build_runtime_usage_insight_snapshot(current, &Config::default());
+    if snapshot.request_count == 0
+        && snapshot.compaction_count == 0
+        && snapshot.tool_failure_count == 0
+        && snapshot.watchdog_alert_count == 0
+    {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime usage: requests={} input_tokens={} output_tokens={} cached_tokens={} estimated_cost_usd={:.6}",
+        snapshot.request_count,
+        snapshot.input_tokens,
+        snapshot.output_tokens,
+        snapshot.cached_input_tokens,
+        snapshot.estimated_cost_microusd as f64 / 1_000_000.0,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage pressure: pre={}bp post={}bp compactions={} handoffs={} cache_hits={}",
+        snapshot.max_pressure_before_basis_points,
+        snapshot.max_pressure_after_basis_points,
+        snapshot.compaction_count,
+        snapshot.handoff_count,
+        snapshot.compaction_cache_hits,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage pricing: known={} unknown={} included={} provider_reported={}",
+        snapshot.pricing_status_counts.known,
+        snapshot.pricing_status_counts.unknown,
+        snapshot.pricing_status_counts.included,
+        snapshot.pricing_status_counts.provider_reported,
+    );
+    let _ = writeln!(
+        response,
+        "Runtime usage failures: total={} classes={} repaired={} watchdog_alerts={}",
+        snapshot.tool_failure_count,
+        snapshot.tool_failure_classes,
+        snapshot.repaired_tool_count,
+        snapshot.watchdog_alert_count,
+    );
+    if !snapshot.tool_failure_breakdown.is_empty() {
+        let summary = snapshot
+            .tool_failure_breakdown
+            .iter()
+            .take(3)
+            .map(|item| format!("{}:{} x{}", item.tool_name, item.failure_kind, item.count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(response, "Runtime usage failure breakdown: {summary}");
+    }
+    if let Ok(json) = serde_json::to_string(&snapshot) {
+        let _ = writeln!(response, "Runtime usage json: {json}");
+    }
 }
 
 fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
@@ -890,14 +1086,193 @@ fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelec
     }
 }
 
+fn write_runtime_decision_trace_diagnostics(
+    response: &mut String,
+    traces: &[RuntimeDecisionTrace],
+) {
+    if traces.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime decision traces retained: {}",
+        traces.len()
+    );
+    for trace in traces.iter().rev().take(3) {
+        let _ = writeln!(
+            response,
+            "Runtime decision trace: {} -> {} / intent={} / pressure={} / action={}",
+            format_trace_route_ref(&trace.route.before),
+            format_trace_route_ref(&trace.route.after),
+            trace.route.intent,
+            trace.route.pressure_state,
+            trace.route.action
+        );
+        if !trace.route.reasons.is_empty() {
+            let _ = writeln!(
+                response,
+                "Runtime decision reasons: {}",
+                trace.route.reasons.join(", ")
+            );
+        }
+        if let Some(repair) = trace.route.recommended_action.as_deref() {
+            let _ = writeln!(response, "Runtime decision suggested action: {repair}");
+        }
+        let _ = writeln!(
+            response,
+            "Runtime decision profile: context={} / output={} / features={}",
+            trace.model_profile.context_window_confidence,
+            trace.model_profile.max_output_confidence,
+            trace.model_profile.features_confidence,
+        );
+        let _ = writeln!(
+            response,
+            "Runtime decision context: tier={} / estimated_tokens={} / target_tokens={} / ceiling_tokens={} / compact={}",
+            trace.context.budget_tier,
+            trace.context.estimated_total_tokens,
+            trace.context.target_total_tokens,
+            trace.context.ceiling_total_tokens,
+            trace.context.requires_compaction,
+        );
+        if let Some(mode) = trace.context.condensation_mode.as_deref() {
+            let _ = writeln!(
+                response,
+                "Runtime decision condensation: mode={} / target={} / min_reclaim_chars={}",
+                mode,
+                trace
+                    .context
+                    .condensation_target
+                    .as_deref()
+                    .unwrap_or("none"),
+                trace
+                    .context
+                    .condensation_minimum_reclaim_chars
+                    .unwrap_or(0)
+            );
+        }
+        if let Some(cache) = trace.context.cache {
+            let _ = writeln!(
+                response,
+                "Runtime decision context cache: entries={} / hits={} / loaded={}",
+                cache.entries, cache.hits, cache.loaded
+            );
+        }
+        if !trace.tools.is_empty() {
+            let summary = trace
+                .tools
+                .iter()
+                .rev()
+                .take(3)
+                .map(|tool| {
+                    format!(
+                        "{}:{}->{} outcome={} repeats={} role={}",
+                        tool.tool_name,
+                        tool.failure_kind,
+                        tool.suggested_action,
+                        tool.repair_outcome,
+                        tool.repeat_count.max(1),
+                        tool.tool_role.as_deref().unwrap_or("unknown")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(response, "Runtime decision tools: {summary}");
+            for tool in trace.tools.iter().rev().take(3) {
+                if let Some(shape) = tool.argument_shape.as_deref() {
+                    let _ = writeln!(
+                        response,
+                        "Runtime decision tool args: {} / {}",
+                        tool.tool_name, shape
+                    );
+                }
+            }
+        }
+        if !trace.memory.is_empty() {
+            let summary = trace
+                .memory
+                .iter()
+                .rev()
+                .take(3)
+                .map(|memory| {
+                    format!(
+                        "{}:{}:{} applied={}",
+                        memory.source, memory.category, memory.action, memory.applied
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(response, "Runtime decision memory: {summary}");
+            for memory in trace.memory.iter().rev().take(3) {
+                let _ = writeln!(
+                    response,
+                    "Runtime decision memory detail: {} / reason={} / similarity_bp={} / id_present={}",
+                    memory.category,
+                    memory.reason,
+                    memory
+                        .similarity_basis_points
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    memory.entry_id_present
+                );
+            }
+        }
+        if !trace.auxiliary.is_empty() {
+            let summary = trace
+                .auxiliary
+                .iter()
+                .rev()
+                .take(3)
+                .map(|aux| format!("{}:{} count={}", aux.kind, aux.action, aux.count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(response, "Runtime decision auxiliary: {summary}");
+        }
+        if !trace.notes.is_empty() {
+            for note in trace.notes.iter().rev().take(4) {
+                if matches!(
+                    note.kind.as_str(),
+                    "implicit_memory_recall" | "implicit_memory_context" | "post_compaction_pressure"
+                ) {
+                    let _ = writeln!(
+                        response,
+                        "Runtime decision note: {} / {}",
+                        note.kind, note.detail
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn format_trace_route_ref(route: &RuntimeTraceRouteRef) -> String {
+    let lane = route.lane.as_deref().unwrap_or("none");
+    let candidate = route
+        .candidate_index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    format!(
+        "{}/{} lane={} candidate={}",
+        route.provider, route.model, lane, candidate
+    )
+}
+
 fn write_tool_repair_diagnostics(response: &mut String, current: &RouteSelection) {
     if let Some(repair) = current.last_tool_repair.as_ref() {
         let _ = writeln!(
             response,
-            "Last tool repair: {} / {}",
+            "Last tool repair: {} / {} / outcome={} / repeats={} / role={}",
             tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
+            format_tool_repair_action(repair),
+            tool_repair_outcome_name(repair.repair_outcome),
+            repair.repeat_count.max(1),
+            format_tool_repair_role(repair)
         );
+        if let Some(route) = format_tool_repair_route(repair) {
+            let _ = writeln!(response, "Last tool repair route: {route}");
+        }
+        if let Some(shape) = format_tool_repair_argument_shape(repair) {
+            let _ = writeln!(response, "Last tool repair args: {shape}");
+        }
         if let Some(detail) = repair.detail.as_deref() {
             let _ = writeln!(response, "Last tool repair detail: {}", detail);
         }
@@ -934,15 +1309,68 @@ fn write_recent_tool_repairs(response: &mut String, recent_tool_repairs: &[ToolR
     for repair in recent_tool_repairs.iter().rev().take(3) {
         let _ = writeln!(
             response,
-            "Recent tool repair: {} / {} / {}",
+            "Recent tool repair: {} / {} / {} / outcome={} / repeats={} / role={}",
             repair.tool_name,
             tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
+            format_tool_repair_action(repair),
+            tool_repair_outcome_name(repair.repair_outcome),
+            repair.repeat_count.max(1),
+            format_tool_repair_role(repair)
         );
+        if let Some(route) = format_tool_repair_route(repair) {
+            let _ = writeln!(response, "Recent tool repair route: {route}");
+        }
+        if let Some(shape) = format_tool_repair_argument_shape(repair) {
+            let _ = writeln!(response, "Recent tool repair args: {shape}");
+        }
         if let Some(detail) = repair.detail.as_deref() {
             let _ = writeln!(response, "Recent tool repair detail: {}", detail);
         }
     }
+}
+
+fn format_tool_repair_role(repair: &ToolRepairTrace) -> &'static str {
+    repair
+        .tool_role
+        .map(tool_runtime_role_name)
+        .unwrap_or("unknown")
+}
+
+fn format_tool_repair_route(repair: &ToolRepairTrace) -> Option<String> {
+    repair.route.as_ref().map(|route| {
+        format!(
+            "{}/{} lane={} candidate={}",
+            route.provider,
+            route.model,
+            route.lane.map(|lane| lane.as_str()).unwrap_or("none"),
+            route
+                .candidate_index
+                .map(|index| index.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        )
+    })
+}
+
+fn format_tool_repair_argument_shape(repair: &ToolRepairTrace) -> Option<String> {
+    repair.argument_shape.as_ref().map(|shape| {
+        let keys = if shape.top_level_keys.is_empty() {
+            "none".to_string()
+        } else {
+            shape.top_level_keys.join(",")
+        };
+        let missing = if shape.missing_required_keys.is_empty() {
+            "none".to_string()
+        } else {
+            shape.missing_required_keys.join(",")
+        };
+        format!(
+            "root={} keys={} missing_required={} approx_chars={}",
+            tool_argument_shape_kind_name(shape.root_kind),
+            keys,
+            missing,
+            shape.approximate_chars
+        )
+    })
 }
 
 fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmissionState]) {
@@ -1040,6 +1468,8 @@ fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection
         recent_tool_repairs: &current.recent_tool_repairs,
         context_cache: current.context_cache.as_ref(),
         assumptions: &current.assumptions,
+        calibration_records: &current.calibrations,
+        decision_traces: &current.runtime_decision_traces,
         subsystem_observations: &[],
         now_unix,
     });
@@ -1088,6 +1518,397 @@ fn current_unix_seconds() -> i64 {
         .unwrap_or_default()
 }
 
+fn provider_adapter_status(provider: &str) -> CapabilityDoctorAdapterStatus {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return CapabilityDoctorAdapterStatus::Missing;
+    }
+    if provider.starts_with("custom:") || provider.starts_with("anthropic-custom:") {
+        return CapabilityDoctorAdapterStatus::Available;
+    }
+    if synapse_providers::list_providers().into_iter().any(|info| {
+        info.name.eq_ignore_ascii_case(provider)
+            || info
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(provider))
+    }) {
+        CapabilityDoctorAdapterStatus::Available
+    } else {
+        CapabilityDoctorAdapterStatus::Missing
+    }
+}
+
+fn provider_is_local(provider: &str) -> bool {
+    synapse_providers::list_providers().into_iter().any(|info| {
+        (info.name.eq_ignore_ascii_case(provider)
+            || info
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(provider)))
+            && info.local
+    })
+}
+
+fn provider_key_status_for_route(
+    config: &Config,
+    route: &RouteSelection,
+    provider_is_local: bool,
+    catalog: &WorkspaceModelProfileCatalog,
+) -> CapabilityDoctorProviderKeyStatus {
+    if provider_is_local && !local_provider_route_requires_key(route) {
+        return CapabilityDoctorProviderKeyStatus::NotRequired;
+    }
+    if route_candidate_has_key(config, route, catalog) {
+        return CapabilityDoctorProviderKeyStatus::Present;
+    }
+    if config
+        .default_provider
+        .as_deref()
+        .is_some_and(|provider| provider.eq_ignore_ascii_case(&route.provider))
+        && provider_uses_config_api_key(config, route.provider.as_str())
+        && (config
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty())
+            || !config.reliability.api_keys.is_empty())
+    {
+        return CapabilityDoctorProviderKeyStatus::Present;
+    }
+    if common_provider_env_key_present(route.provider.as_str()) {
+        return CapabilityDoctorProviderKeyStatus::Present;
+    }
+    if let Some(status) = special_provider_auth_status(config, route.provider.as_str()) {
+        return status;
+    }
+    CapabilityDoctorProviderKeyStatus::Missing
+}
+
+fn provider_uses_config_api_key(config: &Config, provider: &str) -> bool {
+    let normalized = provider.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "bedrock" | "aws-bedrock" => false,
+        "openai-codex" | "openai_codex" | "codex" => {
+            config
+                .api_url
+                .as_deref()
+                .is_some_and(|url| !url.trim().is_empty())
+                || env_key_present("SYNAPSECLAW_CODEX_RESPONSES_URL")
+                || env_key_present("SYNAPSECLAW_CODEX_BASE_URL")
+        }
+        _ => true,
+    }
+}
+
+fn local_provider_route_requires_key(route: &RouteSelection) -> bool {
+    route.provider.eq_ignore_ascii_case("ollama") && route.model.trim().ends_with(":cloud")
+}
+
+fn route_candidate_has_key(
+    config: &Config,
+    route: &RouteSelection,
+    catalog: &WorkspaceModelProfileCatalog,
+) -> bool {
+    let Some(lane) = route.lane else {
+        return false;
+    };
+    let candidates = resolve_lane_candidates(config, lane, Some(catalog));
+    candidates
+        .iter()
+        .enumerate()
+        .find(|(index, candidate)| {
+            route
+                .candidate_index
+                .is_some_and(|candidate_index| candidate_index == *index)
+                || (candidate.provider.eq_ignore_ascii_case(&route.provider)
+                    && candidate.model.eq_ignore_ascii_case(&route.model))
+        })
+        .is_some_and(|(_, candidate)| {
+            candidate
+                .api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty())
+                || candidate
+                    .api_key_env
+                    .as_deref()
+                    .is_some_and(env_key_present)
+        })
+}
+
+fn common_provider_env_key_present(provider: &str) -> bool {
+    let normalized = provider.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "bedrock" | "aws-bedrock") {
+        return env_key_present("AWS_ACCESS_KEY_ID") && env_key_present("AWS_SECRET_ACCESS_KEY");
+    }
+
+    provider_api_key_env_names(provider)
+        .into_iter()
+        .any(env_key_present)
+}
+
+fn provider_api_key_env_names(provider: &str) -> Vec<&'static str> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    let mut names = Vec::new();
+    match normalized.as_str() {
+        "openrouter" => names.push("OPENROUTER_API_KEY"),
+        "openai" => names.push("OPENAI_API_KEY"),
+        "openai-codex" | "openai_codex" | "codex" => {
+            names.push("SYNAPSECLAW_OPENAI_CODEX_ACCESS_TOKEN");
+            names.push("SYNAPSECLAW_OPENAI_CODEX_REFRESH_TOKEN");
+        }
+        "anthropic" | "claude" | "claude-code" => {
+            names.push("ANTHROPIC_OAUTH_TOKEN");
+            names.push("ANTHROPIC_API_KEY");
+        }
+        "ollama" => names.push("OLLAMA_API_KEY"),
+        "gemini" | "google" | "google-gemini" => {
+            names.push("GEMINI_API_KEY");
+            names.push("GOOGLE_API_KEY");
+        }
+        "deepseek" => names.push("DEEPSEEK_API_KEY"),
+        "xai" | "grok" => names.push("XAI_API_KEY"),
+        "groq" => names.push("GROQ_API_KEY"),
+        "mistral" => names.push("MISTRAL_API_KEY"),
+        "cohere" => names.push("COHERE_API_KEY"),
+        "perplexity" => names.push("PERPLEXITY_API_KEY"),
+        "together" | "together-ai" => names.push("TOGETHER_API_KEY"),
+        "fireworks" | "fireworks-ai" => names.push("FIREWORKS_API_KEY"),
+        "novita" => names.push("NOVITA_API_KEY"),
+        "telnyx" => names.push("TELNYX_API_KEY"),
+        "venice" => names.push("VENICE_API_KEY"),
+        "vercel" | "vercel-ai" => {
+            names.push("VERCEL_API_KEY");
+            names.push("AI_GATEWAY_API_KEY");
+        }
+        "nvidia" | "nvidia-nim" | "build.nvidia.com" => names.push("NVIDIA_API_KEY"),
+        "synthetic" => names.push("SYNTHETIC_API_KEY"),
+        "opencode" | "opencode-zen" => names.push("OPENCODE_API_KEY"),
+        "opencode-go" => names.push("OPENCODE_GO_API_KEY"),
+        "cloudflare" | "cloudflare-ai" => names.push("CLOUDFLARE_API_KEY"),
+        "ovhcloud" | "ovh" => names.push("OVH_AI_ENDPOINTS_ACCESS_TOKEN"),
+        "astrai" => names.push("ASTRAI_API_KEY"),
+        "llamacpp" | "llama.cpp" => names.push("LLAMACPP_API_KEY"),
+        "sglang" => names.push("SGLANG_API_KEY"),
+        "vllm" => names.push("VLLM_API_KEY"),
+        "aihubmix" => names.push("AIHUBMIX_API_KEY"),
+        "siliconflow" | "silicon-flow" => names.push("SILICONFLOW_API_KEY"),
+        "osaurus" => names.push("OSAURUS_API_KEY"),
+        "azure" | "azure-openai" | "azure_openai" => names.push("AZURE_OPENAI_API_KEY"),
+        _ => {}
+    }
+
+    if synapse_providers::is_moonshot_alias(normalized.as_str()) {
+        names.push("MOONSHOT_API_KEY");
+    }
+    if matches!(
+        normalized.as_str(),
+        "kimi-code" | "kimi_coding" | "kimi_for_coding"
+    ) {
+        names.push("KIMI_CODE_API_KEY");
+        names.push("MOONSHOT_API_KEY");
+    }
+    if synapse_providers::is_glm_alias(normalized.as_str()) {
+        names.push("GLM_API_KEY");
+    }
+    if synapse_providers::is_zai_alias(normalized.as_str()) {
+        names.push("ZAI_API_KEY");
+    }
+    if synapse_providers::is_minimax_alias(normalized.as_str()) {
+        names.push("MINIMAX_OAUTH_TOKEN");
+        names.push("MINIMAX_API_KEY");
+        names.push("MINIMAX_OAUTH_REFRESH_TOKEN");
+    }
+    if synapse_providers::is_qianfan_alias(normalized.as_str()) {
+        names.push("QIANFAN_API_KEY");
+    }
+    if synapse_providers::is_doubao_alias(normalized.as_str()) {
+        names.push("ARK_API_KEY");
+        names.push("VOLCENGINE_API_KEY");
+        names.push("DOUBAO_API_KEY");
+    }
+    if synapse_providers::is_qwen_alias(normalized.as_str()) {
+        names.push("DASHSCOPE_API_KEY");
+        if synapse_providers::is_qwen_oauth_alias(normalized.as_str()) {
+            names.push("QWEN_OAUTH_TOKEN");
+            names.push("QWEN_OAUTH_REFRESH_TOKEN");
+        }
+    }
+    if !matches!(
+        normalized.as_str(),
+        "openai-codex" | "openai_codex" | "codex" | "bedrock" | "aws-bedrock"
+    ) {
+        names.push("SYNAPSECLAW_API_KEY");
+        names.push("API_KEY");
+    }
+
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+fn special_provider_auth_status(
+    config: &Config,
+    provider: &str,
+) -> Option<CapabilityDoctorProviderKeyStatus> {
+    let normalized = provider.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "openai-codex" | "openai_codex" | "codex" => {
+            if codex_cli_auth_file_present()
+                || synapseclaw_auth_profile_present(config, "openai-codex")
+            {
+                Some(CapabilityDoctorProviderKeyStatus::Present)
+            } else {
+                Some(CapabilityDoctorProviderKeyStatus::Unknown)
+            }
+        }
+        "gemini" | "google" | "google-gemini" => {
+            if synapse_providers::gemini::GeminiProvider::has_cli_credentials()
+                || synapseclaw_auth_profile_present(config, "gemini")
+            {
+                Some(CapabilityDoctorProviderKeyStatus::Present)
+            } else {
+                None
+            }
+        }
+        "bedrock" | "aws-bedrock" => Some(CapabilityDoctorProviderKeyStatus::Unknown),
+        _ => None,
+    }
+}
+
+fn synapseclaw_auth_profile_present(config: &Config, provider: &str) -> bool {
+    let path = synapse_providers::auth::state_dir_from_config(config).join("auth-profiles.json");
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let active_profile_matches = value
+        .get("active_profiles")
+        .and_then(|active| active.get(provider))
+        .and_then(serde_json::Value::as_str)
+        .is_some();
+    let stored_profile_matches = value
+        .get("profiles")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|profiles| {
+            profiles.values().any(|profile| {
+                profile
+                    .get("provider")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|profile_provider| profile_provider.eq_ignore_ascii_case(provider))
+            })
+        });
+    active_profile_matches || stored_profile_matches
+}
+
+fn codex_cli_auth_file_present() -> bool {
+    codex_cli_home()
+        .map(|home| codex_cli_auth_file_has_tokens(home.join("auth.json").as_path()))
+        .unwrap_or(false)
+}
+
+fn codex_cli_auth_file_has_tokens(path: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let auth_mode_matches = value
+        .get("auth_mode")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|mode| mode == "chatgpt");
+    let has_token = value.get("tokens").is_some_and(|tokens| {
+        tokens
+            .get("access_token")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|token| !token.trim().is_empty())
+            || tokens
+                .get("refresh_token")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|token| !token.trim().is_empty())
+    });
+    auth_mode_matches && has_token
+}
+
+fn codex_cli_home() -> Option<PathBuf> {
+    match std::env::var("CODEX_HOME")
+        .ok()
+        .and_then(|value| first_nonempty_env_value(value.as_str()))
+    {
+        Some(configured) if configured == "~" => {
+            directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        }
+        Some(configured) if configured.starts_with("~/") => directories::UserDirs::new()
+            .map(|dirs| dirs.home_dir().join(configured.trim_start_matches("~/"))),
+        Some(configured) => Some(PathBuf::from(configured)),
+        None => directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".codex")),
+    }
+}
+
+fn first_nonempty_env_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn env_key_present(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+pub(crate) fn capability_doctor_severity_name(severity: CapabilityDoctorSeverity) -> &'static str {
+    match severity {
+        CapabilityDoctorSeverity::Ok => "ok",
+        CapabilityDoctorSeverity::Warn => "warn",
+        CapabilityDoctorSeverity::Error => "error",
+    }
+}
+
+pub(crate) fn capability_doctor_subsystem_name(
+    subsystem: CapabilityDoctorSubsystem,
+) -> &'static str {
+    match subsystem {
+        CapabilityDoctorSubsystem::ProviderKey => "provider_key",
+        CapabilityDoctorSubsystem::ProviderAdapter => "provider_adapter",
+        CapabilityDoctorSubsystem::ProviderPlan => "provider_plan",
+        CapabilityDoctorSubsystem::ModelProfile => "model_profile",
+        CapabilityDoctorSubsystem::Route => "route",
+        CapabilityDoctorSubsystem::Lane => "lane",
+        CapabilityDoctorSubsystem::ToolRegistry => "tool_registry",
+        CapabilityDoctorSubsystem::MemoryBackend => "memory_backend",
+        CapabilityDoctorSubsystem::EmbeddingBackend => "embedding_backend",
+        CapabilityDoctorSubsystem::ChannelDelivery => "channel_delivery",
+        CapabilityDoctorSubsystem::ReasoningControls => "reasoning_controls",
+        CapabilityDoctorSubsystem::NativeContinuation => "native_continuation",
+    }
+}
+
+pub(crate) fn capability_doctor_readiness_name(
+    readiness: CapabilityDoctorReadiness,
+) -> &'static str {
+    match readiness {
+        CapabilityDoctorReadiness::Ready => "ready",
+        CapabilityDoctorReadiness::MissingKey => "missing_key",
+        CapabilityDoctorReadiness::MissingAdapter => "missing_adapter",
+        CapabilityDoctorReadiness::MissingModelProfile => "missing_model_profile",
+        CapabilityDoctorReadiness::UnknownContextWindow => "unknown_context_window",
+        CapabilityDoctorReadiness::StaleCatalog => "stale_catalog",
+        CapabilityDoctorReadiness::LowConfidenceMetadata => "low_confidence_metadata",
+        CapabilityDoctorReadiness::UnsupportedModality => "unsupported_modality",
+        CapabilityDoctorReadiness::UnsupportedToolCapability => "unsupported_tool_capability",
+        CapabilityDoctorReadiness::IgnoredReasoningControls => "ignored_reasoning_controls",
+        CapabilityDoctorReadiness::UnsupportedNativeContinuation => {
+            "unsupported_native_continuation"
+        }
+        CapabilityDoctorReadiness::ProviderPlanDenied => "provider_plan_denied",
+        CapabilityDoctorReadiness::DegradedBackend => "degraded_backend",
+        CapabilityDoctorReadiness::NotConfigured => "not_configured",
+        CapabilityDoctorReadiness::Unknown => "unknown",
+    }
+}
+
 fn capability_lane_name(lane: CapabilityLane) -> &'static str {
     lane.as_str()
 }
@@ -1100,6 +1921,8 @@ fn model_feature_name(feature: &ModelFeature) -> &'static str {
         ModelFeature::AudioGeneration => "audio",
         ModelFeature::VideoGeneration => "video",
         ModelFeature::MusicGeneration => "music",
+        ModelFeature::SpeechTranscription => "speech_transcription",
+        ModelFeature::SpeechSynthesis => "speech_synthesis",
         ModelFeature::Embedding => "embedding",
         ModelFeature::MultimodalUnderstanding => "multimodal",
         ModelFeature::ServerContinuation => "continuation",
@@ -1203,6 +2026,11 @@ mod tests {
         RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
         RuntimeCalibrationOutcome,
     };
+    use synapse_domain::application::services::runtime_decision_trace::{
+        RuntimeDecisionTrace, RuntimeTraceAuxiliaryDecision, RuntimeTraceContextSnapshot,
+        RuntimeTraceMemoryDecision, RuntimeTraceModelProfileSnapshot, RuntimeTraceRouteDecision,
+        RuntimeTraceRouteRef, RuntimeTraceToolDecision,
+    };
     use synapse_domain::application::services::runtime_watchdog::{
         RuntimeWatchdogAction, RuntimeWatchdogReason, RuntimeWatchdogSeverity,
         RuntimeWatchdogSubsystem,
@@ -1236,6 +2064,8 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -1318,6 +2148,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1367,6 +2199,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1379,6 +2213,240 @@ mod tests {
             "Last admission reasons: requires multimodal_understanding, context warning"
         ));
         assert!(response.contains("Suggested next action: switch_lane (multimodal_understanding)"));
+    }
+
+    #[test]
+    fn providers_help_includes_runtime_decision_trace_diagnostics() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openai-codex".into(),
+            model: "gpt-5.4".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+            runtime_decision_traces: vec![RuntimeDecisionTrace {
+            usage_ledger: Default::default(),
+                trace_id: "trace-1".into(),
+                observed_at_unix: 100,
+                route: RuntimeTraceRouteDecision {
+                    before: RuntimeTraceRouteRef {
+                        provider: "openai-codex".into(),
+                        model: "gpt-5.4".into(),
+                        lane: None,
+                        candidate_index: None,
+                    },
+                    after: RuntimeTraceRouteRef {
+                        provider: "openai-codex".into(),
+                        model: "gpt-5.4".into(),
+                        lane: None,
+                        candidate_index: None,
+                    },
+                    reroute_applied: false,
+                    intent: "tool_heavy".into(),
+                    pressure_state: "critical".into(),
+                    action: "compact".into(),
+                    reasons: vec!["context_critical".into()],
+                    recommended_action: Some("compact_session".into()),
+                },
+                model_profile: RuntimeTraceModelProfileSnapshot {
+                    context_window_tokens: Some(200_000),
+                    max_output_tokens: Some(8_192),
+                    features: vec!["tool_calling".into()],
+                    context_window_source: "manual_config".into(),
+                    context_window_freshness: "explicit".into(),
+                    context_window_confidence: "high".into(),
+                    max_output_source: "manual_config".into(),
+                    max_output_freshness: "explicit".into(),
+                    max_output_confidence: "high".into(),
+                    features_source: "manual_config".into(),
+                    features_freshness: "explicit".into(),
+                    features_confidence: "high".into(),
+                },
+                context: RuntimeTraceContextSnapshot {
+                    total_chars: 50_000,
+                    estimated_total_tokens: 12_500,
+                    target_total_tokens: 10_000,
+                    ceiling_total_tokens: 12_000,
+                    protected_chars: 1_000,
+                    removable_chars: 49_000,
+                    chars_over_target: 10_000,
+                    chars_over_ceiling: 2_000,
+                    tokens_headroom_to_target: 0,
+                    tokens_headroom_to_ceiling: 0,
+                    turn_shape: "baseline".into(),
+                    budget_tier: "over_budget".into(),
+                    requires_compaction: true,
+                    condensation_mode: Some("summarize".into()),
+                    condensation_target: Some("prior_chat".into()),
+                    condensation_minimum_reclaim_chars: Some(5_000),
+                    condensation_prefers_cached_artifact: true,
+                    cache: None,
+                },
+                tools: vec![RuntimeTraceToolDecision {
+                    observed_at_unix: 101,
+                    tool_name: "web_fetch".into(),
+                    tool_role: Some("external_lookup".into()),
+                    failure_kind: "timeout".into(),
+                    suggested_action: "retry_with_simpler_request".into(),
+                    route: Some("openai/gpt-test lane=none candidate=none".into()),
+                    attempt_reason: "model_tool_call".into(),
+                    argument_shape: Some(
+                        "root=object keys=url missing_required=none approx_chars=42".into(),
+                    ),
+                    admission: Some("action=proceed pressure=healthy reasons=".into()),
+                    repair_outcome: "failed".into(),
+                    expires_at_unix: 101 + 48 * 60 * 60,
+                    repeat_count: 1,
+                    suppression_key: Some("tool:web_fetch".into()),
+                    detail: Some("timed out".into()),
+                }],
+                memory: vec![RuntimeTraceMemoryDecision {
+                    observed_at_unix: 102,
+                    source: "explicit_user".into(),
+                    category: "core".into(),
+                    write_class: Some("fact_anchor".into()),
+                    action: "noop".into(),
+                    applied: false,
+                    entry_id_present: false,
+                    reason: "secret memory text that must stay out of diagnostics".into(),
+                    similarity_basis_points: Some(9_500),
+                    failure: None,
+                }],
+                auxiliary: vec![RuntimeTraceAuxiliaryDecision {
+                    observed_at_unix: 103,
+                    kind: "reflection".into(),
+                    action: "started".into(),
+                    count: 1,
+                    reason: None,
+                    lane: None,
+                    selected_provider: None,
+                    selected_model: None,
+                    selected_candidate_index: None,
+                    candidate_order: Vec::new(),
+                }],
+                notes: Vec::new(),
+            }],
+        });
+
+        assert!(response.contains("Runtime decision traces retained: 1"));
+        assert!(response.contains("Runtime decision memory: explicit_user:core:noop applied=false"));
+        assert!(response.contains(
+            "Runtime decision memory detail: core / reason=secret memory text that must stay out of diagnostics"
+        ));
+        assert!(response.contains("Runtime decision auxiliary: reflection:started count=1"));
+        assert!(!response.contains("secret memory text"));
+    }
+
+    #[test]
+    fn models_help_includes_implicit_memory_recall_notes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "gpt-5.4-mini".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
+                runtime_decision_traces: vec![RuntimeDecisionTrace {
+                    trace_id: "trace-2".into(),
+                    observed_at_unix: 100,
+                    route: RuntimeTraceRouteDecision {
+                        before: RuntimeTraceRouteRef::new("openrouter", "gpt-5.4-mini", None, None),
+                        after: RuntimeTraceRouteRef::new("openrouter", "gpt-5.4-mini", None, None),
+                        reroute_applied: false,
+                        intent: "reply".into(),
+                        pressure_state: "healthy".into(),
+                        action: "proceed".into(),
+                        reasons: vec![],
+                        recommended_action: None,
+                    },
+                    model_profile: RuntimeTraceModelProfileSnapshot {
+                        context_window_tokens: Some(128000),
+                        max_output_tokens: Some(8192),
+                        features: vec![],
+                        context_window_source: "catalog".into(),
+                        context_window_freshness: "fresh".into(),
+                        context_window_confidence: "high".into(),
+                        max_output_source: "catalog".into(),
+                        max_output_freshness: "fresh".into(),
+                        max_output_confidence: "high".into(),
+                        features_source: "catalog".into(),
+                        features_freshness: "fresh".into(),
+                        features_confidence: "high".into(),
+                    },
+                    context: RuntimeTraceContextSnapshot {
+                        total_chars: 20,
+                        estimated_total_tokens: 10,
+                        target_total_tokens: 100,
+                        ceiling_total_tokens: 200,
+                        protected_chars: 0,
+                        removable_chars: 0,
+                        chars_over_target: 0,
+                        chars_over_ceiling: 0,
+                        tokens_headroom_to_target: 90,
+                        tokens_headroom_to_ceiling: 190,
+                        turn_shape: "default".into(),
+                        budget_tier: "under_budget".into(),
+                        requires_compaction: false,
+                        condensation_mode: None,
+                        condensation_target: None,
+                        condensation_minimum_reclaim_chars: None,
+                        condensation_prefers_cached_artifact: false,
+                        cache: None,
+                    },
+                    tools: Vec::new(),
+                    memory: vec![RuntimeTraceMemoryDecision {
+                        observed_at_unix: 100,
+                        source: "implicit_memory_recall".into(),
+                        category: "local_infra".into(),
+                        write_class: None,
+                        action: "recall_accept".into(),
+                        applied: true,
+                        entry_id_present: true,
+                        reason: "accepted key=local_infra_matrix_homeserver verification_policy=minimal_live_verification".into(),
+                        similarity_basis_points: Some(9600),
+                        failure: None,
+                    }],
+                    auxiliary: Vec::new(),
+                    notes: vec![
+                        RuntimeTraceNote {
+                            observed_at_unix: 100,
+                            kind: "implicit_memory_recall".into(),
+                            detail: "attempted=true query=matrix homeserver | service package local infrastructure scopes=core,local_infra accepted=1 rejected=0 verification_policy=minimal_live_verification".into(),
+                        },
+                        RuntimeTraceNote {
+                            observed_at_unix: 100,
+                            kind: "implicit_memory_context".into(),
+                            detail: "guidance_chars=212 accepted_anchors=1".into(),
+                        },
+                    ],
+                }],
+                usage_ledger: Default::default(),
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime decision note: implicit_memory_recall / attempted=true query=matrix homeserver"));
+        assert!(response.contains("verification_policy=minimal_live_verification"));
+        assert!(response.contains("Runtime decision note: implicit_memory_context / guidance_chars=212 accepted_anchors=1"));
     }
 
     #[test]
@@ -1417,6 +2485,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1458,6 +2528,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1504,6 +2576,8 @@ mod tests {
                 calibrations: vec![calibration],
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1534,6 +2608,7 @@ mod tests {
                     failure_kind: ToolFailureKind::ReportedFailure,
                     suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                     detail: Some("missing delivery target".into()),
+                    ..ToolRepairTrace::default()
                 }),
                 recent_tool_repairs: vec![ToolRepairTrace {
                     observed_at_unix: 1_744_243_200,
@@ -1541,12 +2616,15 @@ mod tests {
                     failure_kind: ToolFailureKind::ReportedFailure,
                     suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                     detail: Some("missing delivery target".into()),
+                    ..ToolRepairTrace::default()
                 }],
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1578,6 +2656,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: Some("missing delivery target".into()),
+                ..ToolRepairTrace::default()
             }),
             recent_tool_repairs: Vec::new(),
             context_cache: None,
@@ -1585,6 +2664,8 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime watchdog alerts: 1"));
@@ -1628,6 +2709,8 @@ mod tests {
                     assumptions: Vec::new(),
                 },
             }],
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime handoff artifacts retained: 1"));
@@ -1663,6 +2746,8 @@ mod tests {
             }],
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime calibrations retained: 1"));
@@ -1695,6 +2780,8 @@ mod tests {
             calibrations: Vec::new(),
             watchdog_alerts: Vec::new(),
             handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
         });
 
         assert!(response.contains("Runtime assumptions retained: 1"));
@@ -1744,6 +2831,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1804,6 +2893,8 @@ mod tests {
                 calibrations: Vec::new(),
                 watchdog_alerts: Vec::new(),
                 handoff_artifacts: Vec::new(),
+                runtime_decision_traces: Vec::new(),
+                usage_ledger: Default::default(),
             },
             &config,
         );
@@ -1817,6 +2908,73 @@ mod tests {
         assert!(response.contains(
             "threshold=`50.00%` target=`25.00%` protect=`2/6` summary=`20.00%` source_chars=`60000` summary_chars=`12000`"
         ));
+    }
+
+    #[test]
+    fn capability_doctor_provider_key_env_names_follow_provider_auth_paths() {
+        let codex = provider_api_key_env_names("openai-codex");
+        assert!(codex.contains(&"SYNAPSECLAW_OPENAI_CODEX_ACCESS_TOKEN"));
+        assert!(codex.contains(&"SYNAPSECLAW_OPENAI_CODEX_REFRESH_TOKEN"));
+        assert!(!codex.contains(&"API_KEY"));
+
+        let qwen_oauth = provider_api_key_env_names("qwen-code");
+        assert!(qwen_oauth.contains(&"QWEN_OAUTH_TOKEN"));
+        assert!(qwen_oauth.contains(&"QWEN_OAUTH_REFRESH_TOKEN"));
+        assert!(qwen_oauth.contains(&"DASHSCOPE_API_KEY"));
+
+        let bedrock = provider_api_key_env_names("bedrock");
+        assert!(!bedrock.contains(&"API_KEY"));
+        assert!(!bedrock.contains(&"SYNAPSECLAW_API_KEY"));
+    }
+
+    #[test]
+    fn capability_doctor_does_not_treat_bedrock_config_api_key_as_auth() {
+        let mut config = Config::default();
+        config.api_key = Some("not-used-by-bedrock".into());
+
+        assert!(!provider_uses_config_api_key(&config, "bedrock"));
+    }
+
+    #[test]
+    fn capability_doctor_codex_cli_auth_requires_chatgpt_tokens() {
+        let workspace = tempfile::tempdir().unwrap();
+        let auth_path = workspace.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":" rt "}}"#,
+        )
+        .unwrap();
+        assert!(codex_cli_auth_file_has_tokens(auth_path.as_path()));
+
+        std::fs::write(
+            &auth_path,
+            r#"{"auth_mode":"api-key","tokens":{"refresh_token":" rt "}}"#,
+        )
+        .unwrap();
+        assert!(!codex_cli_auth_file_has_tokens(auth_path.as_path()));
+    }
+
+    #[test]
+    fn capability_doctor_keeps_ollama_cloud_model_auth_checked() {
+        let route = RouteSelection {
+            provider: "ollama".into(),
+            model: "qwen3:cloud".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+            runtime_decision_traces: Vec::new(),
+            usage_ledger: Default::default(),
+        };
+
+        assert!(local_provider_route_requires_key(&route));
     }
 
     #[test]

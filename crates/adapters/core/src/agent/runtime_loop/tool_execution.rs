@@ -10,12 +10,19 @@ use synapse_domain::application::services::model_capability_support::{
     assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
 };
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
-use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
+use synapse_domain::application::services::tool_repair::{
+    apply_successful_tool_repair_observation_with_args, build_tool_repair_trace,
+    enrich_tool_repair_trace, latest_tool_repair_trace, sanitized_tool_replay_args_with_contract,
+    ToolRepairTraceContext,
+};
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
-use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
+use synapse_domain::domain::tool_repair::{
+    ToolFailureKind, ToolRepairAttemptReason, ToolRepairRoute, ToolRepairTrace,
+};
 use synapse_domain::ports::provider::{
     MediaArtifact, ProviderCapabilities, ProviderCapabilityRequirement,
 };
+use synapse_domain::ports::tool::ToolSpec as DomainToolSpec;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -118,6 +125,7 @@ pub(crate) struct ToolLoopResult {
     pub(crate) last_tool_repair: Option<ToolRepairTrace>,
     pub(crate) tool_repairs: Vec<ToolRepairTrace>,
     pub(crate) media_artifacts: Vec<MediaArtifact>,
+    pub(crate) usage: Option<synapse_domain::ports::provider::TokenUsage>,
 }
 
 fn collect_tool_facts(
@@ -149,6 +157,34 @@ fn progress_hash_for_tool_facts(facts: &[TypedToolFact]) -> Option<u64> {
     subjects.sort();
     subjects.dedup();
     hash_strings(&subjects)
+}
+
+fn enrich_tool_loop_repair_trace(
+    trace: ToolRepairTrace,
+    tool_name: &str,
+    tool_args: &serde_json::Value,
+    tool_specs: &[DomainToolSpec],
+    provider_name: &str,
+    model: &str,
+    attempt_reason: ToolRepairAttemptReason,
+) -> ToolRepairTrace {
+    let tool_spec = tool_specs.iter().find(|spec| spec.name == tool_name);
+    enrich_tool_repair_trace(
+        trace,
+        ToolRepairTraceContext {
+            tool_role: tool_spec.and_then(|spec| spec.runtime_role),
+            route: Some(ToolRepairRoute {
+                provider: provider_name.to_string(),
+                model: model.to_string(),
+                lane: None,
+                candidate_index: None,
+            }),
+            attempt_reason: Some(attempt_reason),
+            arguments: Some(tool_args),
+            tool_spec,
+            admission: None,
+        },
+    )
 }
 
 pub(crate) async fn execute_one_tool(
@@ -204,6 +240,7 @@ pub(crate) async fn execute_one_tool(
                 ToolFailureKind::UnknownTool,
                 Some(&reason),
             )),
+            replay_args: None,
         });
     };
 
@@ -251,6 +288,7 @@ pub(crate) async fn execute_one_tool(
                     ToolFailureKind::PolicyBlocked,
                     Some(&reason),
                 )),
+                replay_args: None,
             });
         }
     }
@@ -301,6 +339,20 @@ pub(crate) async fn execute_one_tool(
                     duration,
                     tool_facts,
                     repair_trace: None,
+                    replay_args: {
+                        let tool_spec = DomainToolSpec {
+                            name: tool.name().to_string(),
+                            description: tool.description().to_string(),
+                            parameters: tool.parameters_schema(),
+                            runtime_role: tool.runtime_role(),
+                        };
+                        sanitized_tool_replay_args_with_contract(
+                            call_name,
+                            &call_arguments,
+                            &tool_spec,
+                            &tool.tool_contract(),
+                        )
+                    },
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -320,6 +372,7 @@ pub(crate) async fn execute_one_tool(
                         ToolFailureKind::ReportedFailure,
                         Some(&reason),
                     )),
+                    replay_args: None,
                 })
             }
         }
@@ -348,6 +401,7 @@ pub(crate) async fn execute_one_tool(
                 duration,
                 tool_facts,
                 repair_trace: Some(classify_tool_execution_error(call_name, &e)),
+                replay_args: None,
             })
         }
     }
@@ -360,6 +414,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) duration: Duration,
     pub(crate) tool_facts: Vec<TypedToolFact>,
     pub(crate) repair_trace: Option<ToolRepairTrace>,
+    pub(crate) replay_args: Option<serde_json::Value>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -504,6 +559,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut last_tool_repair = None::<ToolRepairTrace>;
     let mut collected_tool_repairs = Vec::<ToolRepairTrace>::new();
     let mut collected_media_artifacts = Vec::<MediaArtifact>::new();
+    let mut collected_usage: Option<synapse_domain::ports::provider::TokenUsage> = None;
 
     tracing::info!(
         model,
@@ -651,6 +707,21 @@ pub(crate) async fn run_tool_call_loop(
                 });
 
                 let response_text = resp.text_or_empty().to_string();
+                if let Some(ref usage) = resp.usage {
+                    let current = collected_usage.get_or_insert_with(Default::default);
+                    current.input_tokens = Some(
+                        current.input_tokens.unwrap_or(0)
+                            .saturating_add(usage.input_tokens.unwrap_or(0)),
+                    );
+                    current.output_tokens = Some(
+                        current.output_tokens.unwrap_or(0)
+                            .saturating_add(usage.output_tokens.unwrap_or(0)),
+                    );
+                    current.cached_input_tokens = Some(
+                        current.cached_input_tokens.unwrap_or(0)
+                            .saturating_add(usage.cached_input_tokens.unwrap_or(0)),
+                    );
+                }
                 let calls = parse_structured_tool_calls(&resp.tool_calls)?;
 
                 if let Some(parse_issue) = detect_tool_call_parse_issue(&response_text, &calls) {
@@ -819,6 +890,7 @@ pub(crate) async fn run_tool_call_loop(
                 last_tool_repair,
                 tool_repairs: collected_tool_repairs,
                 media_artifacts: collected_media_artifacts,
+                usage: collected_usage,
             });
         }
 
@@ -898,11 +970,20 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
-                                repair_trace: Some(build_tool_repair_trace(
+                                repair_trace: Some(enrich_tool_loop_repair_trace(
+                                    build_tool_repair_trace(
+                                        &call.name,
+                                        ToolFailureKind::PolicyBlocked,
+                                        Some(&reason),
+                                    ),
                                     &call.name,
-                                    ToolFailureKind::PolicyBlocked,
-                                    Some(&reason),
+                                    &tool_args,
+                                    &tool_specs,
+                                    provider_name,
+                                    model,
+                                    ToolRepairAttemptReason::HookPolicy,
                                 )),
+                                replay_args: None,
                             },
                         ));
                         continue;
@@ -967,11 +1048,20 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
-                                repair_trace: Some(build_tool_repair_trace(
+                                repair_trace: Some(enrich_tool_loop_repair_trace(
+                                    build_tool_repair_trace(
+                                        &tool_name,
+                                        ToolFailureKind::PolicyBlocked,
+                                        Some("Denied by user."),
+                                    ),
                                     &tool_name,
-                                    ToolFailureKind::PolicyBlocked,
-                                    Some("Denied by user."),
+                                    &tool_args,
+                                    &tool_specs,
+                                    provider_name,
+                                    model,
+                                    ToolRepairAttemptReason::ApprovalGate,
                                 )),
+                                replay_args: None,
                             },
                         ));
                         continue;
@@ -1019,11 +1109,20 @@ pub(crate) async fn run_tool_call_loop(
                             Duration::ZERO,
                             Vec::new(),
                         ),
-                        repair_trace: Some(build_tool_repair_trace(
+                        repair_trace: Some(enrich_tool_loop_repair_trace(
+                            build_tool_repair_trace(
+                                &tool_name,
+                                ToolFailureKind::DuplicateInvocation,
+                                Some("duplicate invocation in the same turn"),
+                            ),
                             &tool_name,
-                            ToolFailureKind::DuplicateInvocation,
-                            Some("duplicate invocation in the same turn"),
+                            &tool_args,
+                            &tool_specs,
+                            provider_name,
+                            model,
+                            ToolRepairAttemptReason::DuplicateGuard,
                         )),
+                        replay_args: None,
                     },
                 ));
                 continue;
@@ -1163,7 +1262,30 @@ pub(crate) async fn run_tool_call_loop(
             }
 
             collected_tool_facts.extend(outcome.tool_facts.clone());
+            if outcome.success {
+                let role = tool_specs
+                    .iter()
+                    .find(|spec| spec.name == call.name)
+                    .and_then(|spec| spec.runtime_role);
+                collected_tool_repairs = apply_successful_tool_repair_observation_with_args(
+                    &collected_tool_repairs,
+                    &call.name,
+                    role,
+                    chrono::Utc::now().timestamp(),
+                    outcome.replay_args.as_ref(),
+                );
+                last_tool_repair = latest_tool_repair_trace(&collected_tool_repairs);
+            }
             if let Some(trace) = outcome.repair_trace.clone() {
+                let trace = enrich_tool_loop_repair_trace(
+                    trace,
+                    &call.name,
+                    &call.arguments,
+                    &tool_specs,
+                    provider_name,
+                    model,
+                    ToolRepairAttemptReason::ToolExecution,
+                );
                 last_tool_repair = Some(trace.clone());
                 collected_tool_repairs.push(trace);
             }
@@ -1214,6 +1336,7 @@ pub(crate) async fn run_tool_call_loop(
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
                     media_artifacts: collected_media_artifacts,
+                    usage: collected_usage,
                 });
             }
             LoopAction::ForceStop => {
@@ -1231,6 +1354,7 @@ pub(crate) async fn run_tool_call_loop(
                     last_tool_repair,
                     tool_repairs: collected_tool_repairs,
                     media_artifacts: collected_media_artifacts,
+                    usage: collected_usage,
                 });
             }
         }

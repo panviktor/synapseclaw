@@ -1283,20 +1283,14 @@ if [[ "$SKIP_ONBOARD" == false && -n "$SYNAPSECLAW_BIN" ]]; then
       step_fail "Ollama configuration failed — run synapseclaw onboard to retry"
     fi
   else
-    # No API key and not ollama — prompt inline if interactive, skip otherwise
+    # No explicit credentials provided. Hand off to the real onboarding wizard
+    # in interactive shells; otherwise leave setup for later/manual invocation.
     if [[ -t 0 && -t 1 ]]; then
-      prompt_provider
-      prompt_api_key
-      if [[ -n "$API_KEY" ]]; then
-        ONBOARD_CMD=("$SYNAPSECLAW_BIN" onboard --api-key "$API_KEY" --provider "$PROVIDER")
-        if [[ -n "$MODEL" ]]; then
-          ONBOARD_CMD+=(--model "$MODEL")
-        fi
-        if "${ONBOARD_CMD[@]}" 2>/dev/null; then
-          step_ok "Provider configured"
-        else
-          step_fail "Provider configuration failed — run synapseclaw onboard to retry"
-        fi
+      step_dot "Launching interactive onboarding"
+      if "$SYNAPSECLAW_BIN" onboard; then
+        step_ok "Onboarding completed"
+      else
+        step_fail "Onboarding failed — run synapseclaw onboard to retry"
       fi
     else
       step_dot "No API key provided — run synapseclaw onboard to configure"

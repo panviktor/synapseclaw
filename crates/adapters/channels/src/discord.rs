@@ -8,8 +8,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
-use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::application::services::media_artifact_delivery::artifact_delivery_uri;
+use synapse_domain::domain::channel::{InboundMediaAttachment, InboundMediaKind};
 use synapse_domain::ports::provider::{MediaArtifact, MediaArtifactKind};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -184,13 +184,14 @@ impl DiscordAttachmentKind {
             _ => None,
         }
     }
-
 }
 
 fn discord_attachment_kind_for_artifact(kind: MediaArtifactKind) -> DiscordAttachmentKind {
     match kind {
         MediaArtifactKind::Image => DiscordAttachmentKind::Image,
-        MediaArtifactKind::Audio | MediaArtifactKind::Music => DiscordAttachmentKind::Audio,
+        MediaArtifactKind::Audio | MediaArtifactKind::Voice | MediaArtifactKind::Music => {
+            DiscordAttachmentKind::Audio
+        }
         MediaArtifactKind::Video => DiscordAttachmentKind::Video,
     }
 }
@@ -214,6 +215,8 @@ fn discord_media_artifact_attachments(
             Ok(DiscordAttachment {
                 kind: discord_attachment_kind_for_artifact(artifact.kind),
                 target: artifact_delivery_uri("discord", artifact)?.to_string(),
+                label: artifact.label.clone(),
+                mime_type: artifact.mime_type.clone(),
             })
         })
         .collect()
@@ -223,6 +226,8 @@ fn discord_media_artifact_attachments(
 struct DiscordAttachment {
     kind: DiscordAttachmentKind,
     target: String,
+    label: Option<String>,
+    mime_type: Option<String>,
 }
 
 fn parse_attachment_markers(message: &str) -> (String, Vec<DiscordAttachment>) {
@@ -251,6 +256,8 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<DiscordAttachment>) {
             Some(DiscordAttachment {
                 kind,
                 target: target.to_string(),
+                label: None,
+                mime_type: None,
             })
         });
 
@@ -523,7 +530,9 @@ impl Channel for DiscordChannel {
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
         let content = message.content.as_str();
         let (cleaned_content, mut parsed_attachments) = parse_attachment_markers(content);
-        parsed_attachments.extend(discord_media_artifact_attachments(&message.media_artifacts)?);
+        parsed_attachments.extend(discord_media_artifact_attachments(
+            &message.media_artifacts,
+        )?);
 
         let client = self.http_client();
         let mut uploads = Vec::new();
@@ -532,8 +541,8 @@ impl Channel for DiscordChannel {
             let upload = resolve_outbound_media_uri(
                 &client,
                 &attachment.target,
-                None,
-                None,
+                attachment.label.as_deref(),
+                attachment.mime_type.as_deref(),
                 fallback_file_name,
             )
             .await?;
@@ -1553,6 +1562,24 @@ mod tests {
     }
 
     #[test]
+    fn discord_media_artifacts_preserve_label_and_mime() {
+        let mut artifact = MediaArtifact::new(MediaArtifactKind::Voice, "/tmp/voice.ogg");
+        artifact.label = Some("assistant-voice.ogg".to_string());
+        artifact.mime_type = Some("audio/ogg; codecs=opus".to_string());
+
+        let attachments = discord_media_artifact_attachments(&[artifact]).unwrap();
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].kind, DiscordAttachmentKind::Audio);
+        assert_eq!(attachments[0].target, "/tmp/voice.ogg");
+        assert_eq!(attachments[0].label.as_deref(), Some("assistant-voice.ogg"));
+        assert_eq!(
+            attachments[0].mime_type.as_deref(),
+            Some("audio/ogg; codecs=opus")
+        );
+    }
+
+    #[test]
     fn parse_attachment_markers_keeps_invalid_marker_text() {
         let input = "Hello [NOT_A_MARKER:foo] world";
         let (cleaned, attachments) = parse_attachment_markers(input);
@@ -1560,5 +1587,4 @@ mod tests {
         assert_eq!(cleaned, input);
         assert!(attachments.is_empty());
     }
-
 }

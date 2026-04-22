@@ -178,6 +178,8 @@ fn model_feature_name(feature: ModelFeature) -> &'static str {
         ModelFeature::AudioGeneration => "audio_generation",
         ModelFeature::VideoGeneration => "video_generation",
         ModelFeature::MusicGeneration => "music_generation",
+        ModelFeature::SpeechTranscription => "speech_transcription",
+        ModelFeature::SpeechSynthesis => "speech_synthesis",
         ModelFeature::ServerContinuation => "server_continuation",
         ModelFeature::PromptCaching => "prompt_caching",
     }

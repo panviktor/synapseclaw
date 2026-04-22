@@ -31,6 +31,7 @@ pub(crate) struct InboundRuntimeConfigInput {
     pub agent_id: String,
     pub prompt_budget_config: PromptBudgetConfig,
     pub presentation_mode: ChannelPresentationMode,
+    pub emit_compact_progress: bool,
 }
 
 pub(crate) struct InboundRuntimeConfigFactory;
@@ -70,6 +71,7 @@ impl InboundRuntimeConfigFactory {
             prompt_budget,
             continuation_policy,
             presentation_mode: input.presentation_mode,
+            emit_compact_progress: input.emit_compact_progress,
         }
     }
 }

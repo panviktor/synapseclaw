@@ -789,6 +789,33 @@ impl SecurityPolicy {
         approved: bool,
     ) -> Result<CommandRiskLevel, String> {
         if !self.is_command_allowed(command) {
+            if command.contains('`')
+                || contains_unquoted_shell_variable_expansion(command)
+                || command.contains("<(")
+                || command.contains(">(")
+            {
+                return Err(format!(
+                    "Command not allowed by security policy: hidden shell expansion/substitution is blocked. Retry by using literal arguments and separate tool calls. Command: {command}"
+                ));
+            }
+            if contains_unquoted_char(command, '>') || contains_unquoted_char(command, '<') {
+                return Err(format!(
+                    "Command not allowed by security policy: shell redirection is blocked. Retry without redirection such as `2>/dev/null`, `>`, or `<`; let stderr surface or split the command. Command: {command}"
+                ));
+            }
+            if command
+                .split_whitespace()
+                .any(|w| w == "tee" || w.ends_with("/tee"))
+            {
+                return Err(format!(
+                    "Command not allowed by security policy: `tee` is blocked because it can write arbitrary files. Retry with read-only commands or file_write for intentional edits. Command: {command}"
+                ));
+            }
+            if contains_unquoted_single_ampersand(command) {
+                return Err(format!(
+                    "Command not allowed by security policy: background `&` is blocked. Retry with foreground commands or split the command into separate tool calls. Command: {command}"
+                ));
+            }
             return Err(format!("Command not allowed by security policy: {command}"));
         }
 
@@ -1948,6 +1975,28 @@ mod tests {
         assert!(!p.is_command_allowed("ls >> /tmp/exfil.txt"));
         assert!(!p.is_command_allowed("cat </etc/passwd"));
         assert!(!p.is_command_allowed("cat</etc/passwd"));
+    }
+
+    #[test]
+    fn blocked_redirection_reports_retryable_hint() {
+        let p = default_policy();
+        let err = p
+            .validate_command_execution("systemctl list-units 2>/dev/null | grep matrix", false)
+            .expect_err("redirection should be blocked");
+
+        assert!(err.contains("shell redirection is blocked"));
+        assert!(err.contains("Retry without redirection"));
+    }
+
+    #[test]
+    fn blocked_shell_expansion_reports_retryable_hint() {
+        let p = default_policy();
+        let err = p
+            .validate_command_execution("echo $(cat /etc/passwd)", false)
+            .expect_err("shell expansion should be blocked");
+
+        assert!(err.contains("hidden shell expansion"));
+        assert!(err.contains("separate tool calls"));
     }
 
     #[test]

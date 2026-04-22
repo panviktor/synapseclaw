@@ -9,7 +9,9 @@ use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::ports::tool::ToolExecution;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Tool that lets the agent manage recurring and one-shot scheduled tasks.
 pub struct ScheduleTool {
@@ -146,6 +148,25 @@ impl Tool for ScheduleTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action").with_values([
+                    "create", "add", "once", "list", "get", "cancel", "remove", "pause", "resume",
+                ]),
+                ToolArgumentPolicy::sensitive("expression").user_private(),
+                ToolArgumentPolicy::sensitive("delay").user_private(),
+                ToolArgumentPolicy::sensitive("run_at").user_private(),
+                ToolArgumentPolicy::sensitive("command").user_private(),
+                ToolArgumentPolicy::blocked("approved"),
+                ToolArgumentPolicy::replayable("id"),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {

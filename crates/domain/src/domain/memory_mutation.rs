@@ -49,6 +49,8 @@ pub struct MutationCandidate {
 pub enum MutationSource {
     /// Background consolidation extracted this fact.
     Consolidation,
+    /// Pre-compress handoff extracted this fact from a soon-to-be-dropped range.
+    PreCompressHandoff,
     /// User explicitly stated this (hot-path).
     ExplicitUser,
     /// Tool/knowledge graph wrote this.

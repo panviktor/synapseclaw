@@ -96,10 +96,7 @@ fn data_uri_upload(
     Ok(OutboundMediaUpload {
         bytes,
         file_name: preferred_file_name(label, None, fallback_file_name),
-        mime_type: mime_type
-            .unwrap_or(detected_mime_type)
-            .trim()
-            .to_string(),
+        mime_type: mime_type.unwrap_or(detected_mime_type).trim().to_string(),
     })
 }
 
@@ -143,7 +140,11 @@ async fn http_uri_upload(
 
     Ok(OutboundMediaUpload {
         bytes,
-        file_name: preferred_file_name(label, file_name_from_http_uri(uri).as_deref(), fallback_file_name),
+        file_name: preferred_file_name(
+            label,
+            file_name_from_http_uri(uri).as_deref(),
+            fallback_file_name,
+        ),
         mime_type: mime_type
             .map(str::to_string)
             .or(header_mime_type)
@@ -169,7 +170,10 @@ async fn local_uri_upload(
         .await
         .with_context(|| format!("failed to read outbound media artifact {}", path.display()))?;
     if bytes.is_empty() {
-        anyhow::bail!("cannot deliver empty outbound media artifact {}", path.display());
+        anyhow::bail!(
+            "cannot deliver empty outbound media artifact {}",
+            path.display()
+        );
     }
 
     let file_name = path.file_name().and_then(|name| name.to_str());

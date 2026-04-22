@@ -8,6 +8,9 @@ use crate::application::services::runtime_calibration::{
     clean_runtime_calibration_records, runtime_calibration_comparison_name,
     RuntimeCalibrationComparison, RuntimeCalibrationRecord,
 };
+use crate::application::services::runtime_decision_trace::{
+    append_runtime_decision_trace, clean_runtime_decision_traces, RuntimeDecisionTrace,
+};
 use crate::application::services::runtime_watchdog::{
     runtime_watchdog_reason_name, runtime_watchdog_subsystem_name, RuntimeWatchdogAction,
     RuntimeWatchdogAlert, RuntimeWatchdogReason, RuntimeWatchdogSeverity, RuntimeWatchdogSubsystem,
@@ -70,6 +73,7 @@ pub struct RuntimeTraceJanitorInput<'a> {
     pub watchdog_alerts: &'a [RuntimeWatchdogAlert],
     pub calibration_records: &'a [RuntimeCalibrationRecord],
     pub handoff_artifacts: &'a [RuntimeHandoffArtifact],
+    pub decision_traces: &'a [RuntimeDecisionTrace],
     pub now_unix: i64,
 }
 
@@ -80,6 +84,7 @@ pub struct RuntimeTraceJanitorOutput {
     pub watchdog_alerts: Vec<RuntimeWatchdogAlert>,
     pub calibration_records: Vec<RuntimeCalibrationRecord>,
     pub handoff_artifacts: Vec<RuntimeHandoffArtifact>,
+    pub decision_traces: Vec<RuntimeDecisionTrace>,
     pub report: RuntimeTraceJanitorReport,
 }
 
@@ -90,6 +95,7 @@ pub struct RuntimeTraceJanitorReport {
     pub removed_watchdog_alerts: usize,
     pub removed_calibration_records: usize,
     pub removed_handoff_artifacts: usize,
+    pub removed_decision_traces: usize,
     pub promotion_candidates: Vec<RuntimeTracePromotionCandidate>,
 }
 
@@ -100,6 +106,7 @@ impl RuntimeTraceJanitorReport {
             + self.removed_watchdog_alerts
             + self.removed_calibration_records
             + self.removed_handoff_artifacts
+            + self.removed_decision_traces
     }
 }
 
@@ -110,6 +117,11 @@ pub fn run_runtime_trace_janitor(input: RuntimeTraceJanitorInput<'_>) -> Runtime
     let calibration_records =
         clean_runtime_calibration_records(input.calibration_records, input.now_unix);
     let handoff_artifacts = clean_handoff_artifacts(input.handoff_artifacts, input.now_unix);
+    let decision_traces = clean_runtime_decision_traces(
+        input.decision_traces,
+        input.now_unix,
+        RUNTIME_TRACE_JANITOR_TTL_SECS,
+    );
     let promotion_candidates = collect_promotion_candidates(
         &tool_repairs,
         &assumptions,
@@ -134,6 +146,10 @@ pub fn run_runtime_trace_janitor(input: RuntimeTraceJanitorInput<'_>) -> Runtime
                 .handoff_artifacts
                 .len()
                 .saturating_sub(handoff_artifacts.len()),
+            removed_decision_traces: input
+                .decision_traces
+                .len()
+                .saturating_sub(decision_traces.len()),
             promotion_candidates,
         },
         tool_repairs,
@@ -141,6 +157,7 @@ pub fn run_runtime_trace_janitor(input: RuntimeTraceJanitorInput<'_>) -> Runtime
         watchdog_alerts,
         calibration_records,
         handoff_artifacts,
+        decision_traces,
     }
 }
 
@@ -194,6 +211,14 @@ pub fn append_runtime_handoff_packet(
     )
 }
 
+pub fn append_runtime_decision_trace_for_janitor(
+    history: &[RuntimeDecisionTrace],
+    trace: RuntimeDecisionTrace,
+    now_unix: i64,
+) -> Vec<RuntimeDecisionTrace> {
+    append_runtime_decision_trace(history, trace, now_unix, RUNTIME_TRACE_JANITOR_TTL_SECS)
+}
+
 fn clean_tool_repairs(history: &[ToolRepairTrace], now_unix: i64) -> Vec<ToolRepairTrace> {
     let cutoff = now_unix.saturating_sub(RUNTIME_TRACE_JANITOR_TTL_SECS);
     let mut by_signature = BTreeMap::<String, ToolRepairTrace>::new();
@@ -204,12 +229,23 @@ fn clean_tool_repairs(history: &[ToolRepairTrace], now_unix: i64) -> Vec<ToolRep
         let signature = tool_repair_signature(trace);
         match by_signature.get_mut(&signature) {
             Some(existing) if existing.observed_at_unix < trace.observed_at_unix => {
-                *existing = trace.clone();
+                let repeat_count = existing
+                    .repeat_count
+                    .max(1)
+                    .saturating_add(trace.repeat_count.max(1));
+                let mut next = trace.clone();
+                next.repeat_count = repeat_count;
+                *existing = next;
+            }
+            Some(existing) => {
+                existing.repeat_count = existing
+                    .repeat_count
+                    .max(1)
+                    .saturating_add(trace.repeat_count.max(1));
             }
             None => {
                 by_signature.insert(signature, trace.clone());
             }
-            Some(_) => {}
         }
     }
 
@@ -325,7 +361,7 @@ fn collect_tool_repair_promotion_candidates(
     for repair in tool_repairs {
         let class = tool_failure_kind_name(repair.failure_kind);
         let entry = classes.entry(class).or_insert((0, repair.observed_at_unix));
-        entry.0 += 1;
+        entry.0 += usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX);
         entry.1 = entry.1.max(repair.observed_at_unix);
     }
 
@@ -434,11 +470,13 @@ fn push_promotion_candidate(
 
 fn tool_repair_signature(trace: &ToolRepairTrace) -> String {
     bounded_signature(&format!(
-        "tool={},failure={},action={},detail={}",
+        "tool={},role={:?},failure={},action={},shape={:?},suppression={:?}",
         trace.tool_name,
+        trace.tool_role,
         tool_failure_kind_name(trace.failure_kind),
         tool_repair_action_name(trace.suggested_action),
-        trace.detail.as_deref().unwrap_or("")
+        trace.argument_shape,
+        trace.suppression_key
     ))
 }
 
@@ -482,6 +520,7 @@ mod tests {
             failure_kind,
             suggested_action: ToolRepairAction::InspectRuntimeFailure,
             detail: detail.map(str::to_string),
+            ..ToolRepairTrace::default()
         }
     }
 

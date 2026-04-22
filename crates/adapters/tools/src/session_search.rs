@@ -10,7 +10,10 @@ use synapse_domain::application::services::retrieval_service;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
-use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
+use synapse_domain::ports::tool::{
+    Tool, ToolArgumentPolicy, ToolContract, ToolExecution, ToolNonReplayableReason, ToolResult,
+    ToolRuntimeRole,
+};
 
 pub struct SessionSearchTool {
     memory: Arc<dyn UnifiedMemoryPort>,
@@ -172,7 +175,19 @@ impl Tool for SessionSearchTool {
     }
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
+        Some(ToolRuntimeRole::HistoricalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::PendingPrivacyPolicy,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("query").session_private(),
+            ToolArgumentPolicy::blocked("limit"),
+            ToolArgumentPolicy::blocked("kind"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -6,6 +6,7 @@ pub mod config;
 pub mod conversation;
 pub mod conversation_target;
 pub mod dialogue_state;
+pub mod history_projection;
 pub mod implementation;
 pub mod ipc;
 pub mod memory;

@@ -1,6 +1,10 @@
 use crate::application::services::epistemic_state::{
     epistemic_entry_for_runtime_assumption, EpistemicState,
 };
+use crate::application::services::runtime_calibration::{
+    RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind, RuntimeCalibrationRecord,
+};
+use crate::application::services::runtime_decision_trace::RuntimeDecisionTrace;
 use crate::application::services::runtime_assumptions::{
     RuntimeAssumption, RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
@@ -42,9 +46,13 @@ pub enum RuntimeWatchdogReason {
     CapabilityMetadataWeak,
     ContextPressure,
     ContextOverflow,
+    RisingPressureTrend,
     ContextCacheFull,
+    RepeatedCompactionFailure,
     RepeatedToolFailure,
     ToolFailure,
+    MemoryPollutionCandidate,
+    StaleModelProfile,
     ChallengedAssumption,
     SubsystemDegraded,
 }
@@ -96,6 +104,8 @@ pub struct RuntimeWatchdogInput<'a> {
     pub recent_tool_repairs: &'a [ToolRepairTrace],
     pub context_cache: Option<&'a ContextCacheStats>,
     pub assumptions: &'a [RuntimeAssumption],
+    pub calibration_records: &'a [RuntimeCalibrationRecord],
+    pub decision_traces: &'a [RuntimeDecisionTrace],
     pub subsystem_observations: &'a [RuntimeSubsystemObservation],
     pub now_unix: i64,
 }
@@ -175,6 +185,9 @@ pub fn build_runtime_watchdog_digest(input: RuntimeWatchdogInput<'_>) -> Runtime
         push_context_cache_alert(&mut alerts, cache, input.now_unix);
     }
 
+    push_trace_alerts(&mut alerts, input.decision_traces, input.now_unix);
+    push_calibration_alerts(&mut alerts, input.calibration_records);
+
     for assumption in input.assumptions {
         push_assumption_alert(&mut alerts, assumption, input.now_unix);
     }
@@ -238,9 +251,13 @@ pub fn runtime_watchdog_reason_name(reason: RuntimeWatchdogReason) -> &'static s
         RuntimeWatchdogReason::CapabilityMetadataWeak => "capability_metadata_weak",
         RuntimeWatchdogReason::ContextPressure => "context_pressure",
         RuntimeWatchdogReason::ContextOverflow => "context_overflow",
+        RuntimeWatchdogReason::RisingPressureTrend => "rising_pressure_trend",
         RuntimeWatchdogReason::ContextCacheFull => "context_cache_full",
+        RuntimeWatchdogReason::RepeatedCompactionFailure => "repeated_compaction_failure",
         RuntimeWatchdogReason::RepeatedToolFailure => "repeated_tool_failure",
         RuntimeWatchdogReason::ToolFailure => "tool_failure",
+        RuntimeWatchdogReason::MemoryPollutionCandidate => "memory_pollution_candidate",
+        RuntimeWatchdogReason::StaleModelProfile => "stale_model_profile",
         RuntimeWatchdogReason::ChallengedAssumption => "challenged_assumption",
         RuntimeWatchdogReason::SubsystemDegraded => "subsystem_degraded",
     }
@@ -390,10 +407,14 @@ fn push_repeated_tool_failure_alerts(
             .iter_mut()
             .find(|(kind, _, _)| *kind == repair.failure_kind)
         {
-            *count += 1;
+            *count += usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX);
             *observed_at = (*observed_at).max(repair.observed_at_unix);
         } else {
-            kinds.push((repair.failure_kind, 1, repair.observed_at_unix));
+            kinds.push((
+                repair.failure_kind,
+                usize::try_from(repair.repeat_count.max(1)).unwrap_or(usize::MAX),
+                repair.observed_at_unix,
+            ));
         }
     }
 
@@ -471,6 +492,96 @@ fn push_context_cache_alert(
                 reason: RuntimeWatchdogReason::ContextCacheFull,
                 recommended_action: RuntimeWatchdogAction::CompactContext,
                 observed_at_unix: now_unix,
+            },
+        );
+    }
+}
+
+fn push_trace_alerts(
+    alerts: &mut Vec<RuntimeWatchdogAlert>,
+    traces: &[RuntimeDecisionTrace],
+    now_unix: i64,
+) {
+    let recent = traces.iter().rev().take(3).collect::<Vec<_>>();
+    if recent.len() >= 2
+        && recent.iter().all(|trace| trace.context.requires_compaction)
+        && recent
+            .iter()
+            .all(|trace| trace.context.chars_over_ceiling > 0 || trace.context.chars_over_target > 0)
+    {
+        push_alert(
+            alerts,
+            RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::ContextBudget,
+                severity: RuntimeWatchdogSeverity::Critical,
+                reason: RuntimeWatchdogReason::RepeatedCompactionFailure,
+                recommended_action: RuntimeWatchdogAction::StartFreshHandoff,
+                observed_at_unix: now_unix,
+            },
+        );
+    }
+
+    if recent.len() >= 3 {
+        let mut pressure = recent
+            .iter()
+            .map(|trace| trace.context.estimated_total_tokens as i64)
+            .collect::<Vec<_>>();
+        pressure.reverse();
+        if pressure.windows(2).all(|window| window[1] > window[0]) {
+            push_alert(
+                alerts,
+                RuntimeWatchdogAlert {
+                    subsystem: RuntimeWatchdogSubsystem::ContextBudget,
+                    severity: RuntimeWatchdogSeverity::Caution,
+                    reason: RuntimeWatchdogReason::RisingPressureTrend,
+                    recommended_action: RuntimeWatchdogAction::CompactContext,
+                    observed_at_unix: now_unix,
+                },
+            );
+        }
+    }
+
+    if traces.iter().rev().take(3).any(|trace| {
+        trace.memory.iter().any(|decision| {
+            !decision.applied
+                && (decision.reason.contains("generic")
+                    || decision.reason.contains("concept")
+                    || decision.reason.contains("dialogue"))
+        })
+    }) {
+        push_alert(
+            alerts,
+            RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::MemoryBackend,
+                severity: RuntimeWatchdogSeverity::Caution,
+                reason: RuntimeWatchdogReason::MemoryPollutionCandidate,
+                recommended_action: RuntimeWatchdogAction::InspectRuntime,
+                observed_at_unix: now_unix,
+            },
+        );
+    }
+}
+
+fn push_calibration_alerts(
+    alerts: &mut Vec<RuntimeWatchdogAlert>,
+    calibrations: &[RuntimeCalibrationRecord],
+) {
+    if calibrations.iter().rev().take(4).any(|record| {
+        record.decision_kind == RuntimeCalibrationDecisionKind::RouteChoice
+            && record.comparison == RuntimeCalibrationComparison::OverconfidentFailure
+    }) {
+        push_alert(
+            alerts,
+            RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::ModelProfile,
+                severity: RuntimeWatchdogSeverity::Caution,
+                reason: RuntimeWatchdogReason::StaleModelProfile,
+                recommended_action: RuntimeWatchdogAction::RefreshCapabilityMetadata,
+                observed_at_unix: calibrations
+                    .iter()
+                    .map(|record| record.observed_at_unix)
+                    .max()
+                    .unwrap_or_default(),
             },
         );
     }
@@ -558,6 +669,14 @@ fn push_alert(alerts: &mut Vec<RuntimeWatchdogAlert>, alert: RuntimeWatchdogAler
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::services::runtime_calibration::{
+        RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind, RuntimeCalibrationRecord,
+    };
+    use crate::application::services::runtime_decision_trace::{
+        RuntimeDecisionTrace, RuntimeTraceAuxiliaryDecision, RuntimeTraceContextSnapshot,
+        RuntimeTraceMemoryDecision, RuntimeTraceModelProfileSnapshot, RuntimeTraceNote,
+        RuntimeTraceRouteDecision, RuntimeTraceRouteRef,
+    };
     use crate::config::schema::{CapabilityLane, ContextCompressionConfig};
     use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction};
     use crate::domain::turn_admission::{
@@ -631,6 +750,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: None,
+                ..ToolRepairTrace::default()
             },
             ToolRepairTrace {
                 observed_at_unix: 101,
@@ -638,6 +758,7 @@ mod tests {
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                 detail: None,
+                ..ToolRepairTrace::default()
             },
         ];
         let cache = ContextCacheStats::from_compression_config(
@@ -799,5 +920,158 @@ mod tests {
             "severity=critical subsystem=context_budget reason=context_overflow action=start_fresh_handoff"
         ));
         assert!(block.ends_with('\n'));
+    }
+
+    #[test]
+    fn repeated_compaction_failures_and_memory_pollution_become_alerts() {
+        let traces = vec![
+            trace_with_notes(
+                100,
+                true,
+                vec![
+                    RuntimeTraceNote {
+                        observed_at_unix: 100,
+                        kind: "compaction_failure".into(),
+                        detail: "summary_failed".into(),
+                    },
+                    RuntimeTraceNote {
+                        observed_at_unix: 100,
+                        kind: "implicit_memory_recall".into(),
+                        detail: "accepted=0 rejected=1".into(),
+                    },
+                ],
+                vec![RuntimeTraceMemoryDecision {
+                    observed_at_unix: 100,
+                    source: "implicit_memory_recall".into(),
+                    category: "local_infra".into(),
+                    write_class: None,
+                    action: "recall_reject".into(),
+                    applied: false,
+                    entry_id_present: true,
+                    reason: "generic_dialogue_candidate key=matrix".into(),
+                    similarity_basis_points: Some(8200),
+                    failure: None,
+                }],
+            ),
+            trace_with_notes(
+                101,
+                true,
+                vec![RuntimeTraceNote {
+                    observed_at_unix: 101,
+                    kind: "compaction_failure".into(),
+                    detail: "summary_failed".into(),
+                }],
+                vec![],
+            ),
+        ];
+
+        let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+            decision_traces: &traces,
+            now_unix: 200,
+            ..Default::default()
+        });
+
+        assert!(digest.alerts.iter().any(|alert| {
+            alert.reason == RuntimeWatchdogReason::RepeatedCompactionFailure
+        }));
+        assert!(digest.alerts.iter().any(|alert| {
+            alert.reason == RuntimeWatchdogReason::MemoryPollutionCandidate
+        }));
+    }
+
+    #[test]
+    fn stale_model_profile_from_failed_calibration_is_reported() {
+        let records = vec![RuntimeCalibrationRecord {
+            decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+            decision_signature: "provider=openrouter,model=gpt-5.4-mini".into(),
+            suppression_key: None,
+            confidence_basis_points: 9000,
+            outcome: crate::application::services::runtime_calibration::RuntimeCalibrationOutcome::Failed,
+            comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+            recommended_action: crate::application::services::runtime_calibration::RuntimeCalibrationAction::InspectOutcome,
+            observed_at_unix: 100,
+        }];
+
+        let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+            calibration_records: &records,
+            now_unix: 200,
+            ..Default::default()
+        });
+
+        assert!(digest.alerts.iter().any(|alert| {
+            alert.reason == RuntimeWatchdogReason::StaleModelProfile
+                && alert.recommended_action == RuntimeWatchdogAction::RefreshCapabilityMetadata
+        }));
+    }
+
+    fn trace_with_notes(
+        observed_at_unix: i64,
+        requires_compaction: bool,
+        notes: Vec<RuntimeTraceNote>,
+        memory: Vec<RuntimeTraceMemoryDecision>,
+    ) -> RuntimeDecisionTrace {
+        RuntimeDecisionTrace {
+            trace_id: format!("trace-{observed_at_unix}"),
+            observed_at_unix,
+            route: RuntimeTraceRouteDecision {
+                before: RuntimeTraceRouteRef::new("openai", "gpt-5.4", None, None),
+                after: RuntimeTraceRouteRef::new("openai", "gpt-5.4", None, None),
+                reroute_applied: false,
+                intent: "reply".into(),
+                pressure_state: "healthy".into(),
+                action: "proceed".into(),
+                reasons: vec![],
+                recommended_action: None,
+            },
+            model_profile: RuntimeTraceModelProfileSnapshot {
+                context_window_tokens: Some(128000),
+                max_output_tokens: Some(8192),
+                features: vec![],
+                context_window_source: "catalog".into(),
+                context_window_freshness: "fresh".into(),
+                context_window_confidence: "high".into(),
+                max_output_source: "catalog".into(),
+                max_output_freshness: "fresh".into(),
+                max_output_confidence: "high".into(),
+                features_source: "catalog".into(),
+                features_freshness: "fresh".into(),
+                features_confidence: "high".into(),
+            },
+            context: RuntimeTraceContextSnapshot {
+                total_chars: 0,
+                estimated_total_tokens: 1000,
+                target_total_tokens: 4000,
+                ceiling_total_tokens: 8000,
+                protected_chars: 0,
+                removable_chars: 0,
+                chars_over_target: if requires_compaction { 1200 } else { 0 },
+                chars_over_ceiling: 0,
+                tokens_headroom_to_target: 3000,
+                tokens_headroom_to_ceiling: 7000,
+                turn_shape: "default".into(),
+                budget_tier: "normal".into(),
+                requires_compaction,
+                condensation_mode: None,
+                condensation_target: None,
+                condensation_minimum_reclaim_chars: None,
+                condensation_prefers_cached_artifact: false,
+                cache: None,
+            },
+            tools: vec![],
+            memory,
+            auxiliary: vec![RuntimeTraceAuxiliaryDecision {
+                observed_at_unix,
+                kind: "test".into(),
+                action: "observe".into(),
+                count: 1,
+                reason: None,
+                lane: None,
+                selected_provider: None,
+                selected_model: None,
+                selected_candidate_index: None,
+                candidate_order: vec![],
+            }],
+            notes,
+        }
     }
 }

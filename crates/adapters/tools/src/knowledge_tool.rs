@@ -12,6 +12,9 @@ use synapse_domain::domain::tool_fact::{
     KnowledgeAction, KnowledgeFact, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::ports::memory::UnifiedMemoryPort;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 /// Tool for managing a knowledge graph via SemanticMemoryPort.
 pub struct KnowledgeTool {
@@ -118,6 +121,28 @@ impl Tool for KnowledgeTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::HistoricalLookup)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action").with_values([
+                    "search",
+                    "add_entity",
+                    "add_fact",
+                    "get_facts",
+                ]),
+                ToolArgumentPolicy::sensitive("query").user_private(),
+                ToolArgumentPolicy::replayable("entity_type"),
+                ToolArgumentPolicy::sensitive("summary").user_private(),
+                ToolArgumentPolicy::sensitive("subject").user_private(),
+                ToolArgumentPolicy::sensitive("predicate").user_private(),
+                ToolArgumentPolicy::sensitive("object").user_private(),
+            ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

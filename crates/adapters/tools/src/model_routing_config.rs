@@ -17,6 +17,9 @@ use synapse_domain::domain::tool_fact::{
     RoutingAction, RoutingFact, ToolFactPayload, TypedToolFact,
 };
 use synapse_domain::domain::util::MaybeSet;
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 use synapse_infra::config_io::ConfigIO;
 
 const DEFAULT_AGENT_MAX_DEPTH: u32 = 3;
@@ -240,7 +243,12 @@ impl ModelRoutingConfigTool {
         match lane {
             CapabilityLane::Reasoning => "reasoning",
             CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Compaction => "compaction",
             CapabilityLane::Embedding => "embedding",
+            CapabilityLane::WebExtraction => "web_extraction",
+            CapabilityLane::ToolValidator => "tool_validator",
+            CapabilityLane::SpeechTranscription => "speech_transcription",
+            CapabilityLane::SpeechSynthesis => "speech_synthesis",
             CapabilityLane::ImageGeneration => "image_generation",
             CapabilityLane::AudioGeneration => "audio_generation",
             CapabilityLane::VideoGeneration => "video_generation",
@@ -1008,7 +1016,7 @@ impl Tool for ModelRoutingConfigTool {
                 },
                 "lane": {
                     "type": "string",
-                    "description": "Capability lane for upsert_scenario/remove_scenario (reasoning, cheap_reasoning, embedding, multimodal_understanding, image_generation, audio_generation, video_generation, music_generation)"
+                    "description": "Capability lane for upsert_scenario/remove_scenario (reasoning, cheap_reasoning, compaction, embedding, speech_transcription, speech_synthesis, multimodal_understanding, image_generation, audio_generation, video_generation, music_generation)"
                 },
                 "preset": {
                     "type": ["string", "null"],
@@ -1102,6 +1110,38 @@ impl Tool for ModelRoutingConfigTool {
             },
             "additionalProperties": false
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::RuntimeStateInspection)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(self.runtime_role(), ToolNonReplayableReason::MutatesState)
+            .with_arguments(vec![
+                ToolArgumentPolicy::replayable("action"),
+                ToolArgumentPolicy::replayable("hint"),
+                ToolArgumentPolicy::replayable("lane"),
+                ToolArgumentPolicy::replayable("preset"),
+                ToolArgumentPolicy::replayable("sync_defaults"),
+                ToolArgumentPolicy::sensitive("provider").user_private(),
+                ToolArgumentPolicy::sensitive("model").user_private(),
+                ToolArgumentPolicy::replayable("temperature"),
+                ToolArgumentPolicy::sensitive("api_key").secret(),
+                ToolArgumentPolicy::sensitive("keywords").user_private(),
+                ToolArgumentPolicy::sensitive("patterns").user_private(),
+                ToolArgumentPolicy::replayable("min_length"),
+                ToolArgumentPolicy::replayable("max_length"),
+                ToolArgumentPolicy::replayable("priority"),
+                ToolArgumentPolicy::replayable("classification_enabled"),
+                ToolArgumentPolicy::replayable("remove_classification"),
+                ToolArgumentPolicy::sensitive("name").user_private(),
+                ToolArgumentPolicy::sensitive("system_prompt").user_private(),
+                ToolArgumentPolicy::replayable("max_depth"),
+                ToolArgumentPolicy::replayable("agentic"),
+                ToolArgumentPolicy::sensitive("allowed_tools").user_private(),
+                ToolArgumentPolicy::replayable("max_iterations"),
+            ])
     }
 
     fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {

@@ -7,6 +7,9 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     NotificationChannel, NotificationFact, ToolFactPayload, TypedToolFact,
 };
+use synapse_domain::ports::tool::{
+    ToolArgumentPolicy, ToolContract, ToolNonReplayableReason, ToolRuntimeRole,
+};
 
 const PUSHOVER_API_URL: &str = "https://api.pushover.net/1/messages.json";
 const PUSHOVER_REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -144,6 +147,23 @@ impl Tool for PushoverTool {
             },
             "required": ["message"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        Some(ToolRuntimeRole::DirectDelivery)
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        ToolContract::non_replayable(
+            self.runtime_role(),
+            ToolNonReplayableReason::ExternalSideEffect,
+        )
+        .with_arguments(vec![
+            ToolArgumentPolicy::sensitive("message").user_private(),
+            ToolArgumentPolicy::sensitive("title").user_private(),
+            ToolArgumentPolicy::replayable("priority"),
+            ToolArgumentPolicy::replayable("sound"),
+        ])
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

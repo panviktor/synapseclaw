@@ -32,12 +32,17 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use synapse_domain::config::schema::AgentConfig;
 use synapse_domain::ports::summary::SummaryGeneratorPort;
+use synapse_domain::ports::tool::{ToolContract, ToolNonReplayableReason};
 use synapse_memory::{self, UnifiedMemoryPort};
 use synapse_observability::{NoopObserver, Observer};
 use synapse_providers::{
     ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
     ToolResultMessage,
 };
+
+fn test_tool_contract() -> ToolContract {
+    ToolContract::non_replayable(None, ToolNonReplayableReason::Other("test_tool".into()))
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test Helpers — Mock Provider, Mock Tool, Mock Memory
@@ -170,6 +175,10 @@ impl Tool for EchoTool {
         })
     }
 
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
         let msg = args
             .get("message")
@@ -201,6 +210,10 @@ impl Tool for FailingTool {
         serde_json::json!({"type": "object"})
     }
 
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
+    }
+
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
         Ok(ToolResult {
             success: false,
@@ -225,6 +238,10 @@ impl Tool for PanickingTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
 
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
@@ -270,6 +287,10 @@ impl Tool for CountingTool {
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+
+    fn tool_contract(&self) -> ToolContract {
+        test_tool_contract()
     }
 
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult> {
@@ -1140,6 +1161,7 @@ fn native_format_results_maps_tool_call_ids() {
             tool_call_id: Some("tc-001".into()),
             tool_facts: vec![],
             repair_trace: None,
+            replay_args: None,
         },
         ToolExecutionResult {
             name: "b".into(),
@@ -1148,6 +1170,7 @@ fn native_format_results_maps_tool_call_ids() {
             tool_call_id: Some("tc-002".into()),
             tool_facts: vec![],
             repair_trace: None,
+            replay_args: None,
         },
     ];
 

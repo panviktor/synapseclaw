@@ -261,13 +261,16 @@ mod tests {
 
         let lanes = resolve_effective_model_lanes(&config);
 
-        assert_eq!(lanes.len(), 7);
+        assert_eq!(lanes.len(), 8);
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Reasoning));
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::CheapReasoning));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::Compaction));
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));

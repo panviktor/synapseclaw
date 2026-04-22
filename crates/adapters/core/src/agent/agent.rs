@@ -16,10 +16,17 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use synapse_domain::application::services::auxiliary_model_resolution::{
+    resolve_auxiliary_model, AuxiliaryLane,
+};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+use synapse_domain::application::services::memory_precompress_handoff::{
+    execute_memory_precompress_handoff, MemoryPreCompressHandoffInput,
+    MemoryPreCompressHandoffReason,
+};
 use synapse_domain::application::services::model_capability_support::{
     assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
 };
@@ -55,9 +62,15 @@ use synapse_domain::application::services::runtime_calibration::{
     RuntimeCalibrationDecisionKind, RuntimeCalibrationObservation, RuntimeCalibrationOutcome,
     RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
 };
+use synapse_domain::application::services::runtime_decision_trace::{
+    append_runtime_decision_trace, build_runtime_decision_trace, build_runtime_decision_trace_id,
+    merge_runtime_decision_trace_update, runtime_memory_decision_from_autosave,
+    runtime_tool_decisions_from_repairs, RuntimeDecisionTrace, RuntimeDecisionTraceInput,
+    RuntimeDecisionTraceUpdate, RuntimeTraceRouteRef,
+};
 use synapse_domain::application::services::runtime_trace_janitor::{
     append_runtime_handoff_packet, append_runtime_watchdog_alerts, run_runtime_trace_janitor,
-    RuntimeHandoffArtifact, RuntimeTraceJanitorInput,
+    RuntimeHandoffArtifact, RuntimeTraceJanitorInput, RUNTIME_TRACE_JANITOR_TTL_SECS,
 };
 use synapse_domain::application::services::runtime_watchdog::{
     build_runtime_subsystem_observations, build_runtime_watchdog_digest,
@@ -68,7 +81,10 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
     format_scoped_instruction_block,
 };
-use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::application::services::tool_repair::{
+    append_tool_repair_trace, apply_successful_tool_repair_observation_with_args,
+    enrich_tool_repair_trace, latest_tool_repair_trace, ToolRepairTraceContext,
+};
 use synapse_domain::application::services::turn_admission::{
     assess_turn_admission, CandidateAdmissionDecision, TurnAdmissionInput,
 };
@@ -78,8 +94,13 @@ use synapse_domain::application::services::turn_context::{
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
+use synapse_domain::domain::history_projection::{
+    format_projected_assistant_reasoning, format_projected_tool_call,
+};
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
+use synapse_domain::domain::tool_repair::{
+    tool_failure_kind_name, ToolRepairAttemptReason, ToolRepairRoute, ToolRepairTrace,
+};
 use synapse_domain::domain::turn_admission::{
     context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
 };
@@ -354,6 +375,8 @@ pub struct Agent {
     recent_runtime_watchdog_alerts: Vec<RuntimeWatchdogAlert>,
     /// Bounded short-lived handoff artifacts for this live agent.
     recent_runtime_handoff_artifacts: Vec<RuntimeHandoffArtifact>,
+    /// Bounded per-turn runtime decision traces for this live agent.
+    recent_runtime_decision_traces: Vec<RuntimeDecisionTrace>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -775,6 +798,7 @@ impl AgentBuilder {
             recent_runtime_calibrations: Vec::new(),
             recent_runtime_watchdog_alerts: Vec::new(),
             recent_runtime_handoff_artifacts: Vec::new(),
+            recent_runtime_decision_traces: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -958,6 +982,10 @@ impl Agent {
         &self.recent_runtime_handoff_artifacts
     }
 
+    pub fn recent_runtime_decision_traces(&self) -> &[RuntimeDecisionTrace] {
+        &self.recent_runtime_decision_traces
+    }
+
     pub fn run_runtime_trace_maintenance_tick(&mut self, now_unix: i64) {
         let context_cache_stats = self.history_compaction_cache_stats_for_route(
             &self.provider_name,
@@ -979,6 +1007,8 @@ impl Agent {
             calibrations: self.recent_runtime_calibrations.clone(),
             watchdog_alerts: self.recent_runtime_watchdog_alerts.clone(),
             handoff_artifacts: self.recent_runtime_handoff_artifacts.clone(),
+            runtime_decision_traces: self.recent_runtime_decision_traces.clone(),
+            usage_ledger: Default::default(),
         };
         route.run_runtime_trace_maintenance(now_unix);
         self.recent_turn_tool_repairs = route.recent_tool_repairs;
@@ -987,6 +1017,7 @@ impl Agent {
         self.recent_runtime_calibrations = route.calibrations;
         self.recent_runtime_watchdog_alerts = route.watchdog_alerts;
         self.recent_runtime_handoff_artifacts = route.handoff_artifacts;
+        self.recent_runtime_decision_traces = route.runtime_decision_traces;
     }
 
     fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
@@ -996,6 +1027,7 @@ impl Agent {
             watchdog_alerts: &self.recent_runtime_watchdog_alerts,
             calibration_records: &self.recent_runtime_calibrations,
             handoff_artifacts: &self.recent_runtime_handoff_artifacts,
+            decision_traces: &self.recent_runtime_decision_traces,
             now_unix,
         });
         let removed_total = cleaned.report.removed_total();
@@ -1005,6 +1037,7 @@ impl Agent {
         self.recent_runtime_watchdog_alerts = cleaned.watchdog_alerts;
         self.recent_runtime_calibrations = cleaned.calibration_records;
         self.recent_runtime_handoff_artifacts = cleaned.handoff_artifacts;
+        self.recent_runtime_decision_traces = cleaned.decision_traces;
         if removed_total > 0 || promotion_candidates > 0 {
             tracing::debug!(
                 removed_total,
@@ -1177,6 +1210,7 @@ impl Agent {
         rebuilt.recent_runtime_calibrations.clear();
         rebuilt.recent_runtime_watchdog_alerts.clear();
         rebuilt.recent_runtime_handoff_artifacts.clear();
+        rebuilt.recent_runtime_decision_traces.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -1225,19 +1259,16 @@ impl Agent {
         ));
 
         let resolved_agent_id = crate::agent::resolve_agent_id(config);
-        let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) =
-            if let Some(mem) = shared_memory {
-                (mem, None)
-            } else {
-                let memory_backend = synapse_memory::create_memory(
-                    &config.memory,
-                    &config.workspace_dir,
-                    &resolved_agent_id,
-                    config.api_key.as_deref(),
-                )
-                .await?;
-                (memory_backend.memory, memory_backend.surreal)
-            };
+        let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) = if let Some(mem) =
+            shared_memory
+        {
+            (mem, None)
+        } else {
+            let memory_backend =
+                synapse_memory::create_memory(config, &config.workspace_dir, &resolved_agent_id)
+                    .await?;
+            (memory_backend.memory, memory_backend.surreal)
+        };
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -1418,52 +1449,49 @@ impl Agent {
             None
         };
 
-        let summary_route = resolve_summary_route(config, &model_name);
-        let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = {
-            let provider_result: Result<Arc<dyn Provider>> =
-                if let Some(ref summary_provider_name) = summary_route.provider {
-                    let api_key = summary_route
-                        .api_key_env
-                        .as_deref()
-                        .and_then(|env| std::env::var(env).ok())
-                        .or_else(|| summary_route.api_key.clone());
-                    synapse_providers::create_provider_with_options(
-                        summary_provider_name,
-                        api_key.as_deref(),
-                        &provider_runtime_options,
-                    )
-                    .map(Arc::from)
-                } else {
-                    Ok(Arc::clone(&provider_for_consolidation))
-                };
-
-            match provider_result {
-                Ok(provider) => {
+        let summary_route = match resolve_auxiliary_model(
+            config,
+            AuxiliaryLane::Compaction,
+            Some(&profile_catalog),
+        ) {
+            Ok(route) => Some(route),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    auxiliary_lane = AuxiliaryLane::Compaction.as_str(),
+                    "Agent history summary auxiliary lane unavailable; live compaction disabled"
+                );
+                None
+            }
+        };
+        let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = match summary_route {
+            None => None,
+            Some(summary_route) => match crate::memory_adapters::summary_generator_adapter::FailoverSummaryGenerator::from_auxiliary_resolution(
+                &summary_route,
+                &provider_runtime_options,
+                config.summary.temperature,
+            ) {
+                Ok(generator) => {
                     tracing::debug!(
-                        summary_route_source = summary_route.source.as_str(),
-                        summary_provider =
-                            summary_route.provider.as_deref().unwrap_or(provider_name),
-                        summary_model = summary_route.model.as_str(),
-                        "Agent history compaction summary lane ready"
+                        auxiliary_lane = summary_route.lane.as_str(),
+                        summary_provider = summary_route.selected.provider.as_str(),
+                        compaction_model = summary_route.selected.model.as_str(),
+                        selected_candidate_index = summary_route.selected_index,
+                        supported_candidate_count = summary_route.supported_candidates.len(),
+                        candidate_count = summary_route.candidates.len(),
+                        "Agent history compaction auxiliary lane ready"
                     );
-                    Some(Arc::new(
-                        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-                            provider,
-                            summary_route.model.clone(),
-                            summary_route.temperature,
-                        ),
-                    ))
+                    Some(Arc::new(generator))
                 }
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        summary_route_source = summary_route.source.as_str(),
-                        summary_model = summary_route.model.as_str(),
-                        "Failed to initialize agent history summary generator; live compaction disabled"
+                        auxiliary_lane = summary_route.lane.as_str(),
+                        "Failed to initialize agent history summary generator candidates; live compaction disabled"
                     );
                     None
                 }
-            }
+            },
         };
         let history_compaction_cache = runtime_ports
             .history_compaction_cache
@@ -1474,6 +1502,116 @@ impl Agent {
                     &resolved_agent_id,
                 )
             });
+        let prompt_skills = if config.skills.port_workspace_packages_on_start {
+            let mut prompt_skills =
+                crate::skills::load_file_backed_runtime_skills(&config.workspace_dir, config);
+            match crate::skills::port_workspace_skill_packages_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.imported > 0
+                        || report.skipped_existing > 0
+                        || report.moved > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        imported = report.imported,
+                        skipped_existing = report.skipped_existing,
+                        moved = report.moved,
+                        failed = report.failed,
+                        "ported workspace skill packages into memory"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to port workspace skill packages into memory; continuing with filesystem skill catalog"
+                    );
+                    prompt_skills =
+                        crate::skills::load_skills_with_config(&config.workspace_dir, config);
+                }
+            }
+            match crate::skills::sync_file_backed_skill_index_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+                config,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.indexed > 0
+                        || report.updated > 0
+                        || report.skipped_existing > 0
+                        || report.deprecated_stale > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        indexed = report.indexed,
+                        updated = report.updated,
+                        skipped_existing = report.skipped_existing,
+                        deprecated_stale = report.deprecated_stale,
+                        failed = report.failed,
+                        "synced file-backed skill semantic index"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to sync file-backed skill semantic index"
+                    );
+                }
+            }
+            prompt_skills
+        } else {
+            let prompt_skills =
+                crate::skills::load_skills_with_config(&config.workspace_dir, config);
+            match crate::skills::sync_file_backed_skill_index_to_memory(
+                memory.as_ref(),
+                &resolved_agent_id,
+                &config.workspace_dir,
+                config,
+            )
+            .await
+            {
+                Ok(report)
+                    if report.scanned > 0
+                        || report.indexed > 0
+                        || report.updated > 0
+                        || report.skipped_existing > 0
+                        || report.deprecated_stale > 0
+                        || report.failed > 0 =>
+                {
+                    tracing::info!(
+                        scanned = report.scanned,
+                        indexed = report.indexed,
+                        updated = report.updated,
+                        skipped_existing = report.skipped_existing,
+                        deprecated_stale = report.deprecated_stale,
+                        failed = report.failed,
+                        "synced file-backed skill semantic index"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "failed to sync file-backed skill semantic index"
+                    );
+                }
+            }
+            prompt_skills
+        };
 
         Agent::builder()
             .provider(provider)
@@ -1512,10 +1650,7 @@ impl Agent {
             .turn_defaults_context(Some(turn_defaults_context))
             .scoped_instruction_context(runtime_ports.scoped_instruction_context)
             .channel_registry(runtime_ports.channel_registry)
-            .skills(crate::skills::load_skills_with_config(
-                &config.workspace_dir,
-                config,
-            ))
+            .skills(prompt_skills)
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .auto_save(config.memory.auto_save)
             .build()
@@ -1582,16 +1717,17 @@ impl Agent {
                     if let Some(reasoning) = reasoning_content.as_deref() {
                         let trimmed = reasoning.trim();
                         if !trimmed.is_empty() {
-                            projected.push(ChatMessage::assistant(format!(
-                                "[assistant-reasoning]\n{trimmed}"
-                            )));
+                            projected.push(ChatMessage::assistant(
+                                format_projected_assistant_reasoning(trimmed),
+                            ));
                             original_indices.push(index);
                         }
                     }
                     for call in tool_calls {
-                        projected.push(ChatMessage::assistant(format!(
-                            "[tool-call {}]\n{} {}",
-                            call.id, call.name, call.arguments
+                        projected.push(ChatMessage::assistant(format_projected_tool_call(
+                            &call.id,
+                            &call.name,
+                            &call.arguments,
                         )));
                         original_indices.push(index);
                     }
@@ -1761,11 +1897,28 @@ impl Agent {
         compression: &ContextCompressionConfig,
         profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     ) -> bool {
-        self.maybe_compact_history_with_route_and_limits(
+        self.maybe_compact_history_with_route_and_limits_and_trace(
             compression,
             profile,
             self.config.max_history_messages,
             self.last_provider_input_tokens(),
+            None,
+        )
+        .await
+    }
+
+    async fn maybe_compact_history_with_route_and_trace(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+        trace_id: Option<&str>,
+    ) -> bool {
+        self.maybe_compact_history_with_route_and_limits_and_trace(
+            compression,
+            profile,
+            self.config.max_history_messages,
+            self.last_provider_input_tokens(),
+            trace_id,
         )
         .await
     }
@@ -1776,6 +1929,24 @@ impl Agent {
         profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
         max_history_messages: usize,
         observed_provider_input_tokens: Option<usize>,
+    ) -> bool {
+        self.maybe_compact_history_with_route_and_limits_and_trace(
+            compression,
+            profile,
+            max_history_messages,
+            observed_provider_input_tokens,
+            None,
+        )
+        .await
+    }
+
+    async fn maybe_compact_history_with_route_and_limits_and_trace(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+        max_history_messages: usize,
+        observed_provider_input_tokens: Option<usize>,
+        trace_id: Option<&str>,
     ) -> bool {
         let policy = HistoryCompressionPolicy::from(compression);
         if !policy.enabled {
@@ -1811,9 +1982,42 @@ impl Agent {
             .get(compact_end.saturating_sub(1))
             .map(|index| index + 1)
             .expect("compaction end should map to original history");
+        let message_indices = original_indices[start..compact_end].to_vec();
 
         let context_window_tokens =
             Self::history_compaction_context_window_tokens_for_profile(profile);
+        let memory = Arc::clone(&self.memory);
+        let observed_at_unix = chrono::Utc::now().timestamp();
+        let handoff_report = execute_memory_precompress_handoff(
+            Some(memory.as_ref()),
+            MemoryPreCompressHandoffInput {
+                agent_id: &self.agent_id,
+                reason: MemoryPreCompressHandoffReason::LiveAgentCompaction,
+                start_index: original_start,
+                end_index: original_end,
+                transcript: &transcript,
+                messages: &projected[start..compact_end],
+                message_indices: &message_indices,
+                recent_tool_repairs: &self.recent_turn_tool_repairs,
+                run_recipe_store: self.run_recipe_store.as_ref().map(|store| store.as_ref()),
+                observed_at_unix,
+            },
+        )
+        .await;
+        if let Some(trace_id) =
+            trace_id.filter(|_| !handoff_report.runtime_memory_decisions.is_empty())
+        {
+            self.recent_runtime_decision_traces = merge_runtime_decision_trace_update(
+                &self.recent_runtime_decision_traces,
+                trace_id,
+                RuntimeDecisionTraceUpdate {
+                    memory: handoff_report.runtime_memory_decisions.clone(),
+                    ..Default::default()
+                },
+                observed_at_unix,
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
+        }
         let cache_key = history_compaction_cache_key(&transcript, &policy, context_window_tokens);
         let summary_raw = if let Some(summary) = match self
             .history_compaction_cache
@@ -1833,11 +2037,12 @@ impl Agent {
             summary
         } else {
             let previous_summary = self.latest_compaction_summary_text();
-            let prompt = history_compaction::compaction_summarizer_prompt_with_policy(
+            let prompt = history_compaction::compaction_summarizer_prompt_with_policy_and_hints(
                 &transcript,
                 previous_summary.as_deref(),
                 &policy,
                 context_window_tokens,
+                &handoff_report.preservation_hints,
             );
             match summary_generator.generate_summary(&prompt).await {
                 Ok(summary) => {
@@ -1931,9 +2136,14 @@ impl Agent {
         Ok(prompt)
     }
 
-    async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
+    async fn execute_tool_call(
+        &self,
+        call: &ParsedToolCall,
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
+    ) -> ToolExecutionResult {
         let normalized_call = normalize_tool_call(call);
-        let outcome = execute_one_tool(
+        let mut outcome = execute_one_tool(
             &normalized_call.name,
             normalized_call.arguments.clone(),
             &self.tools,
@@ -1954,6 +2164,24 @@ impl Agent {
             duration: Duration::ZERO,
             tool_facts: Vec::new(),
             repair_trace: Some(classify_tool_execution_error(&normalized_call.name, &error)),
+            replay_args: None,
+        });
+        let tool_spec = self
+            .tool_specs
+            .iter()
+            .find(|spec| spec.name == normalized_call.name || spec.name == call.name);
+        outcome.repair_trace = outcome.repair_trace.map(|trace| {
+            enrich_tool_repair_trace(
+                trace,
+                ToolRepairTraceContext {
+                    route: repair_route,
+                    attempt_reason: Some(ToolRepairAttemptReason::ToolExecution),
+                    arguments: Some(&normalized_call.arguments),
+                    tool_spec,
+                    admission,
+                    ..Default::default()
+                },
+            )
         });
 
         ToolExecutionResult {
@@ -1963,21 +2191,30 @@ impl Agent {
             tool_call_id: call.tool_call_id.clone(),
             tool_facts: outcome.tool_facts,
             repair_trace: outcome.repair_trace,
+            replay_args: outcome.replay_args,
         }
     }
 
-    async fn execute_tools(&self, calls: &[ParsedToolCall]) -> Vec<ToolExecutionResult> {
+    async fn execute_tools(
+        &self,
+        calls: &[ParsedToolCall],
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
+    ) -> Vec<ToolExecutionResult> {
         if !self.config.parallel_tools {
             let mut results = Vec::with_capacity(calls.len());
             for call in calls {
-                results.push(self.execute_tool_call(call).await);
+                results.push(
+                    self.execute_tool_call(call, repair_route.clone(), admission)
+                        .await,
+                );
             }
             return results;
         }
 
         let futs: Vec<_> = calls
             .iter()
-            .map(|call| self.execute_tool_call(call))
+            .map(|call| self.execute_tool_call(call, repair_route.clone(), admission))
             .collect();
         futures_util::future::join_all(futs).await
     }
@@ -2020,6 +2257,8 @@ impl Agent {
         &self,
         calls: &[ParsedToolCall],
         cache: &mut HashMap<(String, String), ToolExecutionResult>,
+        repair_route: Option<ToolRepairRoute>,
+        admission: Option<&CandidateAdmissionDecision>,
     ) -> Vec<ToolExecutionResult> {
         let mut results: Vec<Option<ToolExecutionResult>> = vec![None; calls.len()];
         let mut uncached = Vec::new();
@@ -2056,7 +2295,9 @@ impl Agent {
 
         let pending_calls: Vec<ParsedToolCall> =
             uncached.iter().map(|(_, call, _)| call.clone()).collect();
-        let executed = self.execute_tools(&pending_calls).await;
+        let executed = self
+            .execute_tools(&pending_calls, repair_route, admission)
+            .await;
 
         for (uncached_index, ((index, _, signature), result)) in
             uncached.into_iter().zip(executed.into_iter()).enumerate()
@@ -2165,6 +2406,7 @@ impl Agent {
         self.last_turn_tool_facts.clear();
         self.last_turn_tool_repair = None;
         self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
+        let mut pre_admission_memory_decisions = Vec::new();
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -2341,15 +2583,24 @@ impl Agent {
             )
         {
             let user_key = autosave_memory_key("user_msg");
-            let _ = self
+            let category = MemoryCategory::Conversation;
+            let observed_at_unix = chrono::Utc::now().timestamp();
+            let store_result = self
                 .memory
                 .store(
                     &user_key,
                     user_message,
-                    &MemoryCategory::Conversation,
+                    &category,
                     self.memory_session_id.as_deref(),
                 )
                 .await;
+            let failure = store_result.as_ref().err().map(|error| error.to_string());
+            pre_admission_memory_decisions.push(runtime_memory_decision_from_autosave(
+                observed_at_unix,
+                &category,
+                store_result.is_ok(),
+                failure.as_deref(),
+            ));
         }
 
         // Store literal raw user message in history
@@ -2511,6 +2762,40 @@ impl Agent {
             );
             let context_cache_stats =
                 self.history_compaction_cache_stats_for_compression(&effective_compression);
+            let runtime_trace_id = build_runtime_decision_trace_id(
+                observed_at_unix,
+                &format!(
+                    "{}:{}:{}",
+                    self.agent_id,
+                    self.turn_count,
+                    self.recent_turn_admissions.len()
+                ),
+            );
+            let route_ref = RuntimeTraceRouteRef::new(
+                effective_provider.clone(),
+                effective_model.clone(),
+                effective_lane,
+                effective_candidate_index,
+            );
+            let mut runtime_trace = build_runtime_decision_trace(RuntimeDecisionTraceInput {
+                trace_id: runtime_trace_id.clone(),
+                observed_at_unix,
+                route_before: route_ref.clone(),
+                route_after: route_ref,
+                admission: &admission_decision,
+                model_profile: &effective_model_profile,
+                provider_context: provider_context_input,
+                context_cache: Some(context_cache_stats),
+            });
+            if !pre_admission_memory_decisions.is_empty() {
+                runtime_trace.memory = std::mem::take(&mut pre_admission_memory_decisions);
+            }
+            self.recent_runtime_decision_traces = append_runtime_decision_trace(
+                &self.recent_runtime_decision_traces,
+                runtime_trace,
+                observed_at_unix,
+                RUNTIME_TRACE_JANITOR_TTL_SECS,
+            );
             let memory_backend_healthy = self.memory.health_check().await;
             let embedding_profile = self.memory.embedding_profile();
             let subsystem_observations =
@@ -2527,6 +2812,8 @@ impl Agent {
                 recent_tool_repairs: &self.recent_turn_tool_repairs,
                 context_cache: Some(&context_cache_stats),
                 assumptions: &self.recent_runtime_assumptions,
+                calibration_records: &self.recent_runtime_calibrations,
+                decision_traces: &self.recent_runtime_decision_traces,
                 subsystem_observations: &subsystem_observations,
                 now_unix: observed_at_unix,
             });
@@ -2626,9 +2913,10 @@ impl Agent {
 
             if admission_decision.requires_compaction
                 && self
-                    .maybe_compact_history_with_route(
+                    .maybe_compact_history_with_route_and_trace(
                         &effective_compression,
                         &effective_model_profile,
+                        Some(&runtime_trace_id),
                     )
                     .await
             {
@@ -2964,6 +3252,22 @@ impl Agent {
                         &tool_repairs_this_turn,
                         chrono::Utc::now().timestamp(),
                     );
+                if let Some(trace_id) = self
+                    .recent_runtime_decision_traces
+                    .last()
+                    .map(|trace| trace.trace_id.clone())
+                {
+                    self.recent_runtime_decision_traces = merge_runtime_decision_trace_update(
+                        &self.recent_runtime_decision_traces,
+                        &trace_id,
+                        RuntimeDecisionTraceUpdate {
+                            tools: runtime_tool_decisions_from_repairs(&tool_repairs_this_turn),
+                            ..Default::default()
+                        },
+                        chrono::Utc::now().timestamp(),
+                        RUNTIME_TRACE_JANITOR_TTL_SECS,
+                    );
+                }
                 self.recent_runtime_assumptions = apply_tool_repair_assumption_challenges(
                     &self.recent_runtime_assumptions,
                     &tool_repairs_this_turn,
@@ -2989,8 +3293,19 @@ impl Agent {
                 media_artifacts: response.media_artifacts.clone(),
             });
 
+            let repair_route = Some(ToolRepairRoute {
+                provider: effective_provider.clone(),
+                model: effective_model.clone(),
+                lane: effective_lane,
+                candidate_index: effective_candidate_index,
+            });
             let results = self
-                .execute_tools_with_cache(&calls, &mut executed_call_cache)
+                .execute_tools_with_cache(
+                    &calls,
+                    &mut executed_call_cache,
+                    repair_route,
+                    Some(&admission_decision),
+                )
                 .await;
             self.record_tool_calibrations(&results, chrono::Utc::now().timestamp());
             tool_facts_this_turn.extend(
@@ -2998,18 +3313,42 @@ impl Agent {
                     .iter()
                     .flat_map(|result| result.tool_facts.iter().cloned()),
             );
-            if let Some(trace) = results
-                .iter()
-                .filter_map(|result| result.repair_trace.clone())
-                .last()
-            {
-                last_tool_repair_this_turn = Some(trace);
+            for result in &results {
+                if let Some(trace) = result.repair_trace.clone() {
+                    last_tool_repair_this_turn = Some(trace.clone());
+                    tool_repairs_this_turn = append_tool_repair_trace(
+                        &tool_repairs_this_turn,
+                        Some(trace),
+                        chrono::Utc::now().timestamp(),
+                    );
+                }
+                if result.success {
+                    let role = self
+                        .tool_specs
+                        .iter()
+                        .find(|spec| spec.name == result.name)
+                        .and_then(|spec| spec.runtime_role);
+                    let success_observed_at = chrono::Utc::now().timestamp();
+                    self.recent_turn_tool_repairs =
+                        apply_successful_tool_repair_observation_with_args(
+                            &self.recent_turn_tool_repairs,
+                            &result.name,
+                            role,
+                            success_observed_at,
+                            result.replay_args.as_ref(),
+                        );
+                    tool_repairs_this_turn = apply_successful_tool_repair_observation_with_args(
+                        &tool_repairs_this_turn,
+                        &result.name,
+                        role,
+                        success_observed_at,
+                        result.replay_args.as_ref(),
+                    );
+                    if let Some(latest) = latest_tool_repair_trace(&tool_repairs_this_turn) {
+                        last_tool_repair_this_turn = Some(latest);
+                    }
+                }
             }
-            tool_repairs_this_turn.extend(
-                results
-                    .iter()
-                    .filter_map(|result| result.repair_trace.clone()),
-            );
             let formatted = self.tool_dispatcher.format_results(&results)?;
             self.history.push(formatted);
             self.trim_history();
@@ -3287,6 +3626,13 @@ mod tests {
 
         fn parameters_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
+        }
+
+        fn tool_contract(&self) -> synapse_domain::ports::tool::ToolContract {
+            synapse_domain::ports::tool::ToolContract::non_replayable(
+                None,
+                synapse_domain::ports::tool::ToolNonReplayableReason::Other("test_tool".into()),
+            )
         }
 
         async fn execute(&self, _args: serde_json::Value) -> Result<crate::tools::ToolResult> {
